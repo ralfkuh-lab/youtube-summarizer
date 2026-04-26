@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YouTube Summarizer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>YouTube Summarizer</h1>
+    <div class="header-right">
+      <button id="settingsBtn" class="icon-btn" title="Einstellungen">⚙</button>
+    </div>
+  </header>
+
+  <div id="add-bar">
+    <input type="text" id="urlInput" placeholder="YouTube-URL oder Video-ID eingeben..." />
+    <button id="addBtn">+ Hinzufügen</button>
+  </div>
+
+  <div id="main">
+    <aside id="sidebar">
+      <div id="videoList"></div>
+    </aside>
+    <section id="detail">
+      <div id="detailPlaceholder">Wähle ein Video aus der Liste</div>
+      <div id="detailContent" style="display:none">
+        <div id="detailHeader">
+          <img id="detailThumb" src="" alt="" />
+          <div>
+            <h2 id="detailTitle"></h2>
+            <a id="detailUrl" href="#" target="_blank"></a>
+          </div>
+          <button id="deleteBtn" title="Video entfernen">🗑</button>
+        </div>
+        <div id="tabBar">
+          <button class="tab active" data-tab="transcript">Transkript</button>
+          <button class="tab" data-tab="summary">Zusammenfassung</button>
+          <button id="summarizeBtn">Zusammenfassen lassen</button>
+        </div>
+        <div id="tabContent">
+          <div id="tabTranscript" class="tab-panel active"></div>
+          <div id="tabSummary" class="tab-panel"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <footer id="statusBar">
+    <span id="statusText">Bereit</span>
+    <span id="statusModel"></span>
+  </footer>
+</div>
+
+<div id="settingsModal" class="modal" style="display:none">
+  <div class="modal-content">
+    <h2>KI-Einstellungen</h2>
+    <label>Provider
+      <select id="configProvider">
+        <option value="opencode_go">OpenCode Go</option>
+        <option value="opencode_zen">OpenCode Zen</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="ollama">Ollama (lokal)</option>
+      </select>
+    </label>
+    <label>API-Key
+      <input type="password" id="configApiKey" />
+    </label>
+    <label>Modell
+      <input type="text" id="configModel" placeholder="z.B. qwen3.5-plus" />
+    </label>
+    <div class="modal-actions">
+      <button id="configSave">Speichern</button>
+      <button id="configCancel">Abbrechen</button>
+    </div>
+  </div>
+</div>
+
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
