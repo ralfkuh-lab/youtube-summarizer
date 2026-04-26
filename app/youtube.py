@@ -82,12 +82,26 @@ def fetch_chapters(video_id: str) -> str | None:
     except Exception:
         return None
 
-    match = re.search(r'ytInitialPlayerResponse\s*=\s*(\{.+?\});', html)
+    match = re.search(r'ytInitialPlayerResponse\s*=\s*\{', html)
     if not match:
         return None
 
+    start = match.end() - 1
+    depth = 0
+    end = start
+    for i in range(start, len(html)):
+        if html[i] == '{':
+            depth += 1
+        elif html[i] == '}':
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if depth != 0:
+        return None
+
     try:
-        data = json.loads(match.group(1))
+        data = json.loads(html[start:end])
     except json.JSONDecodeError:
         return None
 

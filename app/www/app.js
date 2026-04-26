@@ -173,6 +173,10 @@ function init() {
       activeChapters = JSON.parse(chaptersJson);
       videos.forEach(function (v) { if (v.id === dbId) v.chapters = activeChapters; });
       if (activeVideoId === dbId) {
+        var v = findVideo(dbId);
+        if (v && v.transcript) {
+          document.getElementById('tabTranscript').innerHTML = renderTranscript(v.transcript, activeChapters);
+        }
         renderChapters(activeChapters);
       }
     });
