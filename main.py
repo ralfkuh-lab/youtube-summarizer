@@ -1,20 +1,39 @@
 import sys
 import os
+import threading
+import socket
 from pathlib import Path
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineCore import QWebEngineSettings
 
 from app.bridge import Bridge
 
 WWW_DIR = Path(__file__).resolve().parent / "app" / "www"
-INDEX_PATH = WWW_DIR / "index.html"
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _start_http_server(port: int) -> HTTPServer:
+    import os as _os
+    _os.chdir(str(WWW_DIR))
+    handler = SimpleHTTPRequestHandler
+    server = HTTPServer(("127.0.0.1", port), handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    return server
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, port: int):
         super().__init__()
         self.setWindowTitle("YouTube Summarizer")
         self.resize(1200, 750)
@@ -26,6 +45,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.webview = QWebEngineView()
+
+        settings = self.webview.page().settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
+
         layout.addWidget(self.webview)
 
         self.channel = QWebChannel()
@@ -33,7 +58,7 @@ class MainWindow(QMainWindow):
         self.channel.registerObject("bridge", self.bridge)
 
         self.webview.page().setWebChannel(self.channel)
-        self.webview.setUrl(QUrl.fromLocalFile(str(INDEX_PATH.resolve())))
+        self.webview.setUrl(QUrl(f"http://127.0.0.1:{port}/index.html"))
 
         self.webview.page().fullScreenRequested.connect(self._handle_fullscreen)
 
@@ -78,11 +103,15 @@ def main():
     platform = _detect_platform()
     os.environ["QT_QPA_PLATFORM"] = platform
 
+    port = _find_free_port()
+    _start_http_server(port)
+    print(f"Server läuft auf http://127.0.0.1:{port}")
+
     app = QApplication(sys.argv)
     app.setApplicationName("YouTube Summarizer")
     app.setOrganizationName("youtube-summarizer")
 
-    window = MainWindow()
+    window = MainWindow(port)
     window.show()
 
     sys.exit(app.exec())

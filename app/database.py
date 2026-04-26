@@ -23,4 +23,6 @@ def _migrate():
         columns = {row[1] for row in result.fetchall()}
         if "thumbnail_data" not in columns:
             conn.execute(text("ALTER TABLE videos ADD COLUMN thumbnail_data BLOB"))
-            conn.commit()
+        if "chapters" not in columns:
+            conn.execute(text("ALTER TABLE videos ADD COLUMN chapters TEXT"))
+        conn.commit()

@@ -5,7 +5,7 @@ from PySide6.QtCore import QObject, Signal, Slot, Property
 from app.config import config
 from app.database import get_session, init_db
 from app.models import Video
-from app.youtube import extract_video_id, get_video_url, fetch_video_info, fetch_transcript, download_thumbnail
+from app.youtube import extract_video_id, get_video_url, fetch_video_info, fetch_transcript, download_thumbnail, fetch_chapters, transcript_to_text
 from app.ai_client import summarize
 
 
@@ -13,6 +13,7 @@ class Bridge(QObject):
     videos_loaded = Signal(str)
     video_detail_loaded = Signal(str)
     transcript_loaded = Signal(int, str)
+    chapters_loaded = Signal(int, str)
     summary_loaded = Signal(int, str)
     video_added = Signal(str)
     video_deleted = Signal(int)
@@ -68,12 +69,16 @@ class Bridge(QObject):
             asyncio.set_event_loop(loop)
             try:
                 transcript = fetch_transcript(video_id)
+                chapters = fetch_chapters(video_id)
                 self.transcript_loaded.emit(db_id, transcript)
+                if chapters:
+                    self.chapters_loaded.emit(db_id, chapters)
                 session = get_session()
                 try:
                     video = session.query(Video).filter_by(id=db_id).first()
                     if video:
                         video.transcript = transcript
+                        video.chapters = chapters
                         session.commit()
                 finally:
                     session.close()
@@ -109,8 +114,8 @@ class Bridge(QObject):
         finally:
             session.close()
 
-    @Slot(int)
-    def summarize_video(self, db_id: int):
+    @Slot(int, str)
+    def summarize_video(self, db_id: int, system_prompt: str = ""):
         session = get_session()
         try:
             video = session.query(Video).filter_by(id=db_id).first()
@@ -120,7 +125,7 @@ class Bridge(QObject):
             if not video.transcript:
                 self.error.emit("Kein Transkript vorhanden – bitte erst Transkript laden")
                 return
-            transcript_text = video.transcript
+            transcript_text = transcript_to_text(video.transcript)
             session.close()
         except Exception:
             session.close()
@@ -131,7 +136,7 @@ class Bridge(QObject):
             asyncio.set_event_loop(loop)
             try:
                 self.status_update.emit("Zusammenfassung wird erstellt...")
-                result = loop.run_until_complete(summarize(transcript_text))
+                result = loop.run_until_complete(summarize(transcript_text, system_prompt or None))
                 self.summary_loaded.emit(db_id, result)
                 session2 = get_session()
                 try:

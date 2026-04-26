@@ -38,12 +38,20 @@
         <div id="tabBar">
           <button class="tab active" data-tab="transcript">Transkript</button>
           <button class="tab" data-tab="summary">Zusammenfassung</button>
+          <button class="tab" data-tab="video">Video</button>
           <button id="summarizeBtn">Zusammenfassen lassen</button>
         </div>
         <div id="tabContent">
           <div id="tabTranscript" class="tab-panel active"></div>
           <div id="tabSummary" class="tab-panel"></div>
+          <div id="tabVideo" class="tab-panel">
+            <iframe id="videoPlayer" src="" allow="autoplay; encrypted-media; picture-in-picture; fullscreen"></iframe>
+          </div>
         </div>
+      </div>
+      <div id="chaptersPanel" class="chapters-panel" style="display:none">
+        <h3>Kapitel</h3>
+        <div id="chaptersList"></div>
       </div>
     </section>
   </div>
@@ -74,6 +82,44 @@
     <div class="modal-actions">
       <button id="configSave">Speichern</button>
       <button id="configCancel">Abbrechen</button>
+    </div>
+  </div>
+</div>
+
+<div id="summaryModal" class="modal" style="display:none">
+  <div class="modal-content modal-wide">
+    <h2>Zusammenfassung konfigurieren</h2>
+    <div class="summary-row">
+      <label>Detailgrad
+        <select id="summaryDetail">
+          <option value="short">Kurz (Stichpunkte)</option>
+          <option value="medium" selected>Mittel</option>
+          <option value="detailed">Ausführlich</option>
+        </select>
+      </label>
+      <label>Sprache
+        <select id="summaryLang">
+          <option value="original">Original (wie Transkript)</option>
+          <option value="german">Deutsch</option>
+          <option value="english">English</option>
+          <option value="french">Français</option>
+          <option value="spanish">Español</option>
+          <option value="italian">Italiano</option>
+        </select>
+      </label>
+      <label>Chapters nutzen
+        <select id="summaryUseChapters">
+          <option value="yes">Ja, Zusammenfassung je Kapitel gliedern</option>
+          <option value="no">Nein</option>
+        </select>
+      </label>
+    </div>
+    <label>Prompt
+      <textarea id="summaryPrompt" rows="8"></textarea>
+    </label>
+    <div class="modal-actions">
+      <button id="summaryStart">Zusammenfassen</button>
+      <button id="summaryCancel">Abbrechen</button>
     </div>
   </div>
 </div>

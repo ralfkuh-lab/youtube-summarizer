@@ -141,7 +141,8 @@ header h1 { font-size: 16px; font-weight: 600; }
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
 }
 #detailPlaceholder {
   flex: 1;
@@ -230,13 +231,80 @@ header h1 { font-size: 16px; font-weight: 600; }
 .tab-panel { display: none; font-size: 13px; line-height: 1.6; }
 .tab-panel.active { display: block; }
 
+.empty { color: var(--text2); font-style: italic; }
+
+/* transcript timestamps */
+.ts-line {
+  padding: 2px 0;
+  border-bottom: 1px solid transparent;
+  transition: background 0.15s;
+}
+.ts-line:hover { background: var(--bg2); }
+.ts-chapter {
+  display: block;
+  margin: 12px 0 4px;
+  padding: 6px 10px;
+  background: var(--bg3);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.ts-chapter:hover { background: rgba(74, 158, 255, 0.15); }
+.ts-time {
+  display: inline-block;
+  min-width: 48px;
+  color: var(--accent);
+  font-size: 11px;
+  font-family: 'Ubuntu Mono', monospace;
+  user-select: none;
+}
+
 #tabTranscript { white-space: pre-wrap; }
 
-#tabSummary h1, #tabSummary h2, #tabSummary h3,
-#tabSummary h4, #tabSummary h5, #tabSummary h6 {
-  margin: 16px 0 8px;
-  line-height: 1.3;
+/* chapters panel */
+.chapters-panel {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 220px;
+  background: var(--bg2);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  z-index: 5;
+  padding: 10px 0;
 }
+.chapters-panel::-webkit-scrollbar { width: 5px; }
+.chapters-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.chapters-panel h3 {
+  font-size: 12px;
+  padding: 0 12px 8px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+#chaptersList { padding: 0 8px; }
+.chapter-item {
+  padding: 5px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  transition: background 0.15s;
+}
+.chapter-item:hover { background: var(--bg3); }
+.chapter-item .ts-time {
+  font-size: 11px;
+  color: var(--accent);
+  display: block;
+  margin-bottom: 1px;
+}
+
 #tabSummary h1 { font-size: 20px; }
 #tabSummary h2 { font-size: 17px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
 #tabSummary h3 { font-size: 15px; }
@@ -278,14 +346,30 @@ header h1 { font-size: 16px; font-weight: 600; }
 }
 #tabSummary strong { font-weight: 600; }
 
+#tabVideo, #tabVideo.active {
+  display: none;
+  padding: 0;
+}
+#tabVideo.active { display: flex; }
+#videoPlayer {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: none;
+  border-radius: var(--radius);
+  background: #000;
+}
+
 #statusBar {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   padding: 4px 12px;
+  min-height: 26px;
   background: var(--bg2);
   border-top: 1px solid var(--border);
   font-size: 11px;
   color: var(--text2);
+  flex-shrink: 0;
 }
 
 .modal {
@@ -345,3 +429,31 @@ header h1 { font-size: 16px; font-weight: 600; }
 #configSave:hover { background: var(--accent-hover); }
 #configCancel { background: var(--border); color: var(--text); }
 #configCancel:hover { background: var(--text2); }
+
+/* summary dialog */
+.modal-wide { width: 600px; max-width: 90vw; }
+.summary-row {
+  display: flex;
+  gap: 12px;
+}
+.summary-row label {
+  flex: 1;
+}
+#summaryPrompt {
+  width: 100%;
+  resize: vertical;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  font-family: 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  outline: none;
+}
+#summaryPrompt:focus { border-color: var(--accent); }
+#summaryStart { background: var(--accent); color: #fff; }
+#summaryStart:hover { background: var(--accent-hover); }
+#summaryCancel { background: var(--border); color: var(--text); }
+#summaryCancel:hover { background: var(--text2); }

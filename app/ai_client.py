@@ -1,7 +1,7 @@
 import httpx
 from app.config import config
 
-SYSTEM_PROMPT = """You are a helpful assistant that summarizes YouTube video transcripts.
+DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant that summarizes YouTube video transcripts.
 Provide a clear, structured summary in the same language as the transcript.
 Include:
 - A short overview (1-2 sentences)
@@ -11,7 +11,7 @@ Include:
 Format your response as Markdown."""
 
 
-async def summarize(transcript: str) -> str:
+async def summarize(transcript: str, system_prompt: str | None = None) -> str:
     ai = config.ai
     headers = {"Content-Type": "application/json"}
     if ai.api_key:
@@ -20,7 +20,7 @@ async def summarize(transcript: str) -> str:
     payload = {
         "model": ai.model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT},
             {"role": "user", "content": f"Please summarize the following YouTube video transcript:\n\n{transcript}"},
         ],
         "temperature": 0.5,

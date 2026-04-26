@@ -1,4 +1,5 @@
 import base64
+import json as _json
 from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Text, DateTime, LargeBinary
 from sqlalchemy.orm import DeclarativeBase
@@ -18,6 +19,7 @@ class Video(Base):
     thumbnail_url = Column(String(512), nullable=False)
     thumbnail_data = Column(LargeBinary, nullable=True)
     transcript = Column(Text, nullable=True)
+    chapters = Column(Text, nullable=True)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -26,6 +28,14 @@ class Video(Base):
         thumb = None
         if self.thumbnail_data:
             thumb = "data:image/jpeg;base64," + base64.b64encode(self.thumbnail_data).decode("ascii")
+
+        chapters_data = None
+        if self.chapters:
+            try:
+                chapters_data = _json.loads(self.chapters)
+            except (_json.JSONDecodeError, TypeError):
+                pass
+
         return {
             "id": self.id,
             "video_id": self.video_id,
@@ -34,7 +44,13 @@ class Video(Base):
             "thumbnail": thumb,
             "thumbnail_url": self.thumbnail_url,
             "transcript": self.transcript,
+            "chapters": chapters_data,
             "summary": self.summary,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+    @property
+    def transcript_text(self) -> str:
+        from app.youtube import transcript_to_text
+        return transcript_to_text(self.transcript)
