@@ -118,6 +118,8 @@ class AutomationRequestHandler(SimpleHTTPRequestHandler):
         try:
             video = session.query(Video).filter_by(id=vid).first()
             if video:
+                if self.bridge:
+                    self.bridge.get_video_detail(vid)
                 self._send_json(video.to_dict())
             else:
                 self._send_error("Video not found", 404)

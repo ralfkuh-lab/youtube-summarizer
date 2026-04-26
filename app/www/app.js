@@ -52,11 +52,14 @@ function renderTranscript(raw, chapters) {
 function renderChapters(chapters) {
   var list = document.getElementById('chaptersList');
   var panel = document.getElementById('chaptersPanel');
+  var detailContent = document.getElementById('detailContent');
   if (!chapters || !chapters.length) {
     panel.style.display = 'none';
+    detailContent.style.paddingRight = '';
     return;
   }
   panel.style.display = 'block';
+  detailContent.style.paddingRight = '220px';
   var html = '';
   chapters.forEach(function (c) {
     html += '<div class="chapter-item" data-start="' + c.start + '"><span class="ts-time">' + escapeHtml(c.time) + '</span> ' + escapeHtml(c.title) + '</div>';
