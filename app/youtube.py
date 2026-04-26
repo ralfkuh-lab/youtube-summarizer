@@ -73,16 +73,8 @@ def transcript_to_text(transcript_json: str | None) -> str:
     return "\n".join(s["text"] for s in snippets)
 
 
-def fetch_chapters(video_id: str) -> str | None:
-    url = get_video_url(video_id)
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-    except Exception:
-        return None
-
-    match = re.search(r'ytInitialPlayerResponse\s*=\s*\{', html)
+def _extract_json_from_html(html: str, var_name: str) -> dict | None:
+    match = re.search(rf'{re.escape(var_name)}\s*=\s*\{{', html)
     if not match:
         return None
 
@@ -101,10 +93,12 @@ def fetch_chapters(video_id: str) -> str | None:
         return None
 
     try:
-        data = json.loads(html[start:end])
+        return json.loads(html[start:end])
     except json.JSONDecodeError:
         return None
 
+
+def _extract_chapters_from_data(data: dict) -> list | None:
     chapters_raw = None
 
     try:
@@ -138,4 +132,24 @@ def fetch_chapters(video_id: str) -> str | None:
             except (KeyError, TypeError):
                 continue
 
-    return json.dumps(chapters, ensure_ascii=False) if chapters else None
+    return chapters if chapters else None
+
+
+def fetch_chapters(video_id: str) -> str | None:
+    url = get_video_url(video_id)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    for var_name in ("ytInitialData", "ytInitialPlayerResponse"):
+        data = _extract_json_from_html(html, var_name)
+        if data is None:
+            continue
+        chapters = _extract_chapters_from_data(data)
+        if chapters:
+            return json.dumps(chapters, ensure_ascii=False)
+
+    return None
