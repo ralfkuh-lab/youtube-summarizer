@@ -6,62 +6,8 @@ let activeChapters = null;
 
 function markdownToHtml(md) {
   if (!md) return '';
-  var html = md;
-
-  html = html.replace(/([~`]{3,})([\s\S]*?)\1/g, function (m, fence, code) {
-    var lang = '';
-    var firstNewline = code.indexOf('\n');
-    if (firstNewline > -1) {
-      var firstLine = code.substring(0, firstNewline).trim();
-      if (firstLine && !/[`~]/.test(firstLine)) { lang = firstLine; code = code.substring(firstNewline + 1); }
-    }
-    return '<pre><code>' + escapeHtml(code.trimEnd()) + '</code></pre>';
-  });
-
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  html = html.replace(/^###### (.+)$/gm, '<h6>$1</h6>');
-  html = html.replace(/^##### (.+)$/gm, '<h5>$1</h5>');
-  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
-  html = html.replace(/___(.+?)___/g, '<strong><em>$1</em></strong>');
-  html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
-  html = html.replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>');
-
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-
-  html = html.replace(/^(\s*)[-*+] (.+)$/gm, function (m, indent, item) {
-    return '<li>' + item + '</li>';
-  });
-
-  html = html.replace(/^(\s*)\d+\. (.+)$/gm, function (m, indent, item) {
-    return '<li>' + item + '</li>';
-  });
-
-  html = html.replace(/((?:<li>[\s\S]*?<\/li>\n?)+)/g, function (m) {
-    if (m.indexOf('<li>') === -1) return m;
-    return '<ul>' + m + '</ul>';
-  });
-
-  html = html.replace(/^---+$/gm, '<hr>');
-
-  html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
-
-  var blocks = html.split(/\n\n+/);
-  html = blocks.map(function (block) {
-    block = block.trim();
-    if (!block) return '';
-    if (/^<(h[1-6]|ul|ol|pre|blockquote|hr|li)/.test(block)) return block;
-    return '<p>' + block.replace(/\n/g, '<br>') + '</p>';
-  }).join('\n');
-
-  return html;
+  marked.use({ breaks: true, gfm: true });
+  return marked.parse(md);
 }
 
 function renderTranscript(raw, chapters) {
@@ -235,7 +181,12 @@ function init() {
       videos.forEach(function (v) { if (v.id === dbId) v.summary = summary; });
       renderVideoList();
       if (activeVideoId === dbId) {
-        document.getElementById('tabSummary').innerHTML = markdownToHtml(summary);
+        var tab = document.getElementById('tabSummary');
+        if (summary) {
+          tab.innerHTML = markdownToHtml(summary);
+        } else {
+          tab.innerHTML = '<p class="empty">Zusammenfassung ist leer – bitte erneut versuchen</p>';
+        }
         switchTab('summary');
       }
     });
@@ -376,7 +327,12 @@ function showDetail(v) {
   document.getElementById('detailUrl').href = v.url;
   document.getElementById('detailUrl').textContent = v.url;
   document.getElementById('tabTranscript').innerHTML = renderTranscript(v.transcript, v.chapters);
-  document.getElementById('tabSummary').innerHTML = markdownToHtml(v.summary || '');
+  var tabSummary = document.getElementById('tabSummary');
+  if (v.summary) {
+    tabSummary.innerHTML = markdownToHtml(v.summary);
+  } else {
+    tabSummary.innerHTML = '<p class="empty">Noch keine Zusammenfassung – klicke auf "Zusammenfassen lassen"</p>';
+  }
   document.getElementById('videoPlayer').src = 'https://www.youtube-nocookie.com/embed/' + v.video_id;
   activeChapters = v.chapters;
   renderChapters(v.chapters);

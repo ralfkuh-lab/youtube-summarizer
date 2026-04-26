@@ -24,7 +24,7 @@ async def summarize(transcript: str, system_prompt: str | None = None) -> str:
             {"role": "user", "content": f"Please summarize the following YouTube video transcript:\n\n{transcript}"},
         ],
         "temperature": 0.5,
-        "max_tokens": 2048,
+        "max_tokens": 8192,
     }
 
     async with httpx.AsyncClient(timeout=120) as client:

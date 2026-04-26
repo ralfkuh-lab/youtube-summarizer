@@ -127,8 +127,9 @@ class Bridge(QObject):
                 return
             transcript_text = transcript_to_text(video.transcript)
             session.close()
-        except Exception:
+        except Exception as e:
             session.close()
+            self.error.emit(f"Fehler beim Vorbereiten: {str(e)}")
             return
 
         def _run():
@@ -137,6 +138,9 @@ class Bridge(QObject):
             try:
                 self.status_update.emit("Zusammenfassung wird erstellt...")
                 result = loop.run_until_complete(summarize(transcript_text, system_prompt or None))
+                if not result or not result.strip():
+                    self.error.emit("KI hat eine leere Antwort zurückgegeben – bitte erneut versuchen")
+                    return
                 self.summary_loaded.emit(db_id, result)
                 session2 = get_session()
                 try:

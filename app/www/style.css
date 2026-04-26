@@ -311,6 +311,7 @@ header h1 { font-size: 16px; font-weight: 600; }
 #tabSummary h4 { font-size: 14px; }
 #tabSummary p { margin: 8px 0; }
 #tabSummary ul, #tabSummary ol { margin: 8px 0; padding-left: 24px; }
+#tabSummary ol { list-style-type: decimal; }
 #tabSummary li { margin: 3px 0; }
 #tabSummary code {
   background: var(--bg3);
@@ -345,6 +346,37 @@ header h1 { font-size: 16px; font-weight: 600; }
   margin: 16px 0;
 }
 #tabSummary strong { font-weight: 600; }
+#tabSummary em { font-style: italic; }
+#tabSummary table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+  font-size: 12px;
+}
+#tabSummary th, #tabSummary td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+#tabSummary th {
+  background: var(--bg3);
+  font-weight: 600;
+}
+#tabSummary tr:nth-child(even) td {
+  background: rgba(255,255,255,0.03);
+}
+#tabSummary img {
+  max-width: 100%;
+  border-radius: var(--radius);
+  margin: 8px 0;
+}
+#tabSummary input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: var(--accent);
+}
+#tabSummary del, #tabSummary s {
+  color: var(--text2);
+}
 
 #tabVideo, #tabVideo.active {
   display: none;
