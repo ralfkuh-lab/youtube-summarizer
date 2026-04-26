@@ -26,7 +26,7 @@ async def summarize(transcript: str, system_prompt: str | None = None) -> str:
         "temperature": 0.5,
     }
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         response = await client.post(ai.endpoint, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()

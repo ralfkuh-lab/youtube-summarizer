@@ -30,8 +30,10 @@ class Bridge(QObject):
         self._screenshot_data = None
         self._screenshot_done = threading.Event()
         self._last_status = "Bereit"
+        self._last_error = ""
         self._trigger_screenshot.connect(self._on_screenshot)
         self.status_update.connect(lambda msg: setattr(self, "_last_status", msg))
+        self.error.connect(lambda msg: setattr(self, "_last_error", msg))
         init_db()
 
     def set_window(self, window):
@@ -62,6 +64,7 @@ class Bridge(QObject):
             "provider": config.ai.provider,
             "model": config.ai.model,
             "message": self._last_status,
+            "error": self._last_error,
         }
 
     @Slot(str)
