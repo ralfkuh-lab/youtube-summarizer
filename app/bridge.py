@@ -1,6 +1,7 @@
 import json
 import asyncio
-from PySide6.QtCore import QObject, Signal, Slot, Property
+import threading
+from PySide6.QtCore import QObject, Signal, Slot, Property, QByteArray, QBuffer, QIODevice
 
 from app.config import config
 from app.database import get_session, init_db
@@ -21,9 +22,47 @@ class Bridge(QObject):
     config_loaded = Signal(str)
     status_update = Signal(str)
 
+    _trigger_screenshot = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._window = None
+        self._screenshot_data = None
+        self._screenshot_done = threading.Event()
+        self._last_status = "Bereit"
+        self._trigger_screenshot.connect(self._on_screenshot)
+        self.status_update.connect(lambda msg: setattr(self, "_last_status", msg))
         init_db()
+
+    def set_window(self, window):
+        self._window = window
+
+    def _on_screenshot(self):
+        if self._window and self._window.isVisible():
+            pixmap = self._window.grab()
+            ba = QByteArray()
+            buf = QBuffer(ba)
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            pixmap.save(buf, "PNG")
+            self._screenshot_data = bytes(ba)
+        else:
+            self._screenshot_data = None
+        self._screenshot_done.set()
+
+    def request_screenshot(self) -> bytes | None:
+        self._screenshot_done.clear()
+        self._screenshot_data = None
+        self._trigger_screenshot.emit()
+        if self._screenshot_done.wait(timeout=5):
+            return self._screenshot_data
+        return None
+
+    def get_status(self) -> dict:
+        return {
+            "provider": config.ai.provider,
+            "model": config.ai.model,
+            "message": self._last_status,
+        }
 
     @Slot(str)
     def add_video(self, url: str):

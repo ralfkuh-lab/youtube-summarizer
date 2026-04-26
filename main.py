@@ -22,11 +22,17 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _start_http_server(port: int) -> HTTPServer:
+def _start_http_server(port: int, automation: bool = False) -> HTTPServer:
     import os as _os
     _os.chdir(str(WWW_DIR))
-    handler = SimpleHTTPRequestHandler
-    server = HTTPServer(("127.0.0.1", port), handler)
+
+    if automation:
+        from app.automation import AutomationRequestHandler
+        handler_class = AutomationRequestHandler
+    else:
+        handler_class = SimpleHTTPRequestHandler
+
+    server = HTTPServer(("127.0.0.1", port), handler_class)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     return server
@@ -103,15 +109,25 @@ def main():
     platform = _detect_platform()
     os.environ["QT_QPA_PLATFORM"] = platform
 
+    automation = "--automation" in sys.argv
+
     port = _find_free_port()
-    _start_http_server(port)
-    print(f"Server läuft auf http://127.0.0.1:{port}")
+    _start_http_server(port, automation=automation)
+    print(f"Server laeuft auf http://127.0.0.1:{port}")
 
     app = QApplication(sys.argv)
     app.setApplicationName("YouTube Summarizer")
     app.setOrganizationName("youtube-summarizer")
 
     window = MainWindow(port)
+
+    if automation:
+        from app.automation import AutomationRequestHandler
+        AutomationRequestHandler.bridge = window.bridge
+        AutomationRequestHandler.window = window
+        window.bridge.set_window(window)
+        print(f"AUTOMATION_URL=http://127.0.0.1:{port}/api")
+
     window.show()
 
     sys.exit(app.exec())
