@@ -21,9 +21,11 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Added manual transcript refresh for existing videos without transcripts.
 - Implemented AI summary generation through OpenAI-compatible chat completion endpoints.
 - Added a dev-only local automation API for agent-driven functional testing.
+- Added the full Tauri icon set required for Linux AppImage bundling.
 - Verified:
   - `npm run build`
   - `cargo test`
+  - `npm run tauri -- build`
   - Live automation flow for health, transcript loading, summarization and cleanup.
 
 ## Next TODOs
@@ -31,7 +33,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Improve frontend polish and interaction states.
 - Add better empty/error states for transcript and summary failures.
 - Decide whether the video list should include compact status icons instead of plain `T`/`Z` markers.
-- Add packaging/build instructions for Linux, Windows and macOS.
+- Add Windows and macOS packaging notes once tested on those platforms.
 - Add release checklist once app behavior stabilizes.
 - Review whether automation API responses should return compact video objects to avoid huge payloads from thumbnails/transcripts.
 - Decide when `legacy-python/` can be deleted.
@@ -47,5 +49,6 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 
 - Date: 2026-05-01
 - Build: `npm run build` passed.
+- Release build: `npm run tauri -- build` passed and produced Linux binary, deb, rpm and AppImage artifacts.
 - Rust tests: `cargo test` passed with 2 tests passed and 1 network test ignored.
 - Functional test: summary generation worked with stored OpenCode Go settings.

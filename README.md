@@ -41,6 +41,30 @@ Run the frontend build:
 npm run build
 ```
 
+This only builds the web frontend into `dist/`; it does not create a desktop executable.
+
+Build the release desktop app and Linux bundles:
+
+```bash
+npm run tauri -- build
+```
+
+If `cargo` is not in the shell `PATH`, load the Rust environment first:
+
+```bash
+. "$HOME/.cargo/env"
+npm run tauri -- build
+```
+
+Release outputs are written to:
+
+```text
+src-tauri/target/release/youtube-summarizer
+src-tauri/target/release/bundle/deb/YouTube Summarizer_0.1.0_amd64.deb
+src-tauri/target/release/bundle/rpm/YouTube Summarizer-0.1.0-1.x86_64.rpm
+src-tauri/target/release/bundle/appimage/YouTube Summarizer_0.1.0_amd64.AppImage
+```
+
 Run Rust tests:
 
 ```bash
