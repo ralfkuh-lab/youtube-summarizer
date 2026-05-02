@@ -38,7 +38,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
+            commands::get_ai_providers,
             commands::save_config,
+            commands::save_provider_config,
+            commands::add_custom_provider,
+            commands::delete_custom_provider,
+            commands::refresh_provider_models,
             commands::get_videos,
             commands::get_video_detail,
             commands::add_video,

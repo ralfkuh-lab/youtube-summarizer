@@ -7,8 +7,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::commands;
 use crate::storage::{self, AppPaths, AppResult};
+use crate::{ai, commands};
 
 #[derive(Debug, Deserialize)]
 struct AddVideoRequest {
@@ -120,6 +120,19 @@ fn route(
 ) -> AppResult<()> {
     match (method, path) {
         ("GET", "/api/health") => write_json(stream, 200, &json!({"status": "ok"})),
+        ("GET", "/api/config") => write_result(stream, storage::get_ai_config(paths)),
+        ("GET", "/api/providers") => write_json(stream, 200, &ai::provider_catalog()),
+        _ if method == "POST" && path.starts_with("/api/models/") => {
+            let provider_id = path
+                .strip_prefix("/api/models/")
+                .ok_or_else(|| "Ungültiger Pfad".to_string())?;
+            let runtime = tokio::runtime::Runtime::new()
+                .map_err(|err| format!("Runtime konnte nicht erstellt werden: {err}"))?;
+            write_result(
+                stream,
+                runtime.block_on(refresh_models_impl(paths, provider_id)),
+            )
+        }
         ("GET", "/api/videos") => write_result(stream, storage::get_videos(paths)),
         ("POST", "/api/add-video") => {
             let request = parse_body::<AddVideoRequest>(body)?;
@@ -169,6 +182,33 @@ fn route(
         }
         _ => write_json(stream, 404, &json!({"error": "Not found"})),
     }
+}
+
+async fn refresh_models_impl(
+    paths: &AppPaths,
+    provider_id: &str,
+) -> AppResult<crate::models::AiConfig> {
+    let config = storage::get_ai_config(paths)?;
+    let provider = storage::provider_config(&config, provider_id)
+        .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
+    let mut request_config = config.clone();
+    request_config.provider = provider.id.clone();
+    request_config.api_key = provider.api_key.clone();
+    request_config.model = provider.model.clone();
+    request_config.endpoint_override = provider.endpoint_override.clone();
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 YouTubeSummarizer/0.1")
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|err| format!("HTTP-Client konnte nicht erstellt werden: {err}"))?;
+    let models = ai::fetch_models(&client, &request_config, provider_id).await?;
+    storage::update_provider_models(
+        paths,
+        provider_id,
+        models,
+        chrono::Utc::now().to_rfc3339(),
+        None,
+    )
 }
 
 fn parse_body<T: for<'de> Deserialize<'de>>(body: &[u8]) -> AppResult<T> {

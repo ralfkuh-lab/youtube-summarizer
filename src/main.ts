@@ -6,6 +6,44 @@ type AiConfig = {
   api_key: string;
   model: string;
   endpoint_override?: string | null;
+  providers: AiProviderConfig[];
+};
+
+type AiProviderConfig = {
+  id: string;
+  name?: string | null;
+  enabled: boolean;
+  api_key: string;
+  model: string;
+  endpoint_override?: string | null;
+  models: AiModel[];
+  models_updated_at?: string | null;
+  last_error?: string | null;
+};
+
+type AiModel = {
+  id: string;
+  name: string;
+  tags: string[];
+  free: boolean;
+};
+
+type AiProviderInfo = {
+  id: string;
+  name: string;
+  description: string;
+  badge: string;
+  homepage_url?: string | null;
+  requires_api_key: boolean;
+  supports_model_refresh: boolean;
+  endpoint_editable: boolean;
+  recommended: boolean;
+};
+
+type ModelEntry = {
+  provider: AiProviderConfig;
+  providerInfo?: AiProviderInfo;
+  model: AiModel;
 };
 
 type Chapter = {
@@ -40,6 +78,11 @@ let videos: Video[] = [];
 let activeVideoId: number | null = null;
 let activeTab: TabName = "transcript";
 let busy = false;
+let aiConfig: AiConfig | null = null;
+let aiProviders: AiProviderInfo[] = [];
+let selectedSettingsProviderId = "opencode_go";
+let settingsSection: "providers" | "models" = "providers";
+let showOnlyFreeModels = false;
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -48,17 +91,20 @@ if (!app) {
 
 app.innerHTML = `
   <header>
-    <h1>YouTube Summarizer</h1>
-    <button id="settingsBtn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">⚙</button>
+    <div class="app-brand">
+      <h1>YouTube Summarizer</h1>
+    </div>
+    <div id="addBar">
+      <input id="urlInput" type="text" placeholder="YouTube-URL oder Video-ID eingeben..." />
+      <button id="addBtn">Hinzufügen</button>
+    </div>
+    <div class="toolbar-actions">
+      <button id="settingsBtn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">⚙</button>
+    </div>
   </header>
 
-  <div id="addBar">
-    <input id="urlInput" type="text" placeholder="YouTube-URL oder Video-ID eingeben..." />
-    <button id="addBtn">Hinzufügen</button>
-  </div>
-
   <main>
-    <aside>
+    <aside id="libraryPanel">
       <div id="videoList"></div>
     </aside>
     <section id="detail">
@@ -85,16 +131,27 @@ app.innerHTML = `
           <div id="tabTranscript" class="tabPanel active"></div>
           <div id="tabSummary" class="tabPanel"></div>
           <div id="tabVideo" class="tabPanel">
-            <iframe id="videoPlayer" title="YouTube Video" allow="autoplay; encrypted-media; picture-in-picture; fullscreen"></iframe>
+            <div class="video-player-shell">
+              <iframe
+                id="videoPlayer"
+                title="YouTube Video"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+                allowfullscreen
+                referrerpolicy="strict-origin-when-cross-origin"
+              ></iframe>
+            </div>
+            <div class="video-fallback">
+              <a id="videoFallbackLink" href="#" target="_blank" rel="noreferrer">Video auf YouTube öffnen</a>
+            </div>
           </div>
         </div>
       </div>
 
-      <div id="chaptersPanel" class="chapters-panel" hidden>
-        <h3>Kapitel</h3>
-        <div id="chaptersList"></div>
-      </div>
     </section>
+    <aside id="chaptersPanel" class="chapters-panel" hidden>
+      <h3>Kapitel</h3>
+      <div id="chaptersList"></div>
+    </aside>
   </main>
 
   <footer>
@@ -103,25 +160,19 @@ app.innerHTML = `
   </footer>
 
   <div id="settingsModal" class="modal" hidden>
-    <div class="modal-content">
-      <h2>KI-Einstellungen</h2>
-      <label>Provider
-        <select id="configProvider">
-          <option value="opencode_go">OpenCode Go</option>
-          <option value="opencode_zen">OpenCode Zen</option>
-          <option value="openrouter">OpenRouter</option>
-          <option value="ollama">Ollama lokal</option>
-        </select>
-      </label>
-      <label>API-Key
-        <input type="password" id="configApiKey" />
-      </label>
-      <label>Modell
-        <input type="text" id="configModel" placeholder="z.B. qwen3.5-plus" />
-      </label>
-      <label>Endpoint Override
-        <input type="text" id="configEndpoint" placeholder="Optional" />
-      </label>
+    <div class="modal-content settings-content">
+      <div class="settings-sidebar">
+        <div class="settings-title">
+          <h2>KI</h2>
+          <p>Connect providers and choose the model used for summaries.</p>
+        </div>
+        <div class="settings-nav">
+          <button class="settings-nav-item active" data-settings-section="providers">Providers</button>
+          <button class="settings-nav-item" data-settings-section="models">Models</button>
+        </div>
+        <div id="providerSettingsList"></div>
+      </div>
+      <div class="settings-main" id="providerSettingsBody"></div>
       <div class="modal-actions">
         <button id="configSave">Speichern</button>
         <button id="configCancel">Abbrechen</button>
@@ -198,6 +249,73 @@ function bindEvents() {
   $("#settingsBtn").addEventListener("click", () => void openSettings());
   $("#configSave").addEventListener("click", () => void saveSettings());
   $("#configCancel").addEventListener("click", () => hideModal("#settingsModal"));
+  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      const section = button.dataset.settingsSection;
+      if (section === "providers" || section === "models") {
+        void persistVisibleProviderForm();
+        settingsSection = section;
+        renderSettings();
+      }
+    });
+  });
+  $("#providerSettingsList").addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const addProvider = target.closest<HTMLElement>("[data-add-provider]");
+    if (addProvider) {
+      void addCustomProvider();
+      return;
+    }
+    if (target.closest(".provider-switch")) {
+      return;
+    }
+    const deleteButton = target.closest<HTMLElement>("[data-delete-provider-id]");
+    if (deleteButton?.dataset.deleteProviderId) {
+      void deleteCustomProvider(deleteButton.dataset.deleteProviderId);
+      return;
+    }
+    const item = target.closest<HTMLElement>("[data-provider-id]");
+    if (item?.dataset.providerId) {
+      selectSettingsProvider(item.dataset.providerId);
+    }
+  });
+  $("#providerSettingsList").addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || !target.dataset.toggleProviderId) return;
+    void setProviderEnabled(target.dataset.toggleProviderId, target.checked);
+  });
+  $("#providerSettingsBody").addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest("#openModelPickerBtn")) {
+      settingsSection = "models";
+      renderSettings();
+    }
+    if (target.closest("#settingsRefreshModelsBtn")) {
+      void refreshModelsForProvider(selectedSettingsProviderId);
+    }
+    if (target.closest("#refreshAllModelsBtn")) {
+      void refreshAllModels();
+    }
+    const modelItem = target.closest<HTMLElement>("[data-model-id][data-model-provider-id]");
+    if (modelItem?.dataset.modelId && modelItem.dataset.modelProviderId) {
+      void selectGlobalModel(modelItem.dataset.modelProviderId, modelItem.dataset.modelId);
+    }
+  });
+  $("#providerSettingsBody").addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.id === "globalModelSearch") renderSettingsModelList();
+  });
+  $("#providerSettingsBody").addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.id === "freeModelsOnly") {
+      showOnlyFreeModels = target.checked;
+      renderSettingsModelList();
+    }
+  });
 
   $("#summarizeBtn").addEventListener("click", openSummaryDialog);
   $("#reloadTranscriptBtn").addEventListener("click", () => void refreshActiveTranscript());
@@ -229,13 +347,16 @@ function bindEvents() {
 async function loadInitialData() {
   setBusy(true, "Videos werden geladen...");
   try {
-    const [loadedVideos, config] = await Promise.all([
+    const [loadedVideos, config, providers] = await Promise.all([
       invoke<Video[]>("get_videos"),
       invoke<AiConfig>("get_config"),
+      invoke<AiProviderInfo[]>("get_ai_providers"),
     ]);
     videos = loadedVideos;
+    aiProviders = providers;
     renderVideoList();
     applyConfig(config);
+    void refreshModelsForProvider(config.provider, true);
     setStatus("Bereit");
   } catch (error) {
     setStatus(errorMessage(error));
@@ -317,8 +438,19 @@ async function refreshActiveTranscript() {
 
 async function openSettings() {
   try {
-    applyConfig(await invoke<AiConfig>("get_config"));
+    const [config, providers] = await Promise.all([
+      invoke<AiConfig>("get_config"),
+      invoke<AiProviderInfo[]>("get_ai_providers"),
+    ]);
+    aiProviders = providers;
+    applyConfig(config);
+    selectedSettingsProviderId = config.provider;
+    renderSettings();
     showModal("#settingsModal");
+    const active = getProviderConfig(config.provider);
+    if (!active?.models.length) {
+      void refreshModelsForProvider(config.provider, true);
+    }
   } catch (error) {
     setStatus(errorMessage(error));
   }
@@ -326,13 +458,9 @@ async function openSettings() {
 
 async function saveSettings() {
   try {
-    const config = await invoke<AiConfig>("save_config", {
-      provider: $<HTMLSelectElement>("#configProvider").value,
-      apiKey: $<HTMLInputElement>("#configApiKey").value,
-      model: $<HTMLInputElement>("#configModel").value,
-      endpointOverride: $<HTMLInputElement>("#configEndpoint").value,
-    });
-    applyConfig(config);
+    if (settingsSection === "providers") {
+      await persistVisibleProviderForm(true);
+    }
     hideModal("#settingsModal");
     setStatus("Konfiguration gespeichert");
   } catch (error) {
@@ -341,11 +469,394 @@ async function saveSettings() {
 }
 
 function applyConfig(config: AiConfig) {
-  $<HTMLSelectElement>("#configProvider").value = config.provider;
-  $<HTMLInputElement>("#configApiKey").value = config.api_key;
-  $<HTMLInputElement>("#configModel").value = config.model;
-  $<HTMLInputElement>("#configEndpoint").value = config.endpoint_override ?? "";
-  statusModel.textContent = `Provider: ${config.provider} / Modell: ${config.model}`;
+  aiConfig = config;
+  const provider = getProviderInfo(config.provider);
+  statusModel.textContent = `${provider?.name ?? config.provider} / ${config.model || "kein Modell"}`;
+  if (!$("#settingsModal").hidden) {
+    renderSettings();
+  }
+}
+
+function renderSettings() {
+  if (!aiConfig) return;
+  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
+    button.classList.toggle("active", button.dataset.settingsSection === settingsSection);
+  });
+
+  if (settingsSection === "models") {
+    renderModelSettings();
+    return;
+  }
+
+  const selected = getProviderConfig(selectedSettingsProviderId) ?? getProviderConfig(aiConfig.provider);
+  if (!selected) return;
+  const info = getProviderInfo(selected.id);
+  $("#providerSettingsList").innerHTML = renderProviderNavigation(selected.id);
+
+  $("#providerSettingsBody").innerHTML = `
+    <div class="settings-fixed-panel">
+      <div class="settings-provider-head">
+        <div>
+          <h2>${escapeHtml(providerDisplayName(selected))}</h2>
+          <p>${escapeHtml(info?.description ?? "OpenAI-compatible custom provider.")}</p>
+        </div>
+        <span class="provider-head-actions">
+          ${info?.homepage_url && info.recommended ? `<a class="provider-home-link" href="${escapeHtml(info.homepage_url)}" target="_blank" rel="noreferrer">Provider website</a>` : ""}
+          ${info?.recommended ? '<span class="provider-badge">Recommended</span>' : ""}
+        </span>
+      </div>
+      <label ${isCustomProvider(selected.id) ? "" : "hidden"}>Name
+        <input id="configProviderName" type="text" value="${escapeHtml(providerDisplayName(selected))}" placeholder="Custom provider name" />
+      </label>
+      <label class="provider-enabled-row">
+        <span>Enabled</span>
+        <input id="configProviderEnabled" type="checkbox" ${selected.enabled ? "checked" : ""} />
+      </label>
+      <label>API key
+        <input id="configApiKey" type="password" value="${escapeHtml(selected.api_key)}" placeholder="${info?.requires_api_key ? "Required" : "Optional"}" />
+      </label>
+      <input id="configModel" type="hidden" value="${escapeHtml(selected.model)}" />
+      <label ${info?.endpoint_editable || isCustomProvider(selected.id) ? "" : "hidden"}>Chat endpoint
+        <input id="configEndpoint" type="text" value="${escapeHtml(selected.endpoint_override ?? "")}" placeholder="https://.../v1/chat/completions" />
+      </label>
+      <div class="provider-actions">
+        <button id="settingsRefreshModelsBtn" type="button">Refresh models</button>
+        <span>${renderModelRefreshState(selected)}</span>
+      </div>
+      ${selected.last_error ? `<p class="settings-error">${escapeHtml(selected.last_error)}</p>` : ""}
+    </div>
+    <div class="settings-model-preview settings-scroll-list">
+      ${renderModelPreview(selected)}
+    </div>
+  `;
+}
+
+function renderProviderNavigation(selectedId: string): string {
+  const recommended = aiProviders.filter((provider) => provider.recommended);
+  const customAndLocal = (aiConfig?.providers ?? []).filter((provider) => {
+    const info = getProviderInfo(provider.id);
+    return isCustomProvider(provider.id) || info?.id === "ollama" || !info;
+  });
+  return `
+    <div class="provider-section-title">Recommended</div>
+    ${recommended.map((provider) => renderProviderNavItem(provider.id, selectedId)).join("")}
+    <div class="provider-section-divider"></div>
+    <div class="provider-section-title">Custom / local</div>
+    ${customAndLocal.map((provider) => renderProviderNavItem(provider.id, selectedId)).join("")}
+    <button class="add-provider-card" data-add-provider="custom" type="button">
+      <span>+</span>
+      <strong>Add custom provider</strong>
+    </button>
+  `;
+}
+
+function renderProviderNavItem(providerId: string, selectedId: string): string {
+  const config = getProviderConfig(providerId);
+  const info = getProviderInfo(providerId);
+  const active = selectedId === providerId ? " active" : "";
+  const configured = config ? isProviderConfigured(config) : false;
+  const switchDisabled = !configured;
+  const switchChecked = !!config?.enabled && configured;
+  return `
+    <div class="provider-nav-row${active}">
+      <button class="provider-nav-item" data-provider-id="${escapeHtml(providerId)}">
+        <span class="provider-name">${escapeHtml(config ? providerDisplayName(config) : info?.name ?? providerId)}</span>
+        <span class="provider-meta">${escapeHtml(info?.badge ?? "Custom")}${!switchChecked ? " · disabled" : ""}${configured ? " · configured" : ""}</span>
+      </button>
+      <label class="provider-switch" title="${configured ? "Toggle model selection" : "Configure provider first"}">
+        <input type="checkbox" data-toggle-provider-id="${escapeHtml(providerId)}" ${switchChecked ? "checked" : ""} ${switchDisabled ? "disabled" : ""} />
+        <span></span>
+      </label>
+      ${isUserManagedProvider(providerId) ? `<button class="delete-icon-btn" data-delete-provider-id="${escapeHtml(providerId)}" title="Delete provider" aria-label="Delete provider">🗑</button>` : ""}
+    </div>
+  `;
+}
+
+async function addCustomProvider() {
+  const config = await invoke<AiConfig>("add_custom_provider", { localOllama: false });
+  applyConfig(config);
+  const customProviders = config.providers.filter((provider) => isCustomProvider(provider.id));
+  selectedSettingsProviderId = customProviders.at(-1)?.id ?? selectedSettingsProviderId;
+  settingsSection = "providers";
+  renderSettings();
+}
+
+async function setProviderEnabled(providerId: string, enabled: boolean) {
+  const provider = getProviderConfig(providerId);
+  if (!provider || !isProviderConfigured(provider)) return;
+  const config = await invoke<AiConfig>("save_provider_config", {
+    providerId,
+    name: provider.name ?? null,
+    enabled,
+    apiKey: provider.api_key,
+    model: provider.model,
+    endpointOverride: provider.endpoint_override ?? "",
+    activate: false,
+  });
+  applyConfig(config);
+}
+
+async function deleteCustomProvider(providerId: string) {
+  if (!confirm("Delete this custom provider?")) return;
+  const config = await invoke<AiConfig>("delete_custom_provider", { providerId });
+  applyConfig(config);
+  selectedSettingsProviderId = config.provider;
+  settingsSection = "providers";
+  renderSettings();
+  setStatus("Provider deleted");
+}
+
+function selectSettingsProvider(providerId: string) {
+  void persistVisibleProviderForm();
+  settingsSection = "providers";
+  selectedSettingsProviderId = providerId;
+  renderSettings();
+}
+
+async function persistVisibleProviderForm(reportErrors = false) {
+  if (!aiConfig || $("#settingsModal").hidden || !document.querySelector("#configModel")) return;
+  const apiKeyInput = document.querySelector<HTMLInputElement>("#configApiKey");
+  const modelInput = document.querySelector<HTMLInputElement>("#configModel");
+  const endpointInput = document.querySelector<HTMLInputElement>("#configEndpoint");
+  const enabledInput = document.querySelector<HTMLInputElement>("#configProviderEnabled");
+  if (!apiKeyInput || !modelInput) return;
+
+  const config = await invoke<AiConfig>("save_provider_config", {
+    providerId: selectedSettingsProviderId,
+    name: document.querySelector<HTMLInputElement>("#configProviderName")?.value ?? null,
+    enabled: enabledInput?.checked ?? true,
+    apiKey: apiKeyInput.value,
+    model: modelInput.value,
+    endpointOverride: endpointInput?.value ?? "",
+    activate: false,
+  }).catch((error) => {
+    // Keep navigation responsive; explicit save still reports errors.
+    if (reportErrors) throw error;
+    return null;
+  });
+  if (config) applyConfig(config);
+}
+
+async function refreshModelsForProvider(providerId: string, silent = false) {
+  try {
+    if (!silent) setStatus("Loading models...");
+    if (!$("#settingsModal").hidden && document.querySelector("#configModel") && providerId === selectedSettingsProviderId) {
+      await persistVisibleProviderForm();
+    }
+    const config = await invoke<AiConfig>("refresh_provider_models", { providerId });
+    applyConfig(config);
+    if (settingsSection === "models") {
+      renderSettingsModelList();
+    }
+    if (!silent) setStatus("Models refreshed");
+  } catch (error) {
+    if (!silent) setStatus(errorMessage(error));
+  }
+}
+
+async function refreshAllModels() {
+  if (!aiConfig) return;
+  setStatus("Refreshing models...");
+  for (const provider of aiConfig.providers) {
+    const info = getProviderInfo(provider.id);
+    if (info?.supports_model_refresh || isCustomProvider(provider.id)) {
+      await refreshModelsForProvider(provider.id, true);
+    }
+  }
+  renderSettings();
+  setStatus("Models refreshed");
+}
+
+function renderModelSettings() {
+  if (!aiConfig) return;
+  $("#providerSettingsList").innerHTML = aiConfig.providers
+    .map((config) => {
+      return `
+        <div class="provider-status-item">
+          <span class="provider-name">${escapeHtml(providerDisplayName(config))}</span>
+          <span class="provider-meta">${config?.models.length ?? 0} models${config?.models_updated_at ? " · refreshed" : ""}</span>
+        </div>
+      `;
+    })
+    .join("");
+
+  $("#providerSettingsBody").innerHTML = `
+    <div class="settings-fixed-panel">
+      <div class="settings-provider-head">
+        <div>
+          <h2>Select model</h2>
+          <p>Search all loaded models from all providers. Ollama Cloud is fully included in the free-only filter because it has a free usage allowance.</p>
+        </div>
+        <button id="refreshAllModelsBtn" type="button">Refresh all</button>
+      </div>
+      <div class="model-toolbar">
+        <input id="globalModelSearch" type="text" placeholder="Search models" />
+        <label class="toggle-row">
+          <input id="freeModelsOnly" type="checkbox" ${showOnlyFreeModels ? "checked" : ""} />
+          Free only
+        </label>
+      </div>
+      ${renderSelectedModelPanel()}
+    </div>
+    <div id="globalModelList"></div>
+  `;
+  renderSettingsModelList();
+}
+
+function renderSelectedModelPanel(): string {
+  if (!aiConfig?.model) {
+    return '<div class="selected-model-panel"><span>No model selected</span></div>';
+  }
+  const provider = getProviderConfig(aiConfig.provider);
+  const model = provider?.models.find((item) => item.id === aiConfig?.model);
+  return `
+    <div class="selected-model-panel">
+      <span>
+        <strong>Selected model</strong>
+        <small>${escapeHtml(provider ? providerDisplayName(provider) : aiConfig.provider)} / ${escapeHtml(model?.name ?? aiConfig.model)}</small>
+      </span>
+      <span class="model-tags">${model && provider ? renderModelTagsForEntry({ provider, providerInfo: getProviderInfo(provider.id), model }) : ""}</span>
+    </div>
+  `;
+}
+
+function renderSettingsModelList() {
+  const list = document.querySelector<HTMLDivElement>("#globalModelList");
+  if (!list) return;
+  const query = document.querySelector<HTMLInputElement>("#globalModelSearch")?.value.trim().toLowerCase() ?? "";
+  const entries = getAllModelEntries()
+    .filter((entry) => {
+      if (showOnlyFreeModels && !isFreeModelEntry(entry)) return false;
+      const haystack = `${entry.model.id} ${entry.model.name} ${normalizeModelTags(entry.model.tags).join(" ")} ${providerDisplayName(entry.provider)}`.toLowerCase();
+      return !query || haystack.includes(query);
+    })
+    .sort((a, b) => {
+      const providerCompare = providerDisplayName(a.provider).localeCompare(providerDisplayName(b.provider));
+      return providerCompare || a.model.name.localeCompare(b.model.name);
+    });
+
+  list.innerHTML = entries.length
+    ? entries.map(renderGlobalModelItem).join("")
+    : '<p class="empty">No models found. Refresh providers first or change the filter.</p>';
+}
+
+function renderGlobalModelItem(entry: ModelEntry): string {
+  const active = aiConfig?.provider === entry.provider.id && aiConfig.model === entry.model.id ? " active" : "";
+  return `
+    <button class="global-model-item${active}" data-model-provider-id="${escapeHtml(entry.provider.id)}" data-model-id="${escapeHtml(entry.model.id)}">
+      <span class="global-model-main">
+        <strong>${escapeHtml(entry.model.name)}</strong>
+        <small>${escapeHtml(entry.model.id)}</small>
+      </span>
+      <span class="global-model-provider">${escapeHtml(providerDisplayName(entry.provider))}</span>
+      <span class="model-tags">${renderModelTagsForEntry(entry)}</span>
+    </button>
+  `;
+}
+
+async function selectGlobalModel(providerId: string, modelId: string) {
+  const provider = getProviderConfig(providerId);
+  if (!provider) return;
+  const config = await invoke<AiConfig>("save_provider_config", {
+    providerId,
+    name: provider.name ?? null,
+    enabled: true,
+    apiKey: provider.api_key,
+    model: modelId,
+    endpointOverride: provider.endpoint_override ?? "",
+    activate: true,
+  });
+  applyConfig(config);
+  selectedSettingsProviderId = providerId;
+  settingsSection = "models";
+  renderSettings();
+  setStatus(`Model selected: ${modelId}`);
+}
+
+function getAllModelEntries(): ModelEntry[] {
+  if (!aiConfig) return [];
+  return aiConfig.providers.flatMap((provider) =>
+    isProviderConfigured(provider)
+      ? provider.models.map((model) => ({
+          provider,
+          providerInfo: getProviderInfo(provider.id),
+          model,
+        }))
+      : [],
+  );
+}
+
+function renderModelPreview(provider: AiProviderConfig): string {
+  if (!provider.models.length) {
+    return '<p class="empty">No models loaded yet.</p>';
+  }
+  return provider.models
+    .map((model) => `
+      <div class="settings-model-row">
+        <span>${escapeHtml(model.name)}</span>
+        <span>${renderModelTags(model)}</span>
+      </div>
+    `)
+    .join("");
+}
+
+function renderModelTags(model: AiModel): string {
+  const tags = [...model.tags];
+  if (model.free && !tags.includes("Free")) tags.unshift("Free");
+  return normalizeModelTags(tags).map((tag) => `<span class="model-tag">${escapeHtml(tag)}</span>`).join("");
+}
+
+function renderModelTagsForEntry(entry: ModelEntry): string {
+  const tags = [...entry.model.tags];
+  if (isFreeModelEntry(entry) && !tags.includes("Free")) tags.unshift("Free");
+  return normalizeModelTags(tags).map((tag) => `<span class="model-tag">${escapeHtml(tag)}</span>`).join("");
+}
+
+function isFreeModelEntry(entry: ModelEntry): boolean {
+  return entry.model.free || entry.provider.id === "ollama_cloud";
+}
+
+function renderModelRefreshState(provider: AiProviderConfig): string {
+  if (!provider.models_updated_at) return "Not refreshed yet";
+  return `Refreshed: ${new Date(provider.models_updated_at).toLocaleString()}`;
+}
+
+function normalizeModelTags(tags: string[]): string[] {
+  const tagNames: Record<string, string> = {
+    Kostenlos: "Free",
+    Schnell: "Fast",
+    Lokal: "Local",
+    "Günstig": "Low cost",
+  };
+  return [...new Set(tags.map((tag) => tagNames[tag] ?? tag).filter((tag) => !["Low cost", "Fast"].includes(tag)))];
+}
+
+function getProviderConfig(providerId: string): AiProviderConfig | undefined {
+  return aiConfig?.providers.find((provider) => provider.id === providerId);
+}
+
+function getProviderInfo(providerId: string): AiProviderInfo | undefined {
+  return aiProviders.find((provider) => provider.id === providerId);
+}
+
+function isCustomProvider(providerId: string): boolean {
+  return providerId === "custom" || providerId.startsWith("custom_");
+}
+
+function isUserManagedProvider(providerId: string): boolean {
+  return providerId === "ollama" || isCustomProvider(providerId);
+}
+
+function isProviderConfigured(provider: AiProviderConfig): boolean {
+  if (!provider.enabled) return false;
+  const info = getProviderInfo(provider.id);
+  if (info?.requires_api_key && !provider.api_key.trim()) return false;
+  if (isUserManagedProvider(provider.id) && !provider.endpoint_override?.trim()) return false;
+  return true;
+}
+
+function providerDisplayName(provider: AiProviderConfig): string {
+  return provider.name || getProviderInfo(provider.id)?.name || provider.id;
 }
 
 function openSummaryDialog() {
@@ -423,11 +934,13 @@ function showDetail(video: Video) {
   const detailUrl = $<HTMLAnchorElement>("#detailUrl");
   detailUrl.href = video.url;
   detailUrl.textContent = video.url;
+  const videoFallbackLink = $<HTMLAnchorElement>("#videoFallbackLink");
+  videoFallbackLink.href = video.url;
   $("#tabTranscript").innerHTML = renderTranscript(video.transcript, video.chapters);
   $("#tabSummary").innerHTML = video.summary
     ? markdownToHtml(video.summary)
     : '<p class="empty">Noch keine Zusammenfassung - klicke auf "Zusammenfassen lassen"</p>';
-  $<HTMLIFrameElement>("#videoPlayer").src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(video.video_id)}`;
+  $<HTMLIFrameElement>("#videoPlayer").src = buildYouTubeEmbedUrl(video.video_id);
   $<HTMLButtonElement>("#reloadTranscriptBtn").hidden = !!video.transcript;
   renderChapters(video.chapters);
   switchTab(activeTab);
@@ -458,12 +971,10 @@ function renderTranscript(raw?: string | null, chapters?: Chapter[] | null): str
 function renderChapters(chapters?: Chapter[] | null) {
   if (!chapters || chapters.length === 0) {
     chaptersPanel.hidden = true;
-    detailContent.classList.remove("with-chapters");
     return;
   }
 
   chaptersPanel.hidden = false;
-  detailContent.classList.add("with-chapters");
   chaptersList.innerHTML = chapters
     .map((chapter) => `
       <button class="chapter-item" data-start="${chapter.start}">
@@ -486,8 +997,24 @@ function renderChapters(chapters?: Chapter[] | null) {
 function seekVideo(seconds: number) {
   const video = getActiveVideo();
   if (!video) return;
-  $<HTMLIFrameElement>("#videoPlayer").src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(video.video_id)}?start=${Math.floor(seconds)}&autoplay=1`;
+  $<HTMLIFrameElement>("#videoPlayer").src = buildYouTubeEmbedUrl(video.video_id, seconds);
   switchTab("video");
+}
+
+function buildYouTubeEmbedUrl(videoId: string, startSeconds?: number): string {
+  const url = new URL(`https://www.youtube.com/embed/${encodeURIComponent(videoId)}`);
+  url.searchParams.set("rel", "0");
+
+  if (window.location.origin.startsWith("http")) {
+    url.searchParams.set("origin", window.location.origin);
+  }
+
+  if (startSeconds !== undefined) {
+    url.searchParams.set("start", Math.floor(startSeconds).toString());
+    url.searchParams.set("autoplay", "1");
+  }
+
+  return url.toString();
 }
 
 function switchTab(tab: TabName) {

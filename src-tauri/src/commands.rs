@@ -2,13 +2,18 @@ use reqwest::Client;
 use tauri::State;
 
 use crate::ai;
-use crate::models::{AiConfig, NewVideo, Video};
+use crate::models::{AiConfig, AiProviderInfo, NewVideo, Video};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::youtube;
 
 #[tauri::command]
 pub fn get_config(paths: State<'_, AppPaths>) -> AppResult<AiConfig> {
     storage::get_ai_config(&paths)
+}
+
+#[tauri::command]
+pub fn get_ai_providers() -> Vec<AiProviderInfo> {
+    ai::provider_catalog()
 }
 
 #[tauri::command]
@@ -35,8 +40,78 @@ pub fn save_config(
             api_key,
             model,
             endpoint_override,
+            providers: Vec::new(),
         },
     )
+}
+
+#[tauri::command]
+pub fn save_provider_config(
+    paths: State<'_, AppPaths>,
+    provider_id: String,
+    name: Option<String>,
+    enabled: Option<bool>,
+    api_key: String,
+    model: String,
+    endpoint_override: Option<String>,
+    activate: Option<bool>,
+) -> AppResult<AiConfig> {
+    storage::update_provider_config(
+        &paths,
+        provider_id,
+        name,
+        enabled.unwrap_or(true),
+        api_key,
+        model,
+        endpoint_override,
+        activate.unwrap_or(false),
+    )
+}
+
+#[tauri::command]
+pub fn add_custom_provider(
+    paths: State<'_, AppPaths>,
+    local_ollama: Option<bool>,
+) -> AppResult<AiConfig> {
+    storage::add_custom_provider(&paths, local_ollama.unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn delete_custom_provider(
+    paths: State<'_, AppPaths>,
+    provider_id: String,
+) -> AppResult<AiConfig> {
+    storage::delete_custom_provider(&paths, &provider_id)
+}
+
+#[tauri::command]
+pub async fn refresh_provider_models(
+    paths: State<'_, AppPaths>,
+    provider_id: String,
+) -> AppResult<AiConfig> {
+    let config = storage::get_ai_config(&paths)?;
+    let provider = storage::provider_config(&config, &provider_id)
+        .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
+    let mut request_config = config.clone();
+    request_config.provider = provider.id.clone();
+    request_config.api_key = provider.api_key.clone();
+    request_config.model = provider.model.clone();
+    request_config.endpoint_override = provider.endpoint_override.clone();
+
+    let client = http_client()?;
+    match ai::fetch_models(&client, &request_config, &provider_id).await {
+        Ok(models) => storage::update_provider_models(
+            &paths,
+            &provider_id,
+            models,
+            chrono::Utc::now().to_rfc3339(),
+            None,
+        ),
+        Err(error) => {
+            let _ = storage::set_provider_error(&paths, &provider_id, error.clone());
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
