@@ -56,6 +56,7 @@ pub fn save_provider_config(
     model: String,
     endpoint_override: Option<String>,
     activate: Option<bool>,
+    account_tier: Option<String>,
 ) -> AppResult<AiConfig> {
     storage::update_provider_config(
         &paths,
@@ -67,6 +68,7 @@ pub fn save_provider_config(
         model,
         endpoint_override,
         activate.unwrap_or(false),
+        account_tier,
     )
 }
 
@@ -90,6 +92,7 @@ pub fn delete_custom_provider(
 pub async fn refresh_provider_models(
     paths: State<'_, AppPaths>,
     provider_id: String,
+    force_reprobe: Option<bool>,
 ) -> AppResult<AiConfig> {
     let config = storage::get_ai_config(&paths)?;
     let provider = storage::provider_config(&config, &provider_id)
@@ -99,9 +102,23 @@ pub async fn refresh_provider_models(
     request_config.api_key = provider.api_key.clone();
     request_config.model = provider.model.clone();
     request_config.endpoint_override = provider.endpoint_override.clone();
+    let existing_models = provider.models.clone();
+    let account_tier = provider
+        .account_tier
+        .clone()
+        .unwrap_or_else(|| "free".to_string());
 
     let client = http_client()?;
-    match ai::fetch_models(&client, &request_config, &provider_id).await {
+    match ai::fetch_models(
+        &client,
+        &request_config,
+        &provider_id,
+        &existing_models,
+        &account_tier,
+        force_reprobe.unwrap_or(false),
+    )
+    .await
+    {
         Ok(models) => storage::update_provider_models(
             &paths,
             &provider_id,

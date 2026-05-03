@@ -38,6 +38,8 @@ pub struct AiProviderConfig {
     pub models: Vec<AiModel>,
     pub models_updated_at: Option<String>,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub account_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +87,7 @@ pub fn default_ai_provider_configs() -> Vec<AiProviderConfig> {
             models: Vec::new(),
             models_updated_at: None,
             last_error: None,
+            account_tier: None,
         },
         AiProviderConfig {
             id: "openrouter".to_string(),
@@ -97,6 +100,7 @@ pub fn default_ai_provider_configs() -> Vec<AiProviderConfig> {
             models: Vec::new(),
             models_updated_at: None,
             last_error: None,
+            account_tier: None,
         },
         AiProviderConfig {
             id: "opencode_zen".to_string(),
@@ -109,6 +113,7 @@ pub fn default_ai_provider_configs() -> Vec<AiProviderConfig> {
             models: Vec::new(),
             models_updated_at: None,
             last_error: None,
+            account_tier: None,
         },
         AiProviderConfig {
             id: "opencode_go".to_string(),
@@ -121,6 +126,7 @@ pub fn default_ai_provider_configs() -> Vec<AiProviderConfig> {
             models: Vec::new(),
             models_updated_at: None,
             last_error: None,
+            account_tier: None,
         },
     ]
 }

@@ -25,7 +25,10 @@ type AiProviderConfig = {
   models: AiModel[];
   models_updated_at?: string | null;
   last_error?: string | null;
+  account_tier?: AccountTier | null;
 };
+
+type AccountTier = "free" | "pro" | "max";
 
 type AiModel = {
   id: string;
@@ -396,6 +399,9 @@ function bindEvents() {
     if (target.closest("#settingsRefreshModelsBtn")) {
       void refreshModelsForProvider(selectedSettingsProviderId);
     }
+    if (target.closest("#settingsReprobeBtn")) {
+      void refreshModelsForProvider(selectedSettingsProviderId, false, true);
+    }
     if (target.closest("#toggleApiKeyVisibility")) {
       toggleApiKeyVisibility(selectedSettingsProviderId);
     }
@@ -425,6 +431,15 @@ function bindEvents() {
   });
   $("#providerSettingsBody").addEventListener("change", (event) => {
     const target = event.target;
+    if (target instanceof HTMLSelectElement && target.id === "configAccountTier") {
+      void persistVisibleProviderForm(true)
+        .then(() => {
+          setStatus("Konfiguration gespeichert");
+          renderSettings();
+        })
+        .catch((err) => setStatus(errorMessage(err)));
+      return;
+    }
     if (!(target instanceof HTMLInputElement)) return;
   if (target.id === "freeModelsOnly") {
       showOnlyFreeModels = target.checked;
@@ -658,8 +673,10 @@ function renderSettings() {
       <label class="field-row" ${info?.endpoint_editable || isCustomProvider(selected.id) ? "" : "hidden"}><span class="field-label">Chat endpoint</span>
         <input id="configEndpoint" type="text" value="${escapeHtml(selected.endpoint_override ?? "")}" placeholder="${escapeHtml(info?.default_endpoint ?? "https://example.com/v1/chat/completions")}" />
       </label>
+      ${renderAccountTierField(selected)}
       <div class="provider-actions">
         <button id="settingsRefreshModelsBtn" type="button">Refresh models</button>
+        ${selected.id === "ollama_cloud" && providerAccountTier(selected) === "free" ? '<button id="settingsReprobeBtn" type="button" title="Re-run availability probe for all models">Re-probe availability</button>' : ""}
         <span>${renderModelRefreshState(selected)}</span>
       </div>
       ${selected.last_error ? `<p class="settings-error">${escapeHtml(selected.last_error)}</p>` : ""}
@@ -784,6 +801,7 @@ async function persistVisibleProviderForm(reportErrors = false) {
     ? (apiKeyRequiredInput?.checked ?? false)
     : providerRequiresApiKey(getProviderConfig(selectedSettingsProviderId));
 
+  const tierSelect = document.querySelector<HTMLSelectElement>("#configAccountTier");
   const config = await invoke<AiConfig>("save_provider_config", {
     providerId: selectedSettingsProviderId,
     name: document.querySelector<HTMLInputElement>("#configProviderName")?.value ?? null,
@@ -793,6 +811,7 @@ async function persistVisibleProviderForm(reportErrors = false) {
     model: modelInput.value,
     endpointOverride: endpointInput?.value ?? "",
     activate: false,
+    accountTier: tierSelect?.value ?? null,
   }).catch((error) => {
     // Keep navigation responsive; explicit save still reports errors.
     if (reportErrors) throw error;
@@ -801,18 +820,18 @@ async function persistVisibleProviderForm(reportErrors = false) {
   if (config) applyConfig(config);
 }
 
-async function refreshModelsForProvider(providerId: string, silent = false) {
+async function refreshModelsForProvider(providerId: string, silent = false, forceReprobe = false) {
   try {
-    if (!silent) setStatus("Loading models...");
+    if (!silent) setStatus(forceReprobe ? "Re-probing model availability..." : "Loading models...");
     if (!$("#settingsModal").hidden && document.querySelector("#configModel") && providerId === selectedSettingsProviderId) {
       await persistVisibleProviderForm();
     }
-    const config = await invoke<AiConfig>("refresh_provider_models", { providerId });
+    const config = await invoke<AiConfig>("refresh_provider_models", { providerId, forceReprobe });
     applyConfig(config);
     if (settingsSection === "models") {
       renderSettingsModelList();
     }
-    if (!silent) setStatus("Models refreshed");
+    if (!silent) setStatus(forceReprobe ? "Availability re-probed" : "Models refreshed");
   } catch (error) {
     if (!silent) setStatus(errorMessage(error));
   }
@@ -1062,7 +1081,7 @@ function renderModelPreview(provider: AiProviderConfig): string {
             <strong>${escapeHtml(model.name)}</strong>
             <small>${escapeHtml(model.id)}</small>
           </span>
-          <span class="model-tags">${renderModelTags(model)}</span>
+          <span class="model-tags">${renderModelTags(model, provider)}</span>
           <span class="settings-model-actions">
             <button type="button" data-model-provider-id="${escapeHtml(provider.id)}" data-model-id="${escapeHtml(model.id)}" ${active ? "disabled" : ""}>Use</button>
             <button type="button" data-test-chat-provider-id="${escapeHtml(provider.id)}" data-test-chat-model-id="${escapeHtml(model.id)}">Test chat</button>
@@ -1073,22 +1092,35 @@ function renderModelPreview(provider: AiProviderConfig): string {
     .join("");
 }
 
-function renderModelTags(model: AiModel): string {
-  const tags = modelDisplayTags(model);
+function renderModelTags(model: AiModel, provider?: AiProviderConfig): string {
+  const tags = modelDisplayTags(model, provider);
   return normalizeModelTags(tags).map((tag) => `<span class="model-tag">${escapeHtml(tag)}</span>`).join("");
 }
 
 function renderModelTagsForEntry(entry: ModelEntry): string {
-  const tags = modelDisplayTags(entry.model);
+  const tags = modelDisplayTags(entry.model, entry.provider);
   return normalizeModelTags(tags).map((tag) => `<span class="model-tag">${escapeHtml(tag)}</span>`).join("");
 }
 
 function isFreeModelEntry(entry: ModelEntry): boolean {
+  if (suppressAvailabilityTags(entry.provider)) return false;
   return entry.model.free;
 }
 
-function modelDisplayTags(model: AiModel): string[] {
+function suppressAvailabilityTags(provider: AiProviderConfig): boolean {
+  return provider.id === "ollama_cloud" && providerAccountTier(provider) !== "free";
+}
+
+function providerAccountTier(provider: AiProviderConfig): AccountTier {
+  return (provider.account_tier as AccountTier | null | undefined) ?? "free";
+}
+
+function modelDisplayTags(model: AiModel, provider?: AiProviderConfig): string[] {
   const tags = [...model.tags];
+  const suppress = provider ? suppressAvailabilityTags(provider) : false;
+  if (suppress) {
+    return tags.filter((tag) => tag !== "Free" && tag !== "Subscription required" && tag !== "Probe unknown");
+  }
   if (model.free && !tags.includes("Free")) tags.unshift("Free");
   if (model.availability === "subscription_required" && !tags.includes("Subscription required")) {
     tags.push("Subscription required");
@@ -1097,6 +1129,22 @@ function modelDisplayTags(model: AiModel): string[] {
     tags.push("Probe unknown");
   }
   return tags;
+}
+
+function renderAccountTierField(provider: AiProviderConfig): string {
+  if (provider.id !== "ollama_cloud") return "";
+  const tier = providerAccountTier(provider);
+  const option = (value: AccountTier, label: string) =>
+    `<option value="${value}" ${tier === value ? "selected" : ""}>${label}</option>`;
+  return `
+    <label class="field-row"><span class="field-label">Plan</span>
+      <select id="configAccountTier">
+        ${option("free", "Free")}
+        ${option("pro", "Pro")}
+        ${option("max", "Max")}
+      </select>
+    </label>
+  `;
 }
 
 function renderModelRefreshState(provider: AiProviderConfig): string {

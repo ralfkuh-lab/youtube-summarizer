@@ -201,7 +201,20 @@ async fn refresh_models_impl(
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|err| format!("HTTP-Client konnte nicht erstellt werden: {err}"))?;
-    let models = ai::fetch_models(&client, &request_config, provider_id).await?;
+    let existing_models = provider.models.clone();
+    let account_tier = provider
+        .account_tier
+        .clone()
+        .unwrap_or_else(|| "free".to_string());
+    let models = ai::fetch_models(
+        &client,
+        &request_config,
+        provider_id,
+        &existing_models,
+        &account_tier,
+        false,
+    )
+    .await?;
     storage::update_provider_models(
         paths,
         provider_id,

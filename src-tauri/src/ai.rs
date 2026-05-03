@@ -88,6 +88,9 @@ pub async fn fetch_models(
     client: &Client,
     ai: &AiConfig,
     provider_id: &str,
+    existing: &[AiModel],
+    account_tier: &str,
+    force_reprobe: bool,
 ) -> AppResult<Vec<AiModel>> {
     let mut request = client.get(models_endpoint(ai, provider_id)?);
     if !ai.api_key.trim().is_empty() {
@@ -112,7 +115,21 @@ pub async fn fetch_models(
 
     let mut models = parse_models(provider_id, &body)?;
     if provider_id == "ollama_cloud" {
-        probe_ollama_cloud_free(client, ai.api_key.trim(), &mut models).await;
+        if !force_reprobe {
+            let existing_by_id: std::collections::HashMap<&str, &AiModel> =
+                existing.iter().map(|m| (m.id.as_str(), m)).collect();
+            for model in models.iter_mut() {
+                if let Some(prev) = existing_by_id.get(model.id.as_str()) {
+                    if prev.availability.is_some() {
+                        model.availability = prev.availability.clone();
+                        model.free = prev.free;
+                    }
+                }
+            }
+        }
+        if account_tier == "free" {
+            probe_ollama_cloud_free(client, ai.api_key.trim(), &mut models).await;
+        }
     }
     Ok(models)
 }
@@ -191,7 +208,7 @@ async fn probe_ollama_cloud_free(client: &Client, api_key: &str, models: &mut [A
     }
     let permits = Arc::new(Semaphore::new(6));
     let mut tasks: JoinSet<(String, &'static str)> = JoinSet::new();
-    for model in models.iter() {
+    for model in models.iter().filter(|m| m.availability.is_none()) {
         let id = model.id.clone();
         let client = client.clone();
         let key = api_key.to_string();
@@ -235,10 +252,11 @@ async fn probe_ollama_cloud_free(client: &Client, api_key: &str, models: &mut [A
                 model.free = false;
                 model.availability = Some("subscription_required".to_string());
             }
-            _ => {
+            Some(_) => {
                 model.free = false;
                 model.availability = Some("unknown".to_string());
             }
+            None => {}
         }
     }
 }

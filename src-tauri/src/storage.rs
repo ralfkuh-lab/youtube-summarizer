@@ -103,6 +103,7 @@ pub fn update_provider_config(
     model: String,
     endpoint_override: Option<String>,
     activate: bool,
+    account_tier: Option<String>,
 ) -> AppResult<AiConfig> {
     let mut config = load_config(paths)?;
     let mut ai = normalize_ai_config(config.ai);
@@ -115,6 +116,8 @@ pub fn update_provider_config(
         provider_config(&ai, &provider_id).and_then(|provider| provider.name.clone());
     let existing_api_key_required =
         provider_config(&ai, &provider_id).map(|provider| provider.api_key_required);
+    let existing_account_tier =
+        provider_config(&ai, &provider_id).and_then(|provider| provider.account_tier.clone());
     upsert_provider(
         &mut ai,
         AiProviderConfig {
@@ -130,6 +133,7 @@ pub fn update_provider_config(
             models: existing_models,
             models_updated_at: existing_models_updated_at,
             last_error: None,
+            account_tier: account_tier.or(existing_account_tier),
         },
     );
     sync_shared_provider_secrets(&mut ai, &provider_id);
@@ -167,6 +171,7 @@ pub fn add_custom_provider(paths: &AppPaths, local_ollama: bool) -> AppResult<Ai
                 models: Vec::new(),
                 models_updated_at: None,
                 last_error: None,
+                account_tier: None,
             },
         );
     } else {
@@ -190,6 +195,7 @@ pub fn add_custom_provider(paths: &AppPaths, local_ollama: bool) -> AppResult<Ai
                 models: Vec::new(),
                 models_updated_at: None,
                 last_error: None,
+                account_tier: None,
             },
         );
     }
