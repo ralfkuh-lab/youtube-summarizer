@@ -10,7 +10,11 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.0"
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-opener": "^2.5.4",
+    "@types/dompurify": "^3.0.5",
+    "dompurify": "^3.4.2",
+    "marked": "^18.0.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",

@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import "./styles.css";
+
+marked.setOptions({ gfm: true, breaks: false });
 
 type AiConfig = {
   provider: string;
@@ -34,6 +39,7 @@ type AiProviderInfo = {
   description: string;
   badge: string;
   homepage_url?: string | null;
+  default_endpoint?: string | null;
   requires_api_key: boolean;
   supports_model_refresh: boolean;
   endpoint_editable: boolean;
@@ -68,6 +74,9 @@ type Video = {
   transcript?: string | null;
   chapters?: Chapter[] | null;
   summary?: string | null;
+  summary_provider?: string | null;
+  summary_model?: string | null;
+  published_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -115,8 +124,10 @@ app.innerHTML = `
           <div class="detail-title-block">
             <h2 id="detailTitle"></h2>
             <a id="detailUrl" href="#" target="_blank" rel="noreferrer"></a>
+            <span id="detailPublishedMeta" class="detail-summary-meta" hidden></span>
+            <span id="detailSummaryMeta" class="detail-summary-meta" hidden></span>
           </div>
-          <button id="deleteBtn" class="icon-btn danger" title="Video entfernen" aria-label="Video entfernen">×</button>
+          <button id="deleteBtn" class="delete-icon-btn" title="Video entfernen" aria-label="Video entfernen">🗑</button>
         </div>
 
         <div id="tabBar">
@@ -174,8 +185,7 @@ app.innerHTML = `
       </div>
       <div class="settings-main" id="providerSettingsBody"></div>
       <div class="modal-actions">
-        <button id="configSave">Speichern</button>
-        <button id="configCancel">Abbrechen</button>
+        <button id="configClose">Schließen</button>
       </div>
     </div>
   </div>
@@ -217,6 +227,17 @@ app.innerHTML = `
       </div>
     </div>
   </div>
+
+  <div id="confirmModal" class="modal" hidden>
+    <div class="modal-content confirm-content">
+      <h2 id="confirmTitle">Bestätigen</h2>
+      <p id="confirmMessage"></p>
+      <div class="modal-actions">
+        <button id="confirmOk">OK</button>
+        <button id="confirmCancel">Abbrechen</button>
+      </div>
+    </div>
+  </div>
 `;
 
 const $ = <T extends HTMLElement>(selector: string): T => {
@@ -226,6 +247,53 @@ const $ = <T extends HTMLElement>(selector: string): T => {
   }
   return element;
 };
+
+type ConfirmOptions = {
+  title?: string;
+  okLabel?: string;
+  cancelLabel?: string;
+};
+
+function confirmDialog(message: string, options: ConfirmOptions = {}): Promise<boolean> {
+  const modal = $<HTMLDivElement>("#confirmModal");
+  const titleEl = $<HTMLHeadingElement>("#confirmTitle");
+  const messageEl = $<HTMLParagraphElement>("#confirmMessage");
+  const okBtn = $<HTMLButtonElement>("#confirmOk");
+  const cancelBtn = $<HTMLButtonElement>("#confirmCancel");
+
+  titleEl.textContent = options.title ?? "Bestätigen";
+  messageEl.textContent = message;
+  okBtn.textContent = options.okLabel ?? "OK";
+  cancelBtn.textContent = options.cancelLabel ?? "Abbrechen";
+
+  return new Promise<boolean>((resolve) => {
+    const cleanup = (result: boolean) => {
+      modal.hidden = true;
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      modal.removeEventListener("click", onBackdrop);
+      document.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onBackdrop = (e: MouseEvent) => {
+      if (e.target === modal) cleanup(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") cleanup(false);
+      else if (e.key === "Enter") cleanup(true);
+    };
+
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    modal.addEventListener("click", onBackdrop);
+    document.addEventListener("keydown", onKey);
+
+    modal.hidden = false;
+    queueMicrotask(() => okBtn.focus());
+  });
+}
 
 const videoList = $<HTMLDivElement>("#videoList");
 const detailPlaceholder = $<HTMLDivElement>("#detailPlaceholder");
@@ -247,8 +315,7 @@ function bindEvents() {
   });
 
   $("#settingsBtn").addEventListener("click", () => void openSettings());
-  $("#configSave").addEventListener("click", () => void saveSettings());
-  $("#configCancel").addEventListener("click", () => hideModal("#settingsModal"));
+  $("#configClose").addEventListener("click", () => hideModal("#settingsModal"));
   document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
     button.addEventListener("click", () => {
       const section = button.dataset.settingsSection;
@@ -267,7 +334,7 @@ function bindEvents() {
       void addCustomProvider();
       return;
     }
-    if (target.closest(".provider-switch")) {
+    if (target.closest(".provider-toggle")) {
       return;
     }
     const deleteButton = target.closest<HTMLElement>("[data-delete-provider-id]");
@@ -314,6 +381,16 @@ function bindEvents() {
     if (target.id === "freeModelsOnly") {
       showOnlyFreeModels = target.checked;
       renderSettingsModelList();
+      return;
+    }
+    if (
+      target.id === "configApiKey" ||
+      target.id === "configEndpoint" ||
+      target.id === "configProviderName"
+    ) {
+      void persistVisibleProviderForm(true)
+        .then(() => setStatus("Konfiguration gespeichert"))
+        .catch((err) => setStatus(errorMessage(err)));
     }
   });
 
@@ -330,6 +407,17 @@ function bindEvents() {
 
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab as TabName));
+  });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const link = target.closest<HTMLAnchorElement>("a[href]");
+    if (!link) return;
+    const href = link.getAttribute("href");
+    if (!href || !/^https?:\/\//i.test(href)) return;
+    event.preventDefault();
+    void openUrl(href).catch((err) => setStatus(errorMessage(err)));
   });
 
   $("#tabTranscript").addEventListener("click", (event) => {
@@ -399,7 +487,8 @@ async function selectVideo(id: number) {
 }
 
 async function deleteActiveVideo() {
-  if (activeVideoId === null || !confirm("Video wirklich löschen?")) return;
+  if (activeVideoId === null) return;
+  if (!(await confirmDialog("Video wirklich löschen?", { title: "Video löschen", okLabel: "Löschen" }))) return;
   const id = activeVideoId;
   setBusy(true, "Video wird gelöscht...");
   try {
@@ -456,18 +545,6 @@ async function openSettings() {
   }
 }
 
-async function saveSettings() {
-  try {
-    if (settingsSection === "providers") {
-      await persistVisibleProviderForm(true);
-    }
-    hideModal("#settingsModal");
-    setStatus("Konfiguration gespeichert");
-  } catch (error) {
-    setStatus(errorMessage(error));
-  }
-}
-
 function applyConfig(config: AiConfig) {
   aiConfig = config;
   const provider = getProviderInfo(config.provider);
@@ -501,23 +578,19 @@ function renderSettings() {
           <p>${escapeHtml(info?.description ?? "OpenAI-compatible custom provider.")}</p>
         </div>
         <span class="provider-head-actions">
-          ${info?.homepage_url && info.recommended ? `<a class="provider-home-link" href="${escapeHtml(info.homepage_url)}" target="_blank" rel="noreferrer">Provider website</a>` : ""}
+          ${info?.homepage_url && info.recommended ? `<a class="provider-home-link" href="${escapeHtml(info.homepage_url)}">Provider website</a>` : ""}
           ${info?.recommended ? '<span class="provider-badge">Recommended</span>' : ""}
         </span>
       </div>
       <label ${isCustomProvider(selected.id) ? "" : "hidden"}>Name
         <input id="configProviderName" type="text" value="${escapeHtml(providerDisplayName(selected))}" placeholder="Custom provider name" />
       </label>
-      <label class="provider-enabled-row">
-        <span>Enabled</span>
-        <input id="configProviderEnabled" type="checkbox" ${selected.enabled ? "checked" : ""} />
-      </label>
       <label>API key
         <input id="configApiKey" type="password" value="${escapeHtml(selected.api_key)}" placeholder="${info?.requires_api_key ? "Required" : "Optional"}" />
       </label>
       <input id="configModel" type="hidden" value="${escapeHtml(selected.model)}" />
       <label ${info?.endpoint_editable || isCustomProvider(selected.id) ? "" : "hidden"}>Chat endpoint
-        <input id="configEndpoint" type="text" value="${escapeHtml(selected.endpoint_override ?? "")}" placeholder="https://.../v1/chat/completions" />
+        <input id="configEndpoint" type="text" value="${escapeHtml(selected.endpoint_override ?? "")}" placeholder="${escapeHtml(info?.default_endpoint ?? "https://example.com/v1/chat/completions")}" />
       </label>
       <div class="provider-actions">
         <button id="settingsRefreshModelsBtn" type="button">Refresh models</button>
@@ -555,18 +628,13 @@ function renderProviderNavItem(providerId: string, selectedId: string): string {
   const info = getProviderInfo(providerId);
   const active = selectedId === providerId ? " active" : "";
   const configured = config ? isProviderConfigured(config) : false;
-  const switchDisabled = !configured;
-  const switchChecked = !!config?.enabled && configured;
+  const enabled = !!config?.enabled && configured;
   return `
     <div class="provider-nav-row${active}">
       <button class="provider-nav-item" data-provider-id="${escapeHtml(providerId)}">
         <span class="provider-name">${escapeHtml(config ? providerDisplayName(config) : info?.name ?? providerId)}</span>
-        <span class="provider-meta">${escapeHtml(info?.badge ?? "Custom")}${!switchChecked ? " · disabled" : ""}${configured ? " · configured" : ""}</span>
+        <span class="provider-meta">${escapeHtml(info?.badge ?? "Custom")}${!enabled ? " · disabled" : ""}${configured ? " · configured" : ""}</span>
       </button>
-      <label class="provider-switch" title="${configured ? "Toggle model selection" : "Configure provider first"}">
-        <input type="checkbox" data-toggle-provider-id="${escapeHtml(providerId)}" ${switchChecked ? "checked" : ""} ${switchDisabled ? "disabled" : ""} />
-        <span></span>
-      </label>
       ${isUserManagedProvider(providerId) ? `<button class="delete-icon-btn" data-delete-provider-id="${escapeHtml(providerId)}" title="Delete provider" aria-label="Delete provider">🗑</button>` : ""}
     </div>
   `;
@@ -597,7 +665,7 @@ async function setProviderEnabled(providerId: string, enabled: boolean) {
 }
 
 async function deleteCustomProvider(providerId: string) {
-  if (!confirm("Delete this custom provider?")) return;
+  if (!(await confirmDialog("Diesen Custom-Provider wirklich löschen?", { title: "Provider löschen", okLabel: "Löschen" }))) return;
   const config = await invoke<AiConfig>("delete_custom_provider", { providerId });
   applyConfig(config);
   selectedSettingsProviderId = config.provider;
@@ -618,13 +686,13 @@ async function persistVisibleProviderForm(reportErrors = false) {
   const apiKeyInput = document.querySelector<HTMLInputElement>("#configApiKey");
   const modelInput = document.querySelector<HTMLInputElement>("#configModel");
   const endpointInput = document.querySelector<HTMLInputElement>("#configEndpoint");
-  const enabledInput = document.querySelector<HTMLInputElement>("#configProviderEnabled");
   if (!apiKeyInput || !modelInput) return;
+  const currentEnabled = getProviderConfig(selectedSettingsProviderId)?.enabled ?? true;
 
   const config = await invoke<AiConfig>("save_provider_config", {
     providerId: selectedSettingsProviderId,
     name: document.querySelector<HTMLInputElement>("#configProviderName")?.value ?? null,
-    enabled: enabledInput?.checked ?? true,
+    enabled: currentEnabled,
     apiKey: apiKeyInput.value,
     model: modelInput.value,
     endpointOverride: endpointInput?.value ?? "",
@@ -671,10 +739,19 @@ function renderModelSettings() {
   if (!aiConfig) return;
   $("#providerSettingsList").innerHTML = aiConfig.providers
     .map((config) => {
+      const configured = isProviderConfigured(config);
+      const enabled = !!config.enabled && configured;
+      const title = configured ? "Enable / disable provider" : "Configure provider first";
       return `
         <div class="provider-status-item">
-          <span class="provider-name">${escapeHtml(providerDisplayName(config))}</span>
-          <span class="provider-meta">${config?.models.length ?? 0} models${config?.models_updated_at ? " · refreshed" : ""}</span>
+          <div class="provider-status-text">
+            <span class="provider-name">${escapeHtml(providerDisplayName(config))}</span>
+            <span class="provider-meta">${config?.models.length ?? 0} models${config?.models_updated_at ? " · refreshed" : ""}</span>
+          </div>
+          <label class="provider-toggle" title="${escapeHtml(title)}">
+            <input type="checkbox" data-toggle-provider-id="${escapeHtml(config.id)}" ${enabled ? "checked" : ""} ${configured ? "" : "disabled"} />
+            <span class="provider-toggle-track"><span class="provider-toggle-thumb"></span></span>
+          </label>
         </div>
       `;
     })
@@ -776,7 +853,7 @@ async function selectGlobalModel(providerId: string, modelId: string) {
 function getAllModelEntries(): ModelEntry[] {
   if (!aiConfig) return [];
   return aiConfig.providers.flatMap((provider) =>
-    isProviderConfigured(provider)
+    provider.enabled && isProviderConfigured(provider)
       ? provider.models.map((model) => ({
           provider,
           providerInfo: getProviderInfo(provider.id),
@@ -813,7 +890,7 @@ function renderModelTagsForEntry(entry: ModelEntry): string {
 }
 
 function isFreeModelEntry(entry: ModelEntry): boolean {
-  return entry.model.free || entry.provider.id === "ollama_cloud";
+  return entry.model.free;
 }
 
 function renderModelRefreshState(provider: AiProviderConfig): string {
@@ -848,10 +925,10 @@ function isUserManagedProvider(providerId: string): boolean {
 }
 
 function isProviderConfigured(provider: AiProviderConfig): boolean {
-  if (!provider.enabled) return false;
   const info = getProviderInfo(provider.id);
   if (info?.requires_api_key && !provider.api_key.trim()) return false;
   if (isUserManagedProvider(provider.id) && !provider.endpoint_override?.trim()) return false;
+  if (!provider.models.length) return false;
   return true;
 }
 
@@ -866,14 +943,46 @@ function openSummaryDialog() {
     setStatus("Kein Transkript vorhanden - bitte Video neu hinzufügen");
     return;
   }
+  loadSummarySettings();
   updateSummaryPrompt();
   showModal("#summaryModal");
+}
+
+const SUMMARY_SETTINGS_KEY = "summarySettings";
+
+type SummarySettings = {
+  detail: string;
+  lang: string;
+  useChapters: string;
+};
+
+function loadSummarySettings() {
+  try {
+    const raw = localStorage.getItem(SUMMARY_SETTINGS_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw) as Partial<SummarySettings>;
+    if (saved.detail) $<HTMLSelectElement>("#summaryDetail").value = saved.detail;
+    if (saved.lang) $<HTMLSelectElement>("#summaryLang").value = saved.lang;
+    if (saved.useChapters) $<HTMLSelectElement>("#summaryUseChapters").value = saved.useChapters;
+  } catch {
+    // ignore corrupt entries
+  }
+}
+
+function saveSummarySettings() {
+  const settings: SummarySettings = {
+    detail: $<HTMLSelectElement>("#summaryDetail").value,
+    lang: $<HTMLSelectElement>("#summaryLang").value,
+    useChapters: $<HTMLSelectElement>("#summaryUseChapters").value,
+  };
+  localStorage.setItem(SUMMARY_SETTINGS_KEY, JSON.stringify(settings));
 }
 
 async function startSummary() {
   const video = getActiveVideo();
   if (!video || busy) return;
 
+  saveSummarySettings();
   setBusy(true, "Zusammenfassung wird erstellt...");
   hideModal("#summaryModal");
   try {
@@ -934,6 +1043,23 @@ function showDetail(video: Video) {
   const detailUrl = $<HTMLAnchorElement>("#detailUrl");
   detailUrl.href = video.url;
   detailUrl.textContent = video.url;
+  const publishedMeta = $("#detailPublishedMeta");
+  if (video.published_at) {
+    publishedMeta.textContent = `Veröffentlicht: ${formatDate(video.published_at)}`;
+    publishedMeta.hidden = false;
+  } else {
+    publishedMeta.textContent = "";
+    publishedMeta.hidden = true;
+  }
+  const summaryMeta = $("#detailSummaryMeta");
+  if (video.summary && (video.summary_provider || video.summary_model)) {
+    const parts = [video.summary_provider, video.summary_model].filter((part): part is string => !!part);
+    summaryMeta.textContent = `Zusammengefasst mit: ${parts.join(" / ")}`;
+    summaryMeta.hidden = false;
+  } else {
+    summaryMeta.textContent = "";
+    summaryMeta.hidden = true;
+  }
   const videoFallbackLink = $<HTMLAnchorElement>("#videoFallbackLink");
   videoFallbackLink.href = video.url;
   $("#tabTranscript").innerHTML = renderTranscript(video.transcript, video.chapters);
@@ -1062,67 +1188,10 @@ function updateSummaryPrompt() {
 }
 
 function markdownToHtml(markdown: string): string {
-  const lines = escapeHtml(markdown).split(/\r?\n/);
-  let html = "";
-  let listType: "ul" | "ol" | null = null;
-
-  const closeList = () => {
-    if (listType) {
-      html += `</${listType}>`;
-      listType = null;
-    }
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      closeList();
-      continue;
-    }
-
-    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
-    if (heading) {
-      closeList();
-      const level = heading[1].length;
-      html += `<h${level}>${inlineMarkdown(heading[2])}</h${level}>`;
-      continue;
-    }
-
-    const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
-    if (bullet) {
-      if (listType !== "ul") {
-        closeList();
-        html += "<ul>";
-        listType = "ul";
-      }
-      html += `<li>${inlineMarkdown(bullet[1])}</li>`;
-      continue;
-    }
-
-    const numbered = /^\d+\.\s+(.+)$/.exec(trimmed);
-    if (numbered) {
-      if (listType !== "ol") {
-        closeList();
-        html += "<ol>";
-        listType = "ol";
-      }
-      html += `<li>${inlineMarkdown(numbered[1])}</li>`;
-      continue;
-    }
-
-    closeList();
-    html += `<p>${inlineMarkdown(trimmed)}</p>`;
-  }
-
-  closeList();
-  return html;
-}
-
-function inlineMarkdown(value: string): string {
-  return value
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  const rendered = marked.parse(markdown, { async: false }) as string;
+  return DOMPurify.sanitize(rendered, {
+    ADD_ATTR: ["target", "rel"],
+  });
 }
 
 function showModal(selector: string) {
@@ -1153,6 +1222,12 @@ function setStatus(message: string) {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
 function escapeHtml(value: unknown): string {

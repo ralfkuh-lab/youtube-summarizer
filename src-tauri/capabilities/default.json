@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for the main application window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "opener:default", "opener:allow-open-url"]
 }
