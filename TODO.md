@@ -39,6 +39,8 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Turned the model test dialog into a small multi-turn chat without explicit response token limits.
 - Unified the AI settings layout: provider form uses a two-column field-row grid, the global model list reuses the per-provider `.settings-model-row` structure inside the shared scrollable preview container, model selection updates buttons in place to preserve scroll position, and the chat test dialog now opens with "Hi" prefilled and selected.
 - Render the provider model-refresh timestamp as a relative time (e.g. "vor 3 Tagen") with the absolute date as tooltip.
+- Added an Ollama Cloud Plan (Free/Pro/Max) selector with selective probing: probe only on Free tier and only for models without a stored availability, plus a manual "Re-probe availability" button. Pro/Max suppresses Free / Subscription tags.
+- Pulled the AI provider config out of the app's general modules: backend now lives under `src-tauri/src/ai_config/` (types, client, store), and the frontend UI moved to `src/ai-config.ts` with shared helpers in `src/dom-utils.ts`.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -47,7 +49,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 
 ## Next TODOs
 
-- AI provider config refactoring & improvements — first separate the AI-config code into its own backend module and frontend file so it can be lifted into other apps; later extract into reusable backend crate + framework-agnostic frontend component. Remaining UX work: context/price tags, inline field validation. Details in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
+- AI provider config refactoring & improvements — in-app separation done (backend `ai_config` module + frontend `src/ai-config.ts` + shared `src/dom-utils.ts`). Open: extract into a reusable backend crate + framework-agnostic frontend component, plus the remaining UX work (context/price tags, inline field validation). Details in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
 - Follow-up cleanup from the AI/provider settings changes:
   - Replace emoji trash buttons with a consistent icon approach when the frontend icon strategy is decided.
   - Consider splitting future broad UI commits more narrowly when they touch independent areas such as dependencies, link handling, Markdown rendering and settings UX.
