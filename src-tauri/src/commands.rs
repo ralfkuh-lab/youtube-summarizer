@@ -2,7 +2,7 @@ use reqwest::Client;
 use tauri::State;
 
 use crate::ai_config::{self, AiChatMessage, AiConfig, AiProviderInfo};
-use crate::models::{NewVideo, Video};
+use crate::models::{Collection, NewVideo, Video};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::youtube;
 
@@ -156,6 +156,39 @@ pub async fn test_provider_model_chat(
 #[tauri::command]
 pub fn get_videos(paths: State<'_, AppPaths>) -> AppResult<Vec<Video>> {
     storage::get_videos(&paths)
+}
+
+#[tauri::command]
+pub fn get_collections(paths: State<'_, AppPaths>) -> AppResult<Vec<Collection>> {
+    storage::get_collections(&paths)
+}
+
+#[tauri::command]
+pub fn create_collection(paths: State<'_, AppPaths>, name: String) -> AppResult<Collection> {
+    storage::create_collection(&paths, &name)
+}
+
+#[tauri::command]
+pub fn update_collection(
+    paths: State<'_, AppPaths>,
+    id: i64,
+    name: String,
+) -> AppResult<Collection> {
+    storage::update_collection(&paths, id, &name)
+}
+
+#[tauri::command]
+pub fn delete_collection(paths: State<'_, AppPaths>, id: i64) -> AppResult<()> {
+    storage::delete_collection(&paths, id)
+}
+
+#[tauri::command]
+pub fn set_video_collections(
+    paths: State<'_, AppPaths>,
+    video_id: i64,
+    collection_ids: Vec<i64>,
+) -> AppResult<Video> {
+    storage::set_video_collections(&paths, video_id, collection_ids)
 }
 
 #[tauri::command]

@@ -41,6 +41,15 @@ type Video = {
   summary_provider?: string | null;
   summary_model?: string | null;
   published_at?: string | null;
+  collection_ids: number[];
+  created_at: string;
+  updated_at: string;
+};
+
+type Collection = {
+  id: number;
+  name: string;
+  video_count: number;
   created_at: string;
   updated_at: string;
 };
@@ -48,11 +57,14 @@ type Video = {
 type TabName = "transcript" | "summary" | "video";
 
 let videos: Video[] = [];
+let collections: Collection[] = [];
 let activeVideoId: number | null = null;
+let activeCollectionId: number | null = null;
 let activeTab: TabName = "transcript";
 let busy = false;
 let videoSearchQuery = "";
 let videoStatusFilter: VideoStatusFilter = "all";
+let editingCollectionId: number | null = null;
 
 type VideoStatusFilter = "all" | "transcript" | "missing-transcript" | "summary" | "missing-summary";
 
@@ -77,6 +89,13 @@ app.innerHTML = `
 
   <main>
     <aside id="libraryPanel">
+      <div class="collection-tools">
+        <div class="library-section-title">
+          <span>Sammlungen</span>
+          <button id="addCollectionBtn" class="mini-icon-btn" title="Sammlung erstellen" aria-label="Sammlung erstellen">+</button>
+        </div>
+        <div id="collectionList"></div>
+      </div>
       <div class="library-tools">
         <div class="library-search">
           <input id="videoSearchInput" type="search" placeholder="Videos suchen..." autocomplete="off" />
@@ -104,6 +123,8 @@ app.innerHTML = `
           </div>
           <button id="deleteBtn" class="delete-icon-btn" title="Video entfernen" aria-label="Video entfernen">🗑</button>
         </div>
+
+        <div id="collectionAssignment" class="collection-assignment"></div>
 
         <div id="tabBar">
           <button class="tab active" data-tab="transcript">Transkript</button>
@@ -206,6 +227,19 @@ app.innerHTML = `
     </div>
   </div>
 
+  <div id="collectionModal" class="modal" hidden>
+    <div class="modal-content collection-modal-content">
+      <h2 id="collectionModalTitle">Sammlung</h2>
+      <label>Name
+        <input id="collectionNameInput" type="text" maxlength="80" />
+      </label>
+      <div class="modal-actions">
+        <button id="collectionSave">Speichern</button>
+        <button id="collectionCancel">Abbrechen</button>
+      </div>
+    </div>
+  </div>
+
   <div id="confirmModal" class="modal" hidden>
     <div class="modal-content confirm-content">
       <h2 id="confirmTitle">Bestätigen</h2>
@@ -239,6 +273,7 @@ app.innerHTML = `
 `;
 
 const videoList = $<HTMLDivElement>("#videoList");
+const collectionList = $<HTMLDivElement>("#collectionList");
 const detailPlaceholder = $<HTMLDivElement>("#detailPlaceholder");
 const detailContent = $<HTMLDivElement>("#detailContent");
 const chaptersPanel = $<HTMLDivElement>("#chaptersPanel");
@@ -259,6 +294,15 @@ function bindEvents() {
   });
 
   bindAiConfigEvents();
+
+  $("#addCollectionBtn").addEventListener("click", () => openCollectionDialog());
+  $("#collectionSave").addEventListener("click", () => void saveCollection());
+  $("#collectionCancel").addEventListener("click", () => hideModal("#collectionModal"));
+  $("#collectionNameInput").addEventListener("keydown", (event) => {
+    if (!(event instanceof KeyboardEvent)) return;
+    if (event.key === "Enter") void saveCollection();
+    if (event.key === "Escape") hideModal("#collectionModal");
+  });
 
   $("#videoSearchInput").addEventListener("input", (event) => {
     const target = event.target;
@@ -318,13 +362,16 @@ function bindEvents() {
 async function loadInitialData() {
   setBusy(true, "Videos werden geladen...");
   try {
-    const [loadedVideos, config, providers] = await Promise.all([
+    const [loadedVideos, loadedCollections, config, providers] = await Promise.all([
       invoke<Video[]>("get_videos"),
+      invoke<Collection[]>("get_collections"),
       invoke<AiConfig>("get_config"),
       invoke<AiProviderInfo[]>("get_ai_providers"),
     ]);
     videos = loadedVideos;
+    collections = loadedCollections;
     setProviders(providers);
+    renderCollectionList();
     renderVideoList();
     applyConfig(config);
     void refreshModelsForProvider(config.provider, true);
@@ -377,6 +424,7 @@ async function deleteActiveVideo() {
   try {
     await invoke<void>("delete_video", { id });
     videos = videos.filter((video) => video.id !== id);
+    await loadCollections();
     activeVideoId = null;
     renderVideoList();
     detailContent.hidden = true;
@@ -474,6 +522,136 @@ async function startSummary() {
   }
 }
 
+function renderCollectionList() {
+  collectionList.innerHTML = `
+    <button class="collection-item${activeCollectionId === null ? " active" : ""}" data-collection-id="all">
+      <span class="collection-name">Alle Videos</span>
+      <span class="collection-count">${videos.length}</span>
+    </button>
+    ${
+      collections.length
+        ? collections.map(renderCollectionItem).join("")
+        : '<p class="empty-list compact">Noch keine Sammlungen</p>'
+    }
+  `;
+
+  collectionList.querySelectorAll<HTMLButtonElement>(".collection-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.collectionId;
+      activeCollectionId = id === "all" ? null : Number(id);
+      if (Number.isNaN(activeCollectionId)) activeCollectionId = null;
+      renderCollectionList();
+      renderVideoList();
+    });
+  });
+
+  collectionList.querySelectorAll<HTMLButtonElement>(".collection-action").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const id = Number(button.dataset.collectionId);
+      const collection = collections.find((item) => item.id === id);
+      if (!collection) return;
+      if (button.dataset.action === "rename") {
+        openCollectionDialog(collection);
+      } else if (button.dataset.action === "delete") {
+        void deleteCollection(collection);
+      }
+    });
+  });
+}
+
+function renderCollectionItem(collection: Collection): string {
+  const activeClass = activeCollectionId === collection.id ? " active" : "";
+  return `
+    <div class="collection-row${activeClass}">
+      <button class="collection-item" data-collection-id="${collection.id}">
+        <span class="collection-name">${escapeHtml(collection.name)}</span>
+        <span class="collection-count">${collection.video_count}</span>
+      </button>
+      <div class="collection-actions">
+        <button class="collection-action" data-action="rename" data-collection-id="${collection.id}" title="Sammlung umbenennen" aria-label="Sammlung umbenennen">✎</button>
+        <button class="collection-action danger" data-action="delete" data-collection-id="${collection.id}" title="Sammlung löschen" aria-label="Sammlung löschen">×</button>
+      </div>
+    </div>
+  `;
+}
+
+function openCollectionDialog(collection?: Collection) {
+  editingCollectionId = collection?.id ?? null;
+  $("#collectionModalTitle").textContent = collection ? "Sammlung umbenennen" : "Sammlung erstellen";
+  const input = $<HTMLInputElement>("#collectionNameInput");
+  input.value = collection?.name ?? "";
+  showModal("#collectionModal");
+  queueMicrotask(() => {
+    input.focus();
+    input.select();
+  });
+}
+
+async function saveCollection() {
+  if (busy) return;
+  const input = $<HTMLInputElement>("#collectionNameInput");
+  const name = input.value.trim();
+  if (!name) {
+    setStatus("Sammlungsname darf nicht leer sein");
+    return;
+  }
+
+  setBusy(true, editingCollectionId === null ? "Sammlung wird erstellt..." : "Sammlung wird umbenannt...");
+  try {
+    if (editingCollectionId === null) {
+      const collection = await invoke<Collection>("create_collection", { name });
+      collections = [...collections, collection].sort(compareCollections);
+      activeCollectionId = collection.id;
+    } else {
+      const updated = await invoke<Collection>("update_collection", { id: editingCollectionId, name });
+      collections = collections.map((collection) => (collection.id === updated.id ? updated : collection)).sort(compareCollections);
+    }
+    hideModal("#collectionModal");
+    renderCollectionList();
+    renderVideoList();
+    setStatus("Sammlung gespeichert");
+  } catch (error) {
+    setStatus(errorMessage(error));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function deleteCollection(collection: Collection) {
+  if (!(await confirmDialog(`Sammlung "${collection.name}" löschen? Die Videos bleiben erhalten.`, {
+    title: "Sammlung löschen",
+    okLabel: "Löschen",
+  }))) {
+    return;
+  }
+
+  setBusy(true, "Sammlung wird gelöscht...");
+  try {
+    await invoke<void>("delete_collection", { id: collection.id });
+    collections = collections.filter((item) => item.id !== collection.id);
+    videos = videos.map((video) => ({
+      ...video,
+      collection_ids: video.collection_ids.filter((id) => id !== collection.id),
+    }));
+    if (activeCollectionId === collection.id) activeCollectionId = null;
+    renderCollectionList();
+    renderVideoList();
+    const active = getActiveVideo();
+    if (active) renderVideoCollections(active);
+    setStatus("Sammlung gelöscht");
+  } catch (error) {
+    setStatus(errorMessage(error));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function loadCollections() {
+  collections = await invoke<Collection[]>("get_collections");
+  renderCollectionList();
+}
+
 function renderVideoList() {
   if (!videos.length) {
     videoList.innerHTML = '<p class="empty-list">Noch keine Videos</p>';
@@ -523,7 +701,14 @@ function renderVideoFilters() {
 
 function getFilteredVideos(): Video[] {
   const normalizedQuery = normalizeSearch(videoSearchQuery);
-  return videos.filter((video) => matchesVideoStatusFilter(video) && matchesVideoSearch(video, normalizedQuery));
+  return videos.filter(
+    (video) =>
+      matchesActiveCollection(video) && matchesVideoStatusFilter(video) && matchesVideoSearch(video, normalizedQuery),
+  );
+}
+
+function matchesActiveCollection(video: Video): boolean {
+  return activeCollectionId === null || video.collection_ids.includes(activeCollectionId);
 }
 
 function matchesVideoStatusFilter(video: Video): boolean {
@@ -587,8 +772,68 @@ function showDetail(video: Video) {
     : '<p class="empty">Noch keine Zusammenfassung - klicke auf "Zusammenfassen lassen"</p>';
   $<HTMLIFrameElement>("#videoPlayer").src = buildYouTubeEmbedUrl(video.video_id);
   $<HTMLButtonElement>("#reloadTranscriptBtn").hidden = !!video.transcript;
+  renderVideoCollections(video);
   renderChapters(video.chapters);
   switchTab(activeTab);
+}
+
+function renderVideoCollections(video: Video) {
+  const container = $("#collectionAssignment");
+  if (!collections.length) {
+    container.innerHTML = `
+      <span class="collection-assignment-label">Sammlungen</span>
+      <button class="inline-action" id="detailCreateCollection">Erste Sammlung erstellen</button>
+    `;
+    $("#detailCreateCollection").addEventListener("click", () => openCollectionDialog());
+    return;
+  }
+
+  const selected = new Set(video.collection_ids);
+  container.innerHTML = `
+    <span class="collection-assignment-label">Sammlungen</span>
+    <div class="collection-checkboxes">
+      ${collections
+        .map(
+          (collection) => `
+            <label class="collection-checkbox">
+              <input type="checkbox" value="${collection.id}" ${selected.has(collection.id) ? "checked" : ""} />
+              <span>${escapeHtml(collection.name)}</span>
+            </label>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+
+  container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((input) => {
+    input.addEventListener("change", () => void updateActiveVideoCollections());
+  });
+}
+
+async function updateActiveVideoCollections() {
+  const video = getActiveVideo();
+  if (!video || busy) return;
+  const ids = Array.from(document.querySelectorAll<HTMLInputElement>('#collectionAssignment input[type="checkbox"]:checked'))
+    .map((input) => Number(input.value))
+    .filter((id) => !Number.isNaN(id));
+
+  setBusy(true, "Sammlungen werden gespeichert...");
+  try {
+    const updated = await invoke<Video>("set_video_collections", {
+      videoId: video.id,
+      collectionIds: ids,
+    });
+    videos = videos.map((item) => (item.id === updated.id ? updated : item));
+    await loadCollections();
+    renderVideoList();
+    renderVideoCollections(updated);
+    setStatus("Sammlungen gespeichert");
+  } catch (error) {
+    setStatus(errorMessage(error));
+    renderVideoCollections(video);
+  } finally {
+    setBusy(false);
+  }
 }
 
 function renderTranscript(raw?: string | null, chapters?: Chapter[] | null): string {
@@ -722,6 +967,12 @@ function setBusy(value: boolean, message?: string) {
   $<HTMLButtonElement>("#addBtn").disabled = value;
   $<HTMLButtonElement>("#summarizeBtn").disabled = value;
   $<HTMLButtonElement>("#reloadTranscriptBtn").disabled = value;
+  document.querySelectorAll<HTMLButtonElement>(".collection-action, #addCollectionBtn, #collectionSave").forEach((button) => {
+    button.disabled = value;
+  });
+  document.querySelectorAll<HTMLInputElement>('#collectionAssignment input[type="checkbox"]').forEach((input) => {
+    input.disabled = value;
+  });
   if (message) {
     setStatus(message);
   }
@@ -749,6 +1000,10 @@ function isVideoStatusFilter(value: string | undefined): value is VideoStatusFil
     value === "summary" ||
     value === "missing-summary"
   );
+}
+
+function compareCollections(a: Collection, b: Collection): number {
+  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
 function capitalize(value: string): string {

@@ -44,6 +44,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 - Pulled the AI provider config out of the app's general modules: backend now lives under `src-tauri/src/ai_config/` (types, client, store), and the frontend UI moved to `src/ai-config.ts` with shared helpers in `src/dom-utils.ts`.
 - Added sidebar video search plus transcript/summary availability filters with compact status chips.
 - Replaced the Tauri app icon set with a generated video/transcript/sparkle icon that includes a light outer rim for dark taskbars.
+- Implemented local collections with create/rename/delete, multi-collection video assignment, collection counts and combined collection/search/status filtering in the sidebar.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -52,8 +53,10 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Next TODOs
 
-- Next app features:
-  - Collections or playlists.
+- Collections/playlists roadmap:
+  - Add playlist URL import next, without user login, for public/unlisted YouTube playlists.
+  - Consider optional YouTube account OAuth later for importing the user's own playlists once the local collection model and import UX are stable.
+- Next app features after local collections:
   - Import/export.
   - Batch summarization.
   - Refresh metadata/transcripts.
@@ -78,6 +81,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 ## Last Verified State
 
 - Date: 2026-05-03
+- Build/tests: `npm run build`, `cargo test` and `cargo fmt --check` passed after implementing local collections.
 - Release build: `npm run tauri -- build` passed after replacing the app icon assets and produced Linux deb/rpm/AppImage bundles.
 - Docs: README, AGENTS and TODO updated after removing the Python legacy implementation and checking the next TODO order.
 - Build: `npm run build` passed after adding sidebar search/filter controls, removing the old Python implementation and updating docs/TODOs.

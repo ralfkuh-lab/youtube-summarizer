@@ -43,6 +43,16 @@ pub struct Video {
     pub summary_provider: Option<String>,
     pub summary_model: Option<String>,
     pub published_at: Option<String>,
+    pub collection_ids: Vec<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub video_count: i64,
     pub created_at: String,
     pub updated_at: String,
 }
