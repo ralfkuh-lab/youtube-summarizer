@@ -41,6 +41,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 
 ## Next TODOs
 
+- AI provider config refactoring & improvements — extract into reusable backend crate + framework-agnostic frontend component, plus 11 prioritized UX/feature improvements (test connection button, status dots, subscription pill, context/price tags, key reveal, probe TTL cache, persisted free-only filter, relative refresh times, inline validation, default model per provider, per-use-case model assignment). Details and architecture proposal in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
 - Plan future toolbar/sidebar features:
   - Search and filter videos.
   - Compact status chips/icons for transcript and summary availability.
