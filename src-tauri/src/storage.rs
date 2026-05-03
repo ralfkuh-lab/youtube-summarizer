@@ -12,6 +12,12 @@ use crate::models::{
 
 pub type AppResult<T> = Result<T, String>;
 
+const VIDEO_COLUMNS: &str = r#"
+    id, video_id, url, title, thumbnail_url, thumbnail_data,
+    transcript, chapters, summary, summary_provider, summary_model,
+    published_at, created_at, updated_at
+"#;
+
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     pub db_path: PathBuf,
@@ -37,18 +43,15 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
             transcript TEXT,
             chapters TEXT,
             summary TEXT,
+            summary_provider TEXT,
+            summary_model TEXT,
+            published_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
         "#,
     )
     .map_err(|err| format!("Datenbank konnte nicht initialisiert werden: {err}"))?;
-    for column in ["summary_provider", "summary_model", "published_at"] {
-        let _ = conn.execute(
-            &format!("ALTER TABLE videos ADD COLUMN {column} TEXT"),
-            [],
-        );
-    }
     Ok(())
 }
 
@@ -404,12 +407,13 @@ pub fn insert_video(paths: &AppPaths, video: NewVideo) -> AppResult<Video> {
 pub fn get_videos(paths: &AppPaths) -> AppResult<Vec<Video>> {
     let conn = open_db(paths)?;
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             r#"
-            SELECT * FROM videos
+            SELECT {VIDEO_COLUMNS}
+            FROM videos
             ORDER BY created_at DESC
-            "#,
-        )
+            "#
+        ))
         .map_err(|err| format!("Videos konnten nicht geladen werden: {err}"))?;
 
     let rows = stmt
@@ -423,9 +427,7 @@ pub fn get_videos(paths: &AppPaths) -> AppResult<Vec<Video>> {
 pub fn get_video(paths: &AppPaths, id: i64) -> AppResult<Option<Video>> {
     let conn = open_db(paths)?;
     conn.query_row(
-        r#"
-        SELECT * FROM videos WHERE id = ?1
-        "#,
+        &format!("SELECT {VIDEO_COLUMNS} FROM videos WHERE id = ?1"),
         params![id],
         row_to_video,
     )

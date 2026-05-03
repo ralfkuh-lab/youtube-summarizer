@@ -46,6 +46,8 @@ pub struct AiModel {
     pub tags: Vec<String>,
     #[serde(default)]
     pub free: bool,
+    #[serde(default)]
+    pub availability: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

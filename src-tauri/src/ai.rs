@@ -23,7 +23,8 @@ pub async fn summarize(
     published_at: Option<&str>,
 ) -> AppResult<String> {
     let endpoint = endpoint(ai)?;
-    let mut user_content = String::from("Please summarize the following YouTube video transcript.\n");
+    let mut user_content =
+        String::from("Please summarize the following YouTube video transcript.\n");
     if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
         user_content.push_str(&format!("\nVideo title: {title}"));
     }
@@ -125,7 +126,7 @@ async fn probe_ollama_cloud_free(client: &Client, api_key: &str, models: &mut [A
         return;
     }
     let permits = Arc::new(Semaphore::new(6));
-    let mut tasks: JoinSet<(String, Option<bool>)> = JoinSet::new();
+    let mut tasks: JoinSet<(String, &'static str)> = JoinSet::new();
     for model in models.iter() {
         let id = model.id.clone();
         let client = client.clone();
@@ -146,24 +147,34 @@ async fn probe_ollama_cloud_free(client: &Client, api_key: &str, models: &mut [A
                 .json(&payload)
                 .send()
                 .await;
-            let free = match response {
-                Ok(r) if r.status().as_u16() == 403 => Some(false),
-                Ok(r) if r.status().is_success() => Some(true),
-                _ => None,
+            let availability = match response {
+                Ok(r) if r.status().as_u16() == 403 => "subscription_required",
+                Ok(r) if r.status().is_success() => "free",
+                _ => "unknown",
             };
-            (id, free)
+            (id, availability)
         });
     }
     let mut results = std::collections::HashMap::new();
     while let Some(joined) = tasks.join_next().await {
-        if let Ok((id, free)) = joined {
-            results.insert(id, free);
+        if let Ok((id, availability)) = joined {
+            results.insert(id, availability);
         }
     }
     for model in models.iter_mut() {
-        match results.get(&model.id).copied().flatten() {
-            Some(free) => model.free = free,
-            None => model.free = false,
+        match results.get(&model.id).copied() {
+            Some("free") => {
+                model.free = true;
+                model.availability = Some("free".to_string());
+            }
+            Some("subscription_required") => {
+                model.free = false;
+                model.availability = Some("subscription_required".to_string());
+            }
+            _ => {
+                model.free = false;
+                model.availability = Some("unknown".to_string());
+            }
         }
     }
 }
@@ -377,11 +388,20 @@ fn parse_models(provider_id: &str, body: &str) -> AppResult<Vec<AiModel>> {
                 name: model_name(id),
                 tags: model_tags(provider_id, id),
                 free: id.contains("free") || provider_id == "ollama",
+                availability: default_model_availability(provider_id, id),
             })
         })
         .collect::<Vec<_>>();
     models.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(models)
+}
+
+fn default_model_availability(provider_id: &str, id: &str) -> Option<String> {
+    if provider_id == "ollama" || id.contains("free") {
+        Some("free".to_string())
+    } else {
+        None
+    }
 }
 
 fn model_name(id: &str) -> String {

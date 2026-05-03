@@ -31,6 +31,7 @@ type AiModel = {
   name: string;
   tags: string[];
   free: boolean;
+  availability?: "free" | "subscription_required" | "unknown" | null;
 };
 
 type AiProviderInfo = {
@@ -878,19 +879,29 @@ function renderModelPreview(provider: AiProviderConfig): string {
 }
 
 function renderModelTags(model: AiModel): string {
-  const tags = [...model.tags];
-  if (model.free && !tags.includes("Free")) tags.unshift("Free");
+  const tags = modelDisplayTags(model);
   return normalizeModelTags(tags).map((tag) => `<span class="model-tag">${escapeHtml(tag)}</span>`).join("");
 }
 
 function renderModelTagsForEntry(entry: ModelEntry): string {
-  const tags = [...entry.model.tags];
-  if (isFreeModelEntry(entry) && !tags.includes("Free")) tags.unshift("Free");
+  const tags = modelDisplayTags(entry.model);
   return normalizeModelTags(tags).map((tag) => `<span class="model-tag">${escapeHtml(tag)}</span>`).join("");
 }
 
 function isFreeModelEntry(entry: ModelEntry): boolean {
   return entry.model.free;
+}
+
+function modelDisplayTags(model: AiModel): string[] {
+  const tags = [...model.tags];
+  if (model.free && !tags.includes("Free")) tags.unshift("Free");
+  if (model.availability === "subscription_required" && !tags.includes("Subscription required")) {
+    tags.push("Subscription required");
+  }
+  if (model.availability === "unknown" && !tags.includes("Probe unknown")) {
+    tags.push("Probe unknown");
+  }
+  return tags;
 }
 
 function renderModelRefreshState(provider: AiProviderConfig): string {

@@ -42,9 +42,7 @@ pub fn thumbnail_url(video_id: &str) -> String {
 pub async fn fetch_video_info(client: &Client, video_id: &str) -> AppResult<VideoInfo> {
     let url = video_url(video_id);
     let oembed_url = format!("https://www.youtube.com/oembed?url={url}&format=json");
-    let oembed_future = client
-        .get(oembed_url)
-        .send();
+    let oembed_future = client.get(oembed_url).send();
     let publish_date_future = fetch_publish_date(client, video_id);
     let (oembed_response, published_at) = tokio::join!(oembed_future, publish_date_future);
 
