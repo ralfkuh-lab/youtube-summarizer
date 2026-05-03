@@ -897,6 +897,7 @@ function buildYouTubeEmbedUrl(videoId: string, startSeconds?: number): string {
 
   if (window.location.origin.startsWith("http")) {
     url.searchParams.set("origin", window.location.origin);
+    url.searchParams.set("widget_referrer", window.location.origin);
   }
 
   if (startSeconds !== undefined) {

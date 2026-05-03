@@ -12,9 +12,12 @@ use std::io;
 use storage::AppPaths;
 use tauri::Manager;
 
+const LOCALHOST_PORT: u16 = 14220;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_localhost::Builder::new(LOCALHOST_PORT).build())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_dir = app.path().app_data_dir().map_err(setup_error)?;

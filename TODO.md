@@ -24,6 +24,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 - Added a dev-only local automation API for agent-driven functional testing.
 - Added the full Tauri icon set required for Linux AppImage bundling.
 - Adjusted the Video tab YouTube embed for Error 153 by sending an explicit referrer policy, adding player origin when available and keeping a direct YouTube fallback link.
+- Fixed the installed release app's YouTube Error 153 by serving production assets through Tauri's localhost plugin so embeds get an HTTP origin/referrer while IPC remains allowed for the app-local URL.
 - Reworked the frontend shell layout with the URL input in the top toolbar, a stable video-list sidebar, an optional chapter inspector and a Video tab that fits the player into the available space without using the normal content scrollbar.
 - Replaced the basic AI settings form with a provider-focused configuration area, per-provider saved settings, cached model lists, automatic model refresh commands and a searchable model picker.
 - Split AI settings into separate provider configuration and global model selection areas. The model list now spans all providers, supports name/provider/tag search and has a "free only" filter that includes all Ollama Cloud models because of the free usage allowance.
@@ -81,6 +82,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 ## Last Verified State
 
 - Date: 2026-05-03
+- Release build: `npm run tauri -- build` passed after switching the installed app to localhost asset serving for YouTube embeds.
 - Build/tests: `npm run build`, `cargo test` and `cargo fmt --check` passed after implementing local collections.
 - Release build: `npm run tauri -- build` passed after replacing the app icon assets and produced Linux deb/rpm/AppImage bundles.
 - Docs: README, AGENTS and TODO updated after removing the Python legacy implementation and checking the next TODO order.
