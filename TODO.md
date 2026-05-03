@@ -37,6 +37,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Kept the provider navigation stable across provider and All Models views, moved provider enable toggles into the provider cards and made provider-local model lists selectable.
 - Replaced the provider-level chat test with per-model Test chat actions and a small prompt/response dialog.
 - Turned the model test dialog into a small multi-turn chat without explicit response token limits.
+- Unified the AI settings layout: provider form uses a two-column field-row grid, the global model list reuses the per-provider `.settings-model-row` structure inside the shared scrollable preview container, model selection updates buttons in place to preserve scroll position, and the chat test dialog now opens with "Hi" prefilled and selected.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -75,7 +76,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 ## Last Verified State
 
 - Date: 2026-05-03
-- Build: `npm run build` passed after turning the per-model test dialog into a small multi-turn chat.
+- Build: `npm run build` passed after the AI settings layout unification and the prefilled chat test prompt.
 - Rust tests: `cargo test` passed with 2 tests passed and 1 network test ignored.
 - Node.js: development/build requires Node >=20 because of the current frontend dependency set; installed Tauri app does not require Node at runtime.
 - Format check: `cargo fmt --check` passed.
