@@ -43,6 +43,12 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
         "#,
     )
     .map_err(|err| format!("Datenbank konnte nicht initialisiert werden: {err}"))?;
+    for column in ["summary_provider", "summary_model", "published_at"] {
+        let _ = conn.execute(
+            &format!("ALTER TABLE videos ADD COLUMN {column} TEXT"),
+            [],
+        );
+    }
     Ok(())
 }
 
@@ -373,9 +379,9 @@ pub fn insert_video(paths: &AppPaths, video: NewVideo) -> AppResult<Video> {
         r#"
         INSERT INTO videos (
             video_id, url, title, thumbnail_url, thumbnail_data,
-            transcript, chapters, summary, created_at, updated_at
+            transcript, chapters, summary, created_at, updated_at, published_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9)
         "#,
         params![
             video.video_id,
@@ -386,6 +392,7 @@ pub fn insert_video(paths: &AppPaths, video: NewVideo) -> AppResult<Video> {
             video.transcript,
             video.chapters,
             now,
+            video.published_at,
         ],
     )
     .map_err(|err| format!("Video konnte nicht gespeichert werden: {err}"))?;
@@ -399,9 +406,7 @@ pub fn get_videos(paths: &AppPaths) -> AppResult<Vec<Video>> {
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, video_id, url, title, thumbnail_url, thumbnail_data,
-                   transcript, chapters, summary, created_at, updated_at
-            FROM videos
+            SELECT * FROM videos
             ORDER BY created_at DESC
             "#,
         )
@@ -419,10 +424,7 @@ pub fn get_video(paths: &AppPaths, id: i64) -> AppResult<Option<Video>> {
     let conn = open_db(paths)?;
     conn.query_row(
         r#"
-        SELECT id, video_id, url, title, thumbnail_url, thumbnail_data,
-               transcript, chapters, summary, created_at, updated_at
-        FROM videos
-        WHERE id = ?1
+        SELECT * FROM videos WHERE id = ?1
         "#,
         params![id],
         row_to_video,
@@ -438,12 +440,18 @@ pub fn delete_video(paths: &AppPaths, id: i64) -> AppResult<()> {
     Ok(())
 }
 
-pub fn update_summary(paths: &AppPaths, id: i64, summary: &str) -> AppResult<Video> {
+pub fn update_summary(
+    paths: &AppPaths,
+    id: i64,
+    summary: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> AppResult<Video> {
     let conn = open_db(paths)?;
     let now = Utc::now().to_rfc3339();
     conn.execute(
-        "UPDATE videos SET summary = ?1, updated_at = ?2 WHERE id = ?3",
-        params![summary, now, id],
+        "UPDATE videos SET summary = ?1, summary_provider = ?2, summary_model = ?3, updated_at = ?4 WHERE id = ?5",
+        params![summary, provider, model, now, id],
     )
     .map_err(|err| format!("Zusammenfassung konnte nicht gespeichert werden: {err}"))?;
     get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())
@@ -466,8 +474,8 @@ pub fn update_transcript(
 }
 
 fn row_to_video(row: &Row<'_>) -> rusqlite::Result<Video> {
-    let thumbnail_data: Option<Vec<u8>> = row.get(5)?;
-    let chapters_raw: Option<String> = row.get(7)?;
+    let thumbnail_data: Option<Vec<u8>> = row.get("thumbnail_data")?;
+    let chapters_raw: Option<String> = row.get("chapters")?;
     let thumbnail =
         thumbnail_data.map(|bytes| format!("data:image/jpeg;base64,{}", BASE64.encode(bytes)));
     let chapters = chapters_raw
@@ -475,16 +483,19 @@ fn row_to_video(row: &Row<'_>) -> rusqlite::Result<Video> {
         .and_then(|raw| serde_json::from_str::<Vec<Chapter>>(raw).ok());
 
     Ok(Video {
-        id: row.get(0)?,
-        video_id: row.get(1)?,
-        url: row.get(2)?,
-        title: row.get(3)?,
-        thumbnail_url: row.get(4)?,
+        id: row.get("id")?,
+        video_id: row.get("video_id")?,
+        url: row.get("url")?,
+        title: row.get("title")?,
+        thumbnail_url: row.get("thumbnail_url")?,
         thumbnail,
-        transcript: row.get(6)?,
+        transcript: row.get("transcript")?,
         chapters,
-        summary: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        summary: row.get("summary")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+        summary_provider: row.get("summary_provider")?,
+        summary_model: row.get("summary_model")?,
+        published_at: row.get("published_at")?,
     })
 }

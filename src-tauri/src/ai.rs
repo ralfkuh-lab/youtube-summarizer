@@ -19,10 +19,18 @@ pub async fn summarize(
     transcript: &str,
     chapters: Option<&str>,
     system_prompt: Option<&str>,
+    title: Option<&str>,
+    published_at: Option<&str>,
 ) -> AppResult<String> {
     let endpoint = endpoint(ai)?;
-    let mut user_content =
-        String::from("Please summarize the following YouTube video transcript:\n\n");
+    let mut user_content = String::from("Please summarize the following YouTube video transcript.\n");
+    if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
+        user_content.push_str(&format!("\nVideo title: {title}"));
+    }
+    if let Some(published) = published_at.filter(|value| !value.trim().is_empty()) {
+        user_content.push_str(&format!("\nPublished on: {published}"));
+    }
+    user_content.push_str("\n\nTranscript:\n");
     user_content.push_str(transcript);
 
     if let Some(chapters) = chapters.filter(|raw| !raw.trim().is_empty()) {
@@ -101,7 +109,63 @@ pub async fn fetch_models(
         ));
     }
 
-    parse_models(provider_id, &body)
+    let mut models = parse_models(provider_id, &body)?;
+    if provider_id == "ollama_cloud" {
+        probe_ollama_cloud_free(client, ai.api_key.trim(), &mut models).await;
+    }
+    Ok(models)
+}
+
+async fn probe_ollama_cloud_free(client: &Client, api_key: &str, models: &mut [AiModel]) {
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+    use tokio::task::JoinSet;
+
+    if api_key.is_empty() || models.is_empty() {
+        return;
+    }
+    let permits = Arc::new(Semaphore::new(6));
+    let mut tasks: JoinSet<(String, Option<bool>)> = JoinSet::new();
+    for model in models.iter() {
+        let id = model.id.clone();
+        let client = client.clone();
+        let key = api_key.to_string();
+        let permits = Arc::clone(&permits);
+        tasks.spawn(async move {
+            let _permit = permits.acquire_owned().await.ok();
+            let payload = json!({
+                "model": id,
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": false,
+                "options": {"num_predict": 1}
+            });
+            let response = client
+                .post("https://ollama.com/api/chat")
+                .bearer_auth(&key)
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await;
+            let free = match response {
+                Ok(r) if r.status().as_u16() == 403 => Some(false),
+                Ok(r) if r.status().is_success() => Some(true),
+                _ => None,
+            };
+            (id, free)
+        });
+    }
+    let mut results = std::collections::HashMap::new();
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok((id, free)) = joined {
+            results.insert(id, free);
+        }
+    }
+    for model in models.iter_mut() {
+        match results.get(&model.id).copied().flatten() {
+            Some(free) => model.free = free,
+            None => model.free = false,
+        }
+    }
 }
 
 pub fn provider_catalog() -> Vec<AiProviderInfo> {
@@ -109,9 +173,10 @@ pub fn provider_catalog() -> Vec<AiProviderInfo> {
         AiProviderInfo {
             id: "ollama_cloud".to_string(),
             name: "Ollama Cloud".to_string(),
-            description: "Cloud models through Ollama. Includes a free usage allowance for all listed models.".to_string(),
+            description: "Cloud models through Ollama. Some models are usable within a free allowance, others require a paid subscription. Refreshing the model list probes each model and tags the freely usable ones.".to_string(),
             badge: "Easy".to_string(),
             homepage_url: Some("https://ollama.com".to_string()),
+            default_endpoint: Some("https://ollama.com/api/chat".to_string()),
             requires_api_key: true,
             supports_model_refresh: true,
             endpoint_editable: false,
@@ -123,6 +188,7 @@ pub fn provider_catalog() -> Vec<AiProviderInfo> {
             description: "One API for many hosted OpenAI-compatible models. Some models may be free depending on OpenRouter availability.".to_string(),
             badge: "Multi-provider".to_string(),
             homepage_url: Some("https://openrouter.ai".to_string()),
+            default_endpoint: Some("https://openrouter.ai/api/v1/chat/completions".to_string()),
             requires_api_key: true,
             supports_model_refresh: true,
             endpoint_editable: false,
@@ -134,6 +200,7 @@ pub fn provider_catalog() -> Vec<AiProviderInfo> {
             description: "Curated models from OpenCode, including some free models.".to_string(),
             badge: "Some free models".to_string(),
             homepage_url: Some("https://opencode.ai".to_string()),
+            default_endpoint: Some("https://opencode.ai/zen/v1/chat/completions".to_string()),
             requires_api_key: true,
             supports_model_refresh: true,
             endpoint_editable: false,
@@ -145,6 +212,7 @@ pub fn provider_catalog() -> Vec<AiProviderInfo> {
             description: "Curated OpenCode models with an affordable subscription available.".to_string(),
             badge: "Subscription".to_string(),
             homepage_url: Some("https://opencode.ai".to_string()),
+            default_endpoint: Some("https://opencode.ai/zen/go/v1/chat/completions".to_string()),
             requires_api_key: true,
             supports_model_refresh: true,
             endpoint_editable: false,
@@ -156,6 +224,7 @@ pub fn provider_catalog() -> Vec<AiProviderInfo> {
             description: "Local models through Ollama's OpenAI-compatible API.".to_string(),
             badge: "Local".to_string(),
             homepage_url: Some("https://ollama.com".to_string()),
+            default_endpoint: Some("http://localhost:11434/v1/chat/completions".to_string()),
             requires_api_key: false,
             supports_model_refresh: true,
             endpoint_editable: true,
@@ -167,6 +236,7 @@ pub fn provider_catalog() -> Vec<AiProviderInfo> {
             description: "OpenAI-compatible chat completions endpoint, for example LM Studio or llama.cpp.".to_string(),
             badge: "Flexible".to_string(),
             homepage_url: None,
+            default_endpoint: None,
             requires_api_key: false,
             supports_model_refresh: true,
             endpoint_editable: true,
@@ -306,9 +376,7 @@ fn parse_models(provider_id: &str, body: &str) -> AppResult<Vec<AiModel>> {
                 id: id.to_string(),
                 name: model_name(id),
                 tags: model_tags(provider_id, id),
-                free: id.contains("free")
-                    || provider_id == "ollama"
-                    || provider_id == "ollama_cloud",
+                free: id.contains("free") || provider_id == "ollama",
             })
         })
         .collect::<Vec<_>>();

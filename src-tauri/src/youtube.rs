@@ -42,10 +42,13 @@ pub fn thumbnail_url(video_id: &str) -> String {
 pub async fn fetch_video_info(client: &Client, video_id: &str) -> AppResult<VideoInfo> {
     let url = video_url(video_id);
     let oembed_url = format!("https://www.youtube.com/oembed?url={url}&format=json");
-    let data = client
+    let oembed_future = client
         .get(oembed_url)
-        .send()
-        .await
+        .send();
+    let publish_date_future = fetch_publish_date(client, video_id);
+    let (oembed_response, published_at) = tokio::join!(oembed_future, publish_date_future);
+
+    let data = oembed_response
         .map_err(|err| format!("YouTube-Metadaten konnten nicht geladen werden: {err}"))?
         .error_for_status()
         .map_err(|err| format!("YouTube-Metadaten konnten nicht geladen werden: {err}"))?
@@ -56,7 +59,17 @@ pub async fn fetch_video_info(client: &Client, video_id: &str) -> AppResult<Vide
     Ok(VideoInfo {
         title: data.title.unwrap_or_else(|| video_id.to_string()),
         thumbnail_url: thumbnail_url(video_id),
+        published_at,
     })
+}
+
+pub async fn fetch_publish_date(client: &Client, video_id: &str) -> Option<String> {
+    let html = fetch_watch_html(client, video_id).await.ok()?;
+    let pattern = Regex::new(r#""publishDate"\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"#).ok()?;
+    pattern
+        .captures(&html)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
 }
 
 pub async fn download_thumbnail(client: &Client, video_id: &str) -> Option<Vec<u8>> {

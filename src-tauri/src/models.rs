@@ -55,6 +55,7 @@ pub struct AiProviderInfo {
     pub description: String,
     pub badge: String,
     pub homepage_url: Option<String>,
+    pub default_endpoint: Option<String>,
     pub requires_api_key: bool,
     pub supports_model_refresh: bool,
     pub endpoint_editable: bool,
@@ -152,6 +153,9 @@ pub struct Video {
     pub transcript: Option<String>,
     pub chapters: Option<Vec<Chapter>>,
     pub summary: Option<String>,
+    pub summary_provider: Option<String>,
+    pub summary_model: Option<String>,
+    pub published_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -165,10 +169,12 @@ pub struct NewVideo {
     pub thumbnail_data: Option<Vec<u8>>,
     pub transcript: Option<String>,
     pub chapters: Option<String>,
+    pub published_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct VideoInfo {
     pub title: String,
     pub thumbnail_url: String,
+    pub published_at: Option<String>,
 }

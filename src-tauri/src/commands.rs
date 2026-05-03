@@ -153,6 +153,7 @@ pub async fn add_video_impl(paths: &AppPaths, url: String) -> AppResult<Video> {
             thumbnail_data,
             transcript,
             chapters,
+            published_at: info.published_at,
         },
     )
 }
@@ -208,10 +209,27 @@ pub async fn summarize_video_impl(
         } else {
             Some(prompt)
         },
+        Some(video.title.as_str()),
+        video.published_at.as_deref(),
     )
     .await?;
 
-    storage::update_summary(paths, id, &summary)
+    let provider_label = storage::provider_config(&ai_config, &ai_config.provider)
+        .and_then(|p| p.name.clone())
+        .or_else(|| {
+            ai::provider_catalog()
+                .into_iter()
+                .find(|info| info.id == ai_config.provider)
+                .map(|info| info.name)
+        })
+        .unwrap_or_else(|| ai_config.provider.clone());
+    storage::update_summary(
+        paths,
+        id,
+        &summary,
+        Some(&provider_label),
+        Some(&ai_config.model),
+    )
 }
 
 #[tauri::command]
