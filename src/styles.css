@@ -1084,55 +1084,43 @@ footer {
   height: 16px;
 }
 
+.settings-fixed-panel .field-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-fixed-panel .field-row .field-label {
+  text-align: right;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-fixed-panel .field-row.toggle-row {
+  display: grid !important;
+  white-space: normal;
+}
+
+.settings-fixed-panel .field-row.toggle-row .field-control {
+  display: flex;
+  align-items: center;
+}
+
+.settings-fixed-panel .provider-actions {
+  padding-left: 162px;
+}
+
 #globalModelList {
-  min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
-.global-model-item {
-  width: 100%;
-  min-height: 62px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 140px minmax(120px, auto) auto;
-  gap: 14px;
-  align-items: center;
-  padding: 10px 12px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: var(--panel-2);
-  color: var(--text);
-  text-align: left;
-}
-
-.global-model-item:hover {
-  background: var(--panel-3);
-}
-
-.global-model-item.active {
-  border-color: var(--accent);
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.global-model-main {
-  min-width: 0;
-}
-
-.global-model-main strong,
-.global-model-main small {
-  display: block;
-}
-
-.global-model-main small,
-.global-model-provider {
+.settings-model-provider {
+  flex-shrink: 0;
+  min-width: 110px;
   color: var(--muted);
   font-size: 11px;
-}
-
-.global-model-provider {
-  justify-self: start;
   font-weight: 700;
 }
 

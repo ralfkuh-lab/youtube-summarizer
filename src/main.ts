@@ -615,7 +615,11 @@ function renderSettings() {
   $("#providerSettingsList").innerHTML = renderProviderNavigation(selectedSettingsProviderId);
 
   if (settingsSection === "models") {
-    renderModelSettings();
+    if (document.querySelector("#globalModelSearch")) {
+      renderSettingsModelList();
+    } else {
+      renderModelSettings();
+    }
     return;
   }
 
@@ -637,21 +641,21 @@ function renderSettings() {
           ${info?.recommended ? '<span class="provider-badge">Recommended</span>' : ""}
         </span>
       </div>
-      <label ${isCustomProvider(selected.id) ? "" : "hidden"}>Name
+      <label class="field-row" ${isCustomProvider(selected.id) ? "" : "hidden"}><span class="field-label">Name</span>
         <input id="configProviderName" type="text" value="${escapeHtml(providerDisplayName(selected))}" placeholder="Custom provider name" />
       </label>
-      <label class="toggle-row provider-api-key-required" ${isUserManagedProvider(selected.id) ? "" : "hidden"}>
-        <input id="configApiKeyRequired" type="checkbox" ${apiKeyRequired ? "checked" : ""} />
-        API key required
+      <label class="field-row toggle-row provider-api-key-required" ${isUserManagedProvider(selected.id) ? "" : "hidden"}>
+        <span class="field-label">API key required</span>
+        <span class="field-control"><input id="configApiKeyRequired" type="checkbox" ${apiKeyRequired ? "checked" : ""} /></span>
       </label>
-      <label>API key
+      <label class="field-row"><span class="field-label">API key</span>
         <span class="secret-input-row">
           <input id="configApiKey" type="${apiKeyVisible ? "text" : "password"}" value="${escapeHtml(selected.api_key)}" placeholder="${apiKeyRequired ? "Required" : "Optional"}" />
           <button id="toggleApiKeyVisibility" class="icon-action-btn" type="button" title="${apiKeyVisible ? "Hide API key" : "Show API key"}" aria-label="${apiKeyVisible ? "Hide API key" : "Show API key"}">${apiKeyVisible ? "🙈" : "👁"}</button>
         </span>
       </label>
       <input id="configModel" type="hidden" value="${escapeHtml(selected.model)}" />
-      <label ${info?.endpoint_editable || isCustomProvider(selected.id) ? "" : "hidden"}>Chat endpoint
+      <label class="field-row" ${info?.endpoint_editable || isCustomProvider(selected.id) ? "" : "hidden"}><span class="field-label">Chat endpoint</span>
         <input id="configEndpoint" type="text" value="${escapeHtml(selected.endpoint_override ?? "")}" placeholder="${escapeHtml(info?.default_endpoint ?? "https://example.com/v1/chat/completions")}" />
       </label>
       <div class="provider-actions">
@@ -856,7 +860,9 @@ function renderModelSettings() {
         </label>
       </div>
     </div>
-    <div id="globalModelList"></div>
+    <div class="settings-model-preview settings-scroll-list">
+      <div id="globalModelList"></div>
+    </div>
   `;
   renderSettingsModelList();
 }
@@ -895,7 +901,12 @@ function openChatTestDialog(providerId: string, modelId: string) {
   error.textContent = "";
   renderChatTestMessages();
   showModal("#chatTestModal");
-  queueMicrotask(() => $<HTMLTextAreaElement>("#chatTestMessage").focus());
+  queueMicrotask(() => {
+    const input = $<HTMLTextAreaElement>("#chatTestMessage");
+    input.value = "Hi";
+    input.focus();
+    input.select();
+  });
 }
 
 async function sendChatTest() {
@@ -974,15 +985,15 @@ function renderSettingsModelList() {
 function renderGlobalModelItem(entry: ModelEntry): string {
   const active = aiConfig?.provider === entry.provider.id && aiConfig.model === entry.model.id ? " active" : "";
   return `
-    <div class="global-model-item${active}">
-      <span class="global-model-main">
+    <div class="settings-model-row${active}">
+      <span class="settings-model-main">
         <strong>${escapeHtml(entry.model.name)}</strong>
         <small>${escapeHtml(entry.model.id)}</small>
       </span>
-      <span class="global-model-provider">${escapeHtml(providerDisplayName(entry.provider))}</span>
+      <span class="settings-model-provider">${escapeHtml(providerDisplayName(entry.provider))}</span>
       <span class="model-tags">${renderModelTagsForEntry(entry)}</span>
       <span class="settings-model-actions">
-        <button type="button" data-model-provider-id="${escapeHtml(entry.provider.id)}" data-model-id="${escapeHtml(entry.model.id)}">${active ? "Selected" : "Use"}</button>
+        <button type="button" data-model-provider-id="${escapeHtml(entry.provider.id)}" data-model-id="${escapeHtml(entry.model.id)}" ${active ? "disabled" : ""}>Use</button>
         <button type="button" data-test-chat-provider-id="${escapeHtml(entry.provider.id)}" data-test-chat-model-id="${escapeHtml(entry.model.id)}">Test chat</button>
       </span>
     </div>
@@ -1002,10 +1013,27 @@ async function selectGlobalModel(providerId: string, modelId: string) {
     endpointOverride: provider.endpoint_override ?? "",
     activate: true,
   });
-  applyConfig(config);
-  selectedSettingsProviderId = providerId;
-  renderSettings();
+  aiConfig = config;
+  const providerInfo = getProviderInfo(config.provider);
+  statusModel.textContent = `${providerInfo?.name ?? config.provider} / ${config.model || "kein Modell"}`;
+  if (!$("#settingsModal").hidden) {
+    $("#settingsSelectedModel").innerHTML = renderSidebarSelectedModel();
+    $("#providerSettingsList").innerHTML = renderProviderNavigation(selectedSettingsProviderId);
+    updateActiveModelButtons(providerId, modelId);
+  }
   setStatus(`Model selected: ${modelId}`);
+}
+
+function updateActiveModelButtons(providerId: string, modelId: string) {
+  document
+    .querySelectorAll<HTMLButtonElement>("#providerSettingsBody button[data-model-id][data-model-provider-id]")
+    .forEach((button) => {
+      const isActive =
+        button.dataset.modelProviderId === providerId && button.dataset.modelId === modelId;
+      button.disabled = isActive;
+      const row = button.closest<HTMLElement>(".settings-model-row");
+      if (row) row.classList.toggle("active", isActive);
+    });
 }
 
 function getAllModelEntries(): ModelEntry[] {
@@ -1036,7 +1064,7 @@ function renderModelPreview(provider: AiProviderConfig): string {
           </span>
           <span class="model-tags">${renderModelTags(model)}</span>
           <span class="settings-model-actions">
-            <button type="button" data-model-provider-id="${escapeHtml(provider.id)}" data-model-id="${escapeHtml(model.id)}">${active ? "Selected" : "Use"}</button>
+            <button type="button" data-model-provider-id="${escapeHtml(provider.id)}" data-model-id="${escapeHtml(model.id)}" ${active ? "disabled" : ""}>Use</button>
             <button type="button" data-test-chat-provider-id="${escapeHtml(provider.id)}" data-test-chat-model-id="${escapeHtml(model.id)}">Test chat</button>
           </span>
         </div>
