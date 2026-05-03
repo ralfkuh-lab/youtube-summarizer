@@ -1101,7 +1101,22 @@ function modelDisplayTags(model: AiModel): string[] {
 
 function renderModelRefreshState(provider: AiProviderConfig): string {
   if (!provider.models_updated_at) return "Not refreshed yet";
-  return `Refreshed: ${new Date(provider.models_updated_at).toLocaleString()}`;
+  const absolute = new Date(provider.models_updated_at).toLocaleString();
+  return `<span title="${escapeHtml(absolute)}">Refreshed ${escapeHtml(formatRelativeTime(provider.models_updated_at))}</span>`;
+}
+
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const diffSeconds = Math.round((then - Date.now()) / 1000);
+  const abs = Math.abs(diffSeconds);
+  if (abs < 60) return relativeTimeFormatter.format(diffSeconds, "second");
+  if (abs < 3600) return relativeTimeFormatter.format(Math.round(diffSeconds / 60), "minute");
+  if (abs < 86_400) return relativeTimeFormatter.format(Math.round(diffSeconds / 3600), "hour");
+  if (abs < 7 * 86_400) return relativeTimeFormatter.format(Math.round(diffSeconds / 86_400), "day");
+  return new Date(iso).toLocaleDateString();
 }
 
 function normalizeModelTags(tags: string[]): string[] {

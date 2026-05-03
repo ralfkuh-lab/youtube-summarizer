@@ -96,22 +96,6 @@ Stand: 2026-05-02. Bezugspunkt ist die aktuelle KI-Config in `src/main.ts` + `sr
 
 **Aufwand:** Mittel. Erfordert pro Feld einen Validierungs-Hook und ein Error-Span.
 
-### 10. Default-Modell pro Provider sinnvoll vorbelegen
-
-**Was:** Wenn ein Provider erstmals konfiguriert (Key eingetragen + Models geladen), automatisch ein sinnvolles Default-Modell setzen (z. B. das billigste mit Free-Tag, oder ein hardcoded Empfehlungs-Modell pro Provider).
-
-**Warum:** Spart einen Klick und verhindert „kein Modell ausgewählt"-Zustand direkt nach Setup.
-
-**Aufwand:** Klein. Pro Eintrag in `provider_catalog()` ein `default_model: Option<String>`-Feld.
-
-### 11. Per-Use-Case-Modellzuweisung (Architektur)
-
-**Was:** Statt einem globalen `model` in `AiConfig` ein Map-Feld `models_by_task: { summarize: …, chat: …, classify: … }` mit Fallback auf einen Default.
-
-**Warum:** Sobald die App mehr als nur „summarize" macht, will man unterschiedliche Modelle pro Task (großes Modell für Summary, schnelles Modell für Chat). Lieber jetzt im Schema vorsehen als später migrieren.
-
-**Aufwand:** Mittel. Schema-Migration + UI-Erweiterung. Kann anfangs versteckt bleiben (nur ein Eintrag „summarize") und mit zusätzlichen Tasks wachsen.
-
 ## Refactoring für Wiederverwendbarkeit
 
 Heute ist die KI-Config eng mit `main.ts` verzahnt: HTML-Strings, globale Variablen (`aiConfig`, `aiProviders`, `selectedSettingsProviderId`), direkte `setStatus`-Aufrufe, `invoke()`-Calls. Für Wiederverwendung in anderen Apps zu unspezifisch.
@@ -163,8 +147,8 @@ Slot für Custom-Status-Zeile / Custom-Header.
 
 1. **Erst die Architektur entscheiden** (eigenes Crate + Web Component? oder vorerst nur Modul-Refactor in dieser App?). Sonst werden alle Verbesserungen unten doppelt gepflegt.
 2. **Dann Punkte 1, 2, 3, 5, 7** als Quick-Wins (alle klein, hohe Sichtbarkeit).
-3. **Punkt 6, 8, 10** als zweite Welle.
-4. **Punkt 4, 9, 11** wenn der Bedarf konkret wird.
+3. **Punkt 6, 8** als zweite Welle.
+4. **Punkt 4, 9** wenn der Bedarf konkret wird.
 
 ## Notizen aus Diskussion
 

@@ -38,6 +38,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Replaced the provider-level chat test with per-model Test chat actions and a small prompt/response dialog.
 - Turned the model test dialog into a small multi-turn chat without explicit response token limits.
 - Unified the AI settings layout: provider form uses a two-column field-row grid, the global model list reuses the per-provider `.settings-model-row` structure inside the shared scrollable preview container, model selection updates buttons in place to preserve scroll position, and the chat test dialog now opens with "Hi" prefilled and selected.
+- Render the provider model-refresh timestamp as a relative time (e.g. "vor 3 Tagen") with the absolute date as tooltip.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -46,7 +47,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 
 ## Next TODOs
 
-- AI provider config refactoring & improvements — extract into reusable backend crate + framework-agnostic frontend component, plus the remaining prioritized UX/feature improvements (subscription pill, context/price tags, probe TTL cache, persisted free-only filter, relative refresh times, inline validation, default model per provider, per-use-case model assignment). Details and architecture proposal in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
+- AI provider config refactoring & improvements — extract into reusable backend crate + framework-agnostic frontend component, plus the remaining prioritized UX/feature improvements (context/price tags, probe TTL cache, inline validation). Details and architecture proposal in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
 - Follow-up cleanup from the AI/provider settings changes:
   - Replace emoji trash buttons with a consistent icon approach when the frontend icon strategy is decided.
   - Consider splitting future broad UI commits more narrowly when they touch independent areas such as dependencies, link handling, Markdown rendering and settings UX.
