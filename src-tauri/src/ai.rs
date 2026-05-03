@@ -1,7 +1,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use crate::models::{AiConfig, AiModel, AiProviderInfo};
+use crate::models::{AiChatMessage, AiConfig, AiModel, AiProviderInfo};
 use crate::storage::AppResult;
 
 const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a helpful assistant that summarizes YouTube video transcripts.
@@ -117,10 +117,30 @@ pub async fn fetch_models(
     Ok(models)
 }
 
-pub async fn test_connection(client: &Client, ai: &AiConfig) -> AppResult<()> {
+pub async fn test_chat(
+    client: &Client,
+    ai: &AiConfig,
+    messages: &[AiChatMessage],
+) -> AppResult<String> {
     if ai.model.trim().is_empty() {
         return Err("Bitte zuerst ein Modell auswählen".to_string());
     }
+    if messages
+        .iter()
+        .all(|message| message.content.trim().is_empty())
+    {
+        return Err("Bitte zuerst eine Testnachricht eingeben".to_string());
+    }
+    let messages = messages
+        .iter()
+        .filter(|message| !message.content.trim().is_empty())
+        .map(|message| {
+            json!({
+                "role": message.role,
+                "content": message.content
+            })
+        })
+        .collect::<Vec<_>>();
 
     let endpoint = endpoint(ai)?;
     let mut request = client
@@ -133,16 +153,14 @@ pub async fn test_connection(client: &Client, ai: &AiConfig) -> AppResult<()> {
     let payload = if ai.provider == "ollama_cloud" {
         json!({
             "model": ai.model,
-            "messages": [{"role": "user", "content": "ping"}],
-            "stream": false,
-            "options": {"num_predict": 1}
+            "messages": messages,
+            "stream": false
         })
     } else {
         json!({
             "model": ai.model,
-            "messages": [{"role": "user", "content": "ping"}],
-            "temperature": 0,
-            "max_tokens": 1
+            "messages": messages,
+            "temperature": 0
         })
     };
 
@@ -156,11 +174,11 @@ pub async fn test_connection(client: &Client, ai: &AiConfig) -> AppResult<()> {
         format!("Antwort des Verbindungstests konnte nicht gelesen werden: {err}")
     })?;
 
-    if status.is_success() {
-        Ok(())
-    } else {
-        Err(api_error_message(status.as_u16(), &body))
+    if !status.is_success() {
+        return Err(api_error_message(status.as_u16(), &body));
     }
+
+    parse_summary_response(ai, &body)
 }
 
 async fn probe_ollama_cloud_free(client: &Client, api_key: &str, models: &mut [AiModel]) {

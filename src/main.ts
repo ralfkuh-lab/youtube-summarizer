@@ -54,6 +54,11 @@ type ModelEntry = {
   model: AiModel;
 };
 
+type ChatTestMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 type Chapter = {
   time: string;
   start: number;
@@ -93,8 +98,11 @@ let aiConfig: AiConfig | null = null;
 let aiProviders: AiProviderInfo[] = [];
 let selectedSettingsProviderId = "opencode_go";
 let settingsSection: "providers" | "models" = "providers";
-let showOnlyFreeModels = false;
+const FREE_MODELS_ONLY_KEY = "settings.freeModelsOnly";
+let showOnlyFreeModels = localStorage.getItem(FREE_MODELS_ONLY_KEY) === "true";
 const revealedApiKeys = new Set<string>();
+let chatTestTarget: { providerId: string; modelId: string } | null = null;
+let chatTestMessages: ChatTestMessage[] = [];
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -180,13 +188,16 @@ app.innerHTML = `
           <h2>KI</h2>
           <p>Connect providers and choose the model used for summaries.</p>
         </div>
-        <div class="settings-nav">
-          <button class="settings-nav-item active" data-settings-section="providers">Providers</button>
-          <button class="settings-nav-item" data-settings-section="models">Models</button>
-        </div>
+        <div id="settingsSelectedModel"></div>
         <div id="providerSettingsList"></div>
       </div>
-      <div class="settings-main" id="providerSettingsBody"></div>
+      <div class="settings-main">
+        <div class="settings-nav">
+          <button class="settings-nav-item active" data-settings-section="providers">Provider Details</button>
+          <button class="settings-nav-item" data-settings-section="models">All Models</button>
+        </div>
+        <div id="providerSettingsBody"></div>
+      </div>
       <div class="modal-actions">
         <button id="configClose">Schließen</button>
       </div>
@@ -238,6 +249,26 @@ app.innerHTML = `
       <div class="modal-actions">
         <button id="confirmOk">OK</button>
         <button id="confirmCancel">Abbrechen</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="chatTestModal" class="modal" hidden>
+    <div class="modal-content chat-test-content">
+      <div class="chat-test-head">
+        <div>
+          <h2 id="chatTestTitle">Test chat</h2>
+          <p id="chatTestMeta"></p>
+        </div>
+      </div>
+      <div id="chatTestMessages" class="chat-test-messages"></div>
+      <div id="chatTestError" class="chat-test-error" hidden></div>
+      <div class="chat-test-composer">
+        <textarea id="chatTestMessage" rows="3">Say "ok" in one short sentence.</textarea>
+        <button id="chatTestSend">Send</button>
+      </div>
+      <div class="modal-actions">
+        <button id="chatTestClose">Close</button>
       </div>
     </div>
   </div>
@@ -365,18 +396,26 @@ function bindEvents() {
     if (target.closest("#settingsRefreshModelsBtn")) {
       void refreshModelsForProvider(selectedSettingsProviderId);
     }
-    if (target.closest("#settingsTestConnectionBtn")) {
-      void testProviderConnection(selectedSettingsProviderId);
-    }
     if (target.closest("#toggleApiKeyVisibility")) {
       toggleApiKeyVisibility(selectedSettingsProviderId);
     }
     if (target.closest("#refreshAllModelsBtn")) {
       void refreshAllModels();
     }
+    const chatButton = target.closest<HTMLElement>("[data-test-chat-model-id][data-test-chat-provider-id]");
+    if (chatButton?.dataset.testChatModelId && chatButton.dataset.testChatProviderId) {
+      openChatTestDialog(chatButton.dataset.testChatProviderId, chatButton.dataset.testChatModelId);
+      return;
+    }
     const modelItem = target.closest<HTMLElement>("[data-model-id][data-model-provider-id]");
     if (modelItem?.dataset.modelId && modelItem.dataset.modelProviderId) {
-      void selectGlobalModel(modelItem.dataset.modelProviderId, modelItem.dataset.modelId);
+      const { modelId, modelProviderId } = modelItem.dataset;
+      void (async () => {
+        if (!$("#settingsModal").hidden && document.querySelector("#configModel")) {
+          await persistVisibleProviderForm();
+        }
+        await selectGlobalModel(modelProviderId, modelId);
+      })();
     }
   });
   $("#providerSettingsBody").addEventListener("input", (event) => {
@@ -387,8 +426,9 @@ function bindEvents() {
   $("#providerSettingsBody").addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
-    if (target.id === "freeModelsOnly") {
+  if (target.id === "freeModelsOnly") {
       showOnlyFreeModels = target.checked;
+      localStorage.setItem(FREE_MODELS_ONLY_KEY, String(showOnlyFreeModels));
       renderSettingsModelList();
       return;
     }
@@ -408,6 +448,8 @@ function bindEvents() {
   $("#reloadTranscriptBtn").addEventListener("click", () => void refreshActiveTranscript());
   $("#summaryStart").addEventListener("click", () => void startSummary());
   $("#summaryCancel").addEventListener("click", () => hideModal("#summaryModal"));
+  $("#chatTestSend").addEventListener("click", () => void sendChatTest());
+  $("#chatTestClose").addEventListener("click", () => hideModal("#chatTestModal"));
 
   ["#summaryDetail", "#summaryLang", "#summaryUseChapters"].forEach((selector) => {
     $(selector).addEventListener("change", updateSummaryPrompt);
@@ -569,6 +611,8 @@ function renderSettings() {
   document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.settingsSection === settingsSection);
   });
+  $("#settingsSelectedModel").innerHTML = renderSidebarSelectedModel();
+  $("#providerSettingsList").innerHTML = renderProviderNavigation(selectedSettingsProviderId);
 
   if (settingsSection === "models") {
     renderModelSettings();
@@ -580,8 +624,6 @@ function renderSettings() {
   const info = getProviderInfo(selected.id);
   const apiKeyVisible = revealedApiKeys.has(selected.id);
   const apiKeyRequired = providerRequiresApiKey(selected);
-  const canTestChat = !!selected.model.trim();
-  $("#providerSettingsList").innerHTML = renderProviderNavigation(selected.id);
 
   $("#providerSettingsBody").innerHTML = `
     <div class="settings-fixed-panel">
@@ -614,7 +656,6 @@ function renderSettings() {
       </label>
       <div class="provider-actions">
         <button id="settingsRefreshModelsBtn" type="button">Refresh models</button>
-        <button id="settingsTestConnectionBtn" type="button" ${canTestChat ? "" : "disabled"} title="${canTestChat ? "Send a minimal chat request to the selected model" : "Select a model before testing chat"}">Test chat</button>
         <span>${renderModelRefreshState(selected)}</span>
       </div>
       ${selected.last_error ? `<p class="settings-error">${escapeHtml(selected.last_error)}</p>` : ""}
@@ -650,6 +691,7 @@ function renderProviderNavItem(providerId: string, selectedId: string): string {
   const active = selectedId === providerId ? " active" : "";
   const configured = config ? isProviderConfigured(config) : false;
   const enabled = !!config?.enabled && configured;
+  const title = configured ? "Enable / disable provider" : "Configure provider first";
   return `
     <div class="provider-nav-row${active}">
       <button class="provider-nav-item" data-provider-id="${escapeHtml(providerId)}">
@@ -659,6 +701,10 @@ function renderProviderNavItem(providerId: string, selectedId: string): string {
         </span>
         <span class="provider-meta">${escapeHtml(info?.badge ?? "Custom")}${!enabled ? " · disabled" : ""}${configured ? " · configured" : ""}</span>
       </button>
+      ${config ? `<label class="provider-toggle nav-provider-toggle" title="${escapeHtml(title)}">
+        <input type="checkbox" data-toggle-provider-id="${escapeHtml(providerId)}" ${enabled ? "checked" : ""} ${configured ? "" : "disabled"} />
+        <span class="provider-toggle-track"><span class="provider-toggle-thumb"></span></span>
+      </label>` : ""}
       ${isUserManagedProvider(providerId) ? `<button class="delete-icon-btn" data-delete-provider-id="${escapeHtml(providerId)}" title="Delete provider" aria-label="Delete provider">🗑</button>` : ""}
     </div>
   `;
@@ -768,31 +814,6 @@ async function refreshModelsForProvider(providerId: string, silent = false) {
   }
 }
 
-async function testProviderConnection(providerId: string) {
-  try {
-    const provider = getProviderConfig(providerId);
-    if (!provider?.model.trim()) {
-      setStatus("Bitte zuerst im Models-Tab ein Modell auswählen");
-      return;
-    }
-    setStatus("Testing provider chat...");
-    if (!$("#settingsModal").hidden && document.querySelector("#configModel") && providerId === selectedSettingsProviderId) {
-      await persistVisibleProviderForm(true);
-    }
-    const config = await invoke<AiConfig>("test_provider_connection", { providerId });
-    applyConfig(config);
-    setStatus("Provider chat works");
-  } catch (error) {
-    setStatus(errorMessage(error));
-    try {
-      const config = await invoke<AiConfig>("get_config");
-      applyConfig(config);
-    } catch {
-      // Keep the original connection-test error visible.
-    }
-  }
-}
-
 function toggleApiKeyVisibility(providerId: string) {
   if (revealedApiKeys.has(providerId)) {
     revealedApiKeys.delete(providerId);
@@ -818,32 +839,12 @@ async function refreshAllModels() {
 
 function renderModelSettings() {
   if (!aiConfig) return;
-  $("#providerSettingsList").innerHTML = aiConfig.providers
-    .map((config) => {
-      const configured = isProviderConfigured(config);
-      const enabled = !!config.enabled && configured;
-      const title = configured ? "Enable / disable provider" : "Configure provider first";
-      return `
-        <div class="provider-status-item">
-          <div class="provider-status-text">
-            <span class="provider-name">${escapeHtml(providerDisplayName(config))}</span>
-            <span class="provider-meta">${config?.models.length ?? 0} models${config?.models_updated_at ? " · refreshed" : ""}</span>
-          </div>
-          <label class="provider-toggle" title="${escapeHtml(title)}">
-            <input type="checkbox" data-toggle-provider-id="${escapeHtml(config.id)}" ${enabled ? "checked" : ""} ${configured ? "" : "disabled"} />
-            <span class="provider-toggle-track"><span class="provider-toggle-thumb"></span></span>
-          </label>
-        </div>
-      `;
-    })
-    .join("");
-
   $("#providerSettingsBody").innerHTML = `
     <div class="settings-fixed-panel">
       <div class="settings-provider-head">
         <div>
-          <h2>Select model</h2>
-          <p>Search all loaded models from all providers. Ollama Cloud is fully included in the free-only filter because it has a free usage allowance.</p>
+          <h2>All Models</h2>
+          <p>Search all loaded models from enabled providers and choose the model used for summaries.</p>
         </div>
         <button id="refreshAllModelsBtn" type="button">Refresh all</button>
       </div>
@@ -854,28 +855,100 @@ function renderModelSettings() {
           Free only
         </label>
       </div>
-      ${renderSelectedModelPanel()}
     </div>
     <div id="globalModelList"></div>
   `;
   renderSettingsModelList();
 }
 
-function renderSelectedModelPanel(): string {
+function renderSidebarSelectedModel(): string {
   if (!aiConfig?.model) {
-    return '<div class="selected-model-panel"><span>No model selected</span></div>';
+    return `
+      <div class="sidebar-selected-model">
+        <span class="sidebar-label">Selected for summaries</span>
+        <strong>No model selected</strong>
+      </div>
+    `;
   }
-  const provider = getProviderConfig(aiConfig.provider);
-  const model = provider?.models.find((item) => item.id === aiConfig?.model);
+  const config = aiConfig;
+  const provider = getProviderConfig(config.provider);
+  const model = provider?.models.find((item) => item.id === config.model);
   return `
-    <div class="selected-model-panel">
-      <span>
-        <strong>Selected model</strong>
-        <small>${escapeHtml(provider ? providerDisplayName(provider) : aiConfig.provider)} / ${escapeHtml(model?.name ?? aiConfig.model)}</small>
-      </span>
+    <div class="sidebar-selected-model">
+      <span class="sidebar-label">Selected for summaries</span>
+      <strong>${escapeHtml(model?.name ?? config.model)}</strong>
+      <small>${escapeHtml(provider ? providerDisplayName(provider) : config.provider)}</small>
       <span class="model-tags">${model && provider ? renderModelTagsForEntry({ provider, providerInfo: getProviderInfo(provider.id), model }) : ""}</span>
     </div>
   `;
+}
+
+function openChatTestDialog(providerId: string, modelId: string) {
+  chatTestTarget = { providerId, modelId };
+  chatTestMessages = [];
+  const provider = getProviderConfig(providerId);
+  const model = provider?.models.find((item) => item.id === modelId);
+  $("#chatTestTitle").textContent = `Test ${model?.name ?? modelId}`;
+  $("#chatTestMeta").textContent = provider ? `${providerDisplayName(provider)} / ${modelId}` : modelId;
+  const error = $("#chatTestError");
+  error.hidden = true;
+  error.textContent = "";
+  renderChatTestMessages();
+  showModal("#chatTestModal");
+  queueMicrotask(() => $<HTMLTextAreaElement>("#chatTestMessage").focus());
+}
+
+async function sendChatTest() {
+  if (!chatTestTarget) return;
+  const error = $("#chatTestError");
+  const sendButton = $<HTMLButtonElement>("#chatTestSend");
+  const input = $<HTMLTextAreaElement>("#chatTestMessage");
+  const message = input.value.trim();
+  if (!message) return;
+  chatTestMessages.push({ role: "user", content: message });
+  input.value = "";
+  error.hidden = true;
+  error.textContent = "";
+  renderChatTestMessages(true);
+  sendButton.disabled = true;
+  try {
+    if (!$("#settingsModal").hidden && document.querySelector("#configModel") && chatTestTarget.providerId === selectedSettingsProviderId) {
+      await persistVisibleProviderForm(true);
+    }
+    const response = await invoke<string>("test_provider_model_chat", {
+      providerId: chatTestTarget.providerId,
+      modelId: chatTestTarget.modelId,
+      messages: chatTestMessages,
+    });
+    chatTestMessages.push({ role: "assistant", content: response });
+    renderChatTestMessages();
+    setStatus("Model chat test succeeded");
+  } catch (error) {
+    $("#chatTestError").hidden = false;
+    $("#chatTestError").textContent = errorMessage(error);
+    setStatus(errorMessage(error));
+  } finally {
+    sendButton.disabled = false;
+    input.focus();
+  }
+}
+
+function renderChatTestMessages(loading = false) {
+  const list = $("#chatTestMessages");
+  const messages = chatTestMessages.length
+    ? chatTestMessages
+        .map((message) => `
+          <div class="chat-message ${message.role}">
+            <span>${message.role === "user" ? "You" : "Model"}</span>
+            <p>${escapeHtml(message.content)}</p>
+          </div>
+        `)
+        .join("")
+    : '<p class="empty">Send a short prompt to test this model.</p>';
+  list.innerHTML = loading
+    ? `${messages}<div class="chat-message assistant"><span>Model</span><p>Thinking...</p></div>`
+    : messages;
+  list.scrollTop = list.scrollHeight;
 }
 
 function renderSettingsModelList() {
@@ -901,14 +974,18 @@ function renderSettingsModelList() {
 function renderGlobalModelItem(entry: ModelEntry): string {
   const active = aiConfig?.provider === entry.provider.id && aiConfig.model === entry.model.id ? " active" : "";
   return `
-    <button class="global-model-item${active}" data-model-provider-id="${escapeHtml(entry.provider.id)}" data-model-id="${escapeHtml(entry.model.id)}">
+    <div class="global-model-item${active}">
       <span class="global-model-main">
         <strong>${escapeHtml(entry.model.name)}</strong>
         <small>${escapeHtml(entry.model.id)}</small>
       </span>
       <span class="global-model-provider">${escapeHtml(providerDisplayName(entry.provider))}</span>
       <span class="model-tags">${renderModelTagsForEntry(entry)}</span>
-    </button>
+      <span class="settings-model-actions">
+        <button type="button" data-model-provider-id="${escapeHtml(entry.provider.id)}" data-model-id="${escapeHtml(entry.model.id)}">${active ? "Selected" : "Use"}</button>
+        <button type="button" data-test-chat-provider-id="${escapeHtml(entry.provider.id)}" data-test-chat-model-id="${escapeHtml(entry.model.id)}">Test chat</button>
+      </span>
+    </div>
   `;
 }
 
@@ -927,7 +1004,6 @@ async function selectGlobalModel(providerId: string, modelId: string) {
   });
   applyConfig(config);
   selectedSettingsProviderId = providerId;
-  settingsSection = "models";
   renderSettings();
   setStatus(`Model selected: ${modelId}`);
 }
@@ -950,12 +1026,22 @@ function renderModelPreview(provider: AiProviderConfig): string {
     return '<p class="empty">No models loaded yet.</p>';
   }
   return provider.models
-    .map((model) => `
-      <div class="settings-model-row">
-        <span>${escapeHtml(model.name)}</span>
-        <span>${renderModelTags(model)}</span>
-      </div>
-    `)
+    .map((model) => {
+      const active = aiConfig?.provider === provider.id && aiConfig.model === model.id ? " active" : "";
+      return `
+        <div class="settings-model-row${active}">
+          <span class="settings-model-main">
+            <strong>${escapeHtml(model.name)}</strong>
+            <small>${escapeHtml(model.id)}</small>
+          </span>
+          <span class="model-tags">${renderModelTags(model)}</span>
+          <span class="settings-model-actions">
+            <button type="button" data-model-provider-id="${escapeHtml(provider.id)}" data-model-id="${escapeHtml(model.id)}">${active ? "Selected" : "Use"}</button>
+            <button type="button" data-test-chat-provider-id="${escapeHtml(provider.id)}" data-test-chat-model-id="${escapeHtml(model.id)}">Test chat</button>
+          </span>
+        </div>
+      `;
+    })
     .join("");
 }
 

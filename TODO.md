@@ -34,6 +34,9 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Recommended provider cards now include provider homepage links, and the model selection view shows the selected model in a fixed panel above the model list.
 - Added per-provider enabled toggles. The model selection only includes models from enabled and configured providers, and the local config's old `ollama` provider entry was removed so Ollama local only appears after explicit add.
 - Added model-refresh based provider status, optional model-specific chat tests, provider-nav status dots, custom/local API-key-required settings and an API-key reveal toggle in the provider settings.
+- Kept the provider navigation stable across provider and All Models views, moved provider enable toggles into the provider cards and made provider-local model lists selectable.
+- Replaced the provider-level chat test with per-model Test chat actions and a small prompt/response dialog.
+- Turned the model test dialog into a small multi-turn chat without explicit response token limits.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -72,7 +75,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 ## Last Verified State
 
 - Date: 2026-05-03
-- Build: `npm run build` passed after separating model refresh from model-specific chat tests and adding custom/local API-key-required settings.
+- Build: `npm run build` passed after turning the per-model test dialog into a small multi-turn chat.
 - Rust tests: `cargo test` passed with 2 tests passed and 1 network test ignored.
 - Node.js: development/build requires Node >=20 because of the current frontend dependency set; installed Tauri app does not require Node at runtime.
 - Format check: `cargo fmt --check` passed.

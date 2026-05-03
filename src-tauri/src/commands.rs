@@ -2,7 +2,7 @@ use reqwest::Client;
 use tauri::State;
 
 use crate::ai;
-use crate::models::{AiConfig, AiProviderInfo, NewVideo, Video};
+use crate::models::{AiChatMessage, AiConfig, AiProviderInfo, NewVideo, Video};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::youtube;
 
@@ -117,27 +117,23 @@ pub async fn refresh_provider_models(
 }
 
 #[tauri::command]
-pub async fn test_provider_connection(
+pub async fn test_provider_model_chat(
     paths: State<'_, AppPaths>,
     provider_id: String,
-) -> AppResult<AiConfig> {
+    model_id: String,
+    messages: Vec<AiChatMessage>,
+) -> AppResult<String> {
     let config = storage::get_ai_config(&paths)?;
     let provider = storage::provider_config(&config, &provider_id)
         .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
     let mut request_config = config.clone();
     request_config.provider = provider.id.clone();
     request_config.api_key = provider.api_key.clone();
-    request_config.model = provider.model.clone();
+    request_config.model = model_id;
     request_config.endpoint_override = provider.endpoint_override.clone();
 
     let client = http_client()?;
-    match ai::test_connection(&client, &request_config).await {
-        Ok(()) => storage::clear_provider_error(&paths, &provider_id),
-        Err(error) => {
-            let _ = storage::set_provider_error(&paths, &provider_id, error.clone());
-            Err(error)
-        }
-    }
+    ai::test_chat(&client, &request_config, &messages).await
 }
 
 #[tauri::command]

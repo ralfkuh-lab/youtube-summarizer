@@ -283,10 +283,6 @@ pub fn set_provider_error(
     set_provider_last_error(paths, provider_id, Some(error))
 }
 
-pub fn clear_provider_error(paths: &AppPaths, provider_id: &str) -> AppResult<AiConfig> {
-    set_provider_last_error(paths, provider_id, None)
-}
-
 fn set_provider_last_error(
     paths: &AppPaths,
     provider_id: &str,

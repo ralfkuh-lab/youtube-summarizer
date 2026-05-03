@@ -52,6 +52,12 @@ pub struct AiModel {
     pub availability: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AiProviderInfo {
     pub id: String,
