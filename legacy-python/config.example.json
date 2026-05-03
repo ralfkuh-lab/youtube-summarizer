@@ -1,8 +1,0 @@
-{
-  "ai": {
-    "provider": "opencode_go",
-    "api_key": "",
-    "model": "qwen3.5-plus",
-    "endpoint_override": null
-  }
-}

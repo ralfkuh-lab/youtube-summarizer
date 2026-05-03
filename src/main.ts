@@ -51,6 +51,10 @@ let videos: Video[] = [];
 let activeVideoId: number | null = null;
 let activeTab: TabName = "transcript";
 let busy = false;
+let videoSearchQuery = "";
+let videoStatusFilter: VideoStatusFilter = "all";
+
+type VideoStatusFilter = "all" | "transcript" | "missing-transcript" | "summary" | "missing-summary";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -73,6 +77,18 @@ app.innerHTML = `
 
   <main>
     <aside id="libraryPanel">
+      <div class="library-tools">
+        <div class="library-search">
+          <input id="videoSearchInput" type="search" placeholder="Videos suchen..." autocomplete="off" />
+        </div>
+        <div class="library-filters" aria-label="Videofilter">
+          <button class="filter-chip active" data-video-filter="all">Alle</button>
+          <button class="filter-chip" data-video-filter="transcript">Transkript</button>
+          <button class="filter-chip" data-video-filter="missing-transcript">Ohne T</button>
+          <button class="filter-chip" data-video-filter="summary">Zusammenfassung</button>
+          <button class="filter-chip" data-video-filter="missing-summary">Ohne Z</button>
+        </div>
+      </div>
       <div id="videoList"></div>
     </aside>
     <section id="detail">
@@ -243,6 +259,23 @@ function bindEvents() {
   });
 
   bindAiConfigEvents();
+
+  $("#videoSearchInput").addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    videoSearchQuery = target.value.trim();
+    renderVideoList();
+  });
+
+  document.querySelectorAll<HTMLButtonElement>(".filter-chip").forEach((button) => {
+    button.addEventListener("click", () => {
+      const filter = button.dataset.videoFilter;
+      if (!isVideoStatusFilter(filter)) return;
+      videoStatusFilter = filter;
+      renderVideoFilters();
+      renderVideoList();
+    });
+  });
 
   $("#summarizeBtn").addEventListener("click", openSummaryDialog);
   $("#reloadTranscriptBtn").addEventListener("click", () => void refreshActiveTranscript());
@@ -447,18 +480,25 @@ function renderVideoList() {
     return;
   }
 
-  videoList.innerHTML = videos
+  const filteredVideos = getFilteredVideos();
+  if (!filteredVideos.length) {
+    videoList.innerHTML = '<p class="empty-list">Keine passenden Videos</p>';
+    return;
+  }
+
+  videoList.innerHTML = filteredVideos
     .map((video) => {
       const activeClass = activeVideoId === video.id ? " active" : "";
-      const transcript = video.transcript ? "T" : "";
-      const summary = video.summary ? "Z" : "";
       const thumb = video.thumbnail || video.thumbnail_url;
       return `
         <button class="video-item${activeClass}" data-id="${video.id}">
           <img src="${escapeHtml(thumb)}" alt="" loading="lazy" />
           <span class="info">
             <span class="title">${escapeHtml(video.title)}</span>
-            <span class="meta">${escapeHtml(transcript)} ${escapeHtml(summary)}</span>
+            <span class="meta">
+              ${renderVideoStatusChip("T", !!video.transcript, "Transkript")}
+              ${renderVideoStatusChip("Z", !!video.summary, "Zusammenfassung")}
+            </span>
           </span>
         </button>
       `;
@@ -473,6 +513,45 @@ function renderVideoList() {
       }
     });
   });
+}
+
+function renderVideoFilters() {
+  document.querySelectorAll<HTMLButtonElement>(".filter-chip").forEach((button) => {
+    button.classList.toggle("active", button.dataset.videoFilter === videoStatusFilter);
+  });
+}
+
+function getFilteredVideos(): Video[] {
+  const normalizedQuery = normalizeSearch(videoSearchQuery);
+  return videos.filter((video) => matchesVideoStatusFilter(video) && matchesVideoSearch(video, normalizedQuery));
+}
+
+function matchesVideoStatusFilter(video: Video): boolean {
+  switch (videoStatusFilter) {
+    case "transcript":
+      return !!video.transcript;
+    case "missing-transcript":
+      return !video.transcript;
+    case "summary":
+      return !!video.summary;
+    case "missing-summary":
+      return !video.summary;
+    case "all":
+      return true;
+  }
+}
+
+function matchesVideoSearch(video: Video, normalizedQuery: string): boolean {
+  if (!normalizedQuery) return true;
+  return [video.title, video.url, video.video_id, video.published_at]
+    .filter((value): value is string => !!value)
+    .some((value) => normalizeSearch(value).includes(normalizedQuery));
+}
+
+function renderVideoStatusChip(label: string, available: boolean, title: string): string {
+  const stateClass = available ? " available" : "";
+  const status = available ? "vorhanden" : "fehlt";
+  return `<span class="status-chip${stateClass}" title="${title} ${status}">${label}</span>`;
 }
 
 function showDetail(video: Video) {
@@ -656,6 +735,20 @@ function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+}
+
+function normalizeSearch(value: string): string {
+  return value.toLocaleLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function isVideoStatusFilter(value: string | undefined): value is VideoStatusFilter {
+  return (
+    value === "all" ||
+    value === "transcript" ||
+    value === "missing-transcript" ||
+    value === "summary" ||
+    value === "missing-summary"
+  );
 }
 
 function capitalize(value: string): string {

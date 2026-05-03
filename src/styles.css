@@ -167,9 +167,60 @@ main {
 #libraryPanel {
   width: 320px;
   min-height: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
   border-right: 1px solid var(--border);
+}
+
+.library-tools {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.library-search input {
+  width: 100%;
+}
+
+.library-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-chip {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.filter-chip:hover {
+  color: var(--text);
+  border-color: var(--panel-3);
+  background: var(--panel-3);
+}
+
+.filter-chip.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(78, 161, 255, 0.16);
+}
+
+#videoList {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
 }
 
 .empty-list {
@@ -226,9 +277,31 @@ main {
 }
 
 .video-item .meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   color: var(--muted);
   font-size: 11px;
   min-height: 14px;
+}
+
+.status-chip {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.status-chip.available {
+  color: var(--text);
+  border-color: rgba(78, 161, 255, 0.65);
+  background: rgba(78, 161, 255, 0.14);
 }
 
 #detail {

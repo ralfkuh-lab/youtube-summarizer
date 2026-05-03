@@ -2,15 +2,17 @@
 
 Desktop app for collecting YouTube videos, loading transcripts and creating AI summaries.
 
-The current implementation is a Tauri 2 app with a TypeScript/Vite frontend and a Rust backend. The previous Python version is kept in `legacy-python/` for reference until the new app has fully reached feature parity.
+The app is implemented with Tauri 2, a TypeScript/Vite frontend and a Rust backend.
 
 ## Current Status
 
 - Add YouTube videos by URL or video ID.
 - Store videos in a local SQLite database.
 - Load video metadata, thumbnails, transcripts and chapters where available.
+- Search the video library and filter by transcript/summary availability.
 - Refresh missing transcripts for existing videos.
-- Configure AI provider, API key, model and optional endpoint override in the app.
+- Configure recommended, custom and local OpenAI-compatible AI providers in the app.
+- Refresh and search provider model lists, choose the summary model and test individual models.
 - Generate Markdown summaries from transcripts.
 - Dev-only local automation API for functional testing by agents.
 
@@ -103,4 +105,3 @@ The API is debug-only and binds to `127.0.0.1`.
 
 - See `TODO.md` for the current working state and next tasks.
 - See `AGENTS.md` for instructions aimed at AI coding agents.
-- Do not remove `legacy-python/` yet; it is the reference implementation until the Tauri app is complete.

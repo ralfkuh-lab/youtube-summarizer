@@ -8,12 +8,13 @@ Build a cross-platform desktop app for Linux, Windows and macOS that can collect
 
 ## Current Direction
 
-The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript frontend and Rust backend. The old Python implementation remains in `legacy-python/` until the new app reaches the desired functional level.
+The app is now focused on the Tauri 2 implementation with a TypeScript frontend and Rust backend. The previous Python/PySide implementation has been removed.
 
 ## Done
 
 - Created the Tauri 2 project structure.
-- Moved the previous Python implementation to `legacy-python/`.
+- Moved the previous Python implementation aside during the rewrite.
+- Removed the old Python implementation after confirming it is no longer needed.
 - Implemented local SQLite storage for videos and AI settings.
 - Implemented video add/delete/list/detail flows.
 - Implemented YouTube metadata, thumbnail, transcript and chapter loading.
@@ -28,7 +29,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Split AI settings into separate provider configuration and global model selection areas. The model list now spans all providers, supports name/provider/tag search and has a "free only" filter that includes all Ollama Cloud models because of the free usage allowance.
 - Added OpenRouter as a recommended provider, support for multiple custom OpenAI-compatible providers, fixed settings headers/forms with only the model lists scrolling, removed heuristic `Low cost`/`Fast` model tags, and removed the six-model preview limit in provider details.
 - Recommended provider order is Ollama Cloud, OpenRouter, OpenCode Zen, OpenCode Go.
-- Added custom-provider deletion using the legacy trash-button style used by video deletion.
+- Added custom-provider deletion using the existing trash-button style used by video deletion.
 - Removed the built-in default custom provider and replaced the small custom-provider plus button with an add-card at the end of the Custom/local list.
 - Treat Ollama local as a user-added custom/local provider instead of a default provider; it can be added via an add-card and deleted like other custom providers.
 - Recommended provider cards now include provider homepage links, and the model selection view shows the selected model in a fixed panel above the model list.
@@ -41,6 +42,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Render the provider model-refresh timestamp as a relative time (e.g. "vor 3 Tagen") with the absolute date as tooltip.
 - Added an Ollama Cloud Plan (Free/Pro/Max) selector with selective probing: probe only on Free tier and only for models without a stored availability, plus a manual "Re-probe availability" button. Pro/Max suppresses Free / Subscription tags.
 - Pulled the AI provider config out of the app's general modules: backend now lives under `src-tauri/src/ai_config/` (types, client, store), and the frontend UI moved to `src/ai-config.ts` with shared helpers in `src/dom-utils.ts`.
+- Added sidebar video search plus transcript/summary availability filters with compact status chips.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -49,25 +51,21 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 
 ## Next TODOs
 
-- AI provider config refactoring & improvements — in-app separation done (backend `ai_config` module + frontend `src/ai-config.ts` + shared `src/dom-utils.ts`). Open: extract into a reusable backend crate + framework-agnostic frontend component, plus the remaining UX work (context/price tags, inline field validation). Details in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
-- Follow-up cleanup from the AI/provider settings changes:
-  - Replace emoji trash buttons with a consistent icon approach when the frontend icon strategy is decided.
-  - Consider splitting future broad UI commits more narrowly when they touch independent areas such as dependencies, link handling, Markdown rendering and settings UX.
-- Plan future toolbar/sidebar features:
-  - Search and filter videos.
-  - Compact status chips/icons for transcript and summary availability.
+- Next app features:
   - Collections or playlists.
   - Import/export.
   - Batch summarization.
   - Refresh metadata/transcripts.
-- Add richer provider metadata such as pricing links, context limits and preferred summarization models.
 - Improve frontend polish and interaction states.
 - Add better empty/error states for transcript and summary failures.
-- Decide whether the video list should include compact status icons instead of plain `T`/`Z` markers.
+- Follow-up cleanup from the AI/provider settings changes:
+  - Replace emoji trash buttons with a consistent icon approach when the frontend icon strategy is decided.
+  - Consider splitting future broad UI commits more narrowly when they touch independent areas such as dependencies, link handling, Markdown rendering and settings UX.
+- Add richer provider metadata such as pricing links, context limits and preferred summarization models.
 - Add Windows and macOS packaging notes once tested on those platforms.
 - Add release checklist once app behavior stabilizes.
 - Review whether automation API responses should return compact video objects to avoid huge payloads from thumbnails/transcripts.
-- Decide when `legacy-python/` can be deleted.
+- Backlog: AI provider config reuse/refactor beyond this app. Current in-app separation is enough for now; only revisit the reusable backend crate/framework-agnostic component idea when there is a concrete second consumer. Details in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
 
 ## Known Notes
 
@@ -79,10 +77,11 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 ## Last Verified State
 
 - Date: 2026-05-03
-- Build: `npm run build` passed after the AI settings layout unification and the prefilled chat test prompt.
-- Rust tests: `cargo test` passed with 2 tests passed and 1 network test ignored.
+- Docs: README, AGENTS and TODO updated after removing the Python legacy implementation and checking the next TODO order.
+- Build: `npm run build` passed after adding sidebar search/filter controls, removing the old Python implementation and updating docs/TODOs.
+- Previous Rust tests: `cargo test` passed with 2 tests passed and 1 network test ignored.
 - Node.js: development/build requires Node >=20 because of the current frontend dependency set; installed Tauri app does not require Node at runtime.
-- Format check: `cargo fmt --check` passed.
+- Previous format check: `cargo fmt --check` passed.
 - Automation API check: `GET /api/health`, `GET /api/providers`, `GET /api/config`, `POST /api/models/opencode_go` and `POST /api/models/opencode_zen` passed while the Tauri dev app was running.
 - Checked OpenCode Zen chat completions with the saved key: paid model `kimi-k2.6` returns `CreditsError` for insufficient balance, while free model `minimax-m2.5-free` succeeds. App error handling now reports the billing issue instead of saying the API key is invalid.
 - Automation API check for the new model selection data: `GET /api/config` confirmed shared OpenCode Go/Zen API keys, and `POST /api/models/ollama_cloud` refreshed 39 Ollama Cloud models with all 39 marked free.

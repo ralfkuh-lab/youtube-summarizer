@@ -1,6 +1,6 @@
-# AI-Provider-Config — Verbesserungen & Refactoring-Plan
+# AI-Provider-Config — Backlog
 
-Stand: 2026-05-03. Bezugspunkt ist die aktuelle KI-Config in `src/main.ts` + `src-tauri/src/ai.rs` / `models.rs` / `storage.rs`.
+Stand: 2026-05-03. Die KI-Config ist innerhalb der App bereits separat genug: Backend in `src-tauri/src/ai_config/`, Frontend in `src/ai-config.ts`, gemeinsame UI-Helfer in `src/dom-utils.ts`. Ein eigenes wiederverwendbares Crate oder eine framework-agnostische Komponente ist aktuell nicht priorisiert.
 
 ## Ist-Zustand (was bereits gut funktioniert)
 
@@ -42,18 +42,9 @@ Stand: 2026-05-03. Bezugspunkt ist die aktuelle KI-Config in `src/main.ts` + `sr
 
 **Aufwand:** Mittel. Erfordert pro Feld einen Validierungs-Hook und ein Error-Span.
 
-## Refactoring für Wiederverwendbarkeit
+## Spätere Refactoring-Ideen
 
-Heute ist die KI-Config eng mit `main.ts` verzahnt: HTML-Strings, globale Variablen (`aiConfig`, `aiProviders`, `selectedSettingsProviderId`), direkte `setStatus`-Aufrufe, `invoke()`-Calls. Für Wiederverwendung in anderen Apps zu unspezifisch.
-
-### Pragmatische erste Stufe (geplant)
-
-Statt direkt eines eigenen Crates + Web Component erst nur **Modul-Separation in dieser App**, damit der Code für andere Projekte einfach rauszuziehen ist:
-
-- Backend: eigenes Modul `ai_config/` (Types, HTTP-Client, JSON-Config-Persistierung) — entkoppelt von `models.rs`/`storage.rs` der Video-App.
-- Frontend: AI-Settings-UI in eigene Datei (`src/ai-config.ts` o. ä.) statt im `main.ts`-Sammelbecken.
-
-### Spätere Ziel-Architektur (wenn der Bedarf konkret wird)
+Nur angehen, wenn wirklich Bedarf entsteht, die KI-Provider-Config außerhalb dieser App wiederzuverwenden.
 
 **Backend-Crate** (`ai-providers` als eigenständiges Rust-Crate, Tauri-unabhängig):
 

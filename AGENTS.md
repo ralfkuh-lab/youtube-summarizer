@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is a Tauri 2 rewrite of a previous Python YouTube summarizer. Work in the Tauri app by default. The legacy Python code in `legacy-python/` is reference material only unless the user explicitly asks to change it.
+This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri app by default.
 
 ## Important Files
 
@@ -8,7 +8,7 @@ This repository is a Tauri 2 rewrite of a previous Python YouTube summarizer. Wo
 - `src/styles.css`: frontend styling.
 - `src-tauri/src/commands.rs`: Tauri command layer and shared command implementations.
 - `src-tauri/src/youtube.rs`: YouTube metadata, transcript and chapter fetching.
-- `src-tauri/src/ai.rs`: AI provider request handling.
+- `src-tauri/src/ai_config/`: AI provider config, model refresh, chat test and summary request handling.
 - `src-tauri/src/storage.rs`: config and SQLite persistence.
 - `src-tauri/src/automation.rs`: debug-only local automation API for functional tests.
 - `TODO.md`: current collaboration state, open tasks and session handoff notes.
@@ -37,8 +37,7 @@ cargo test fetches_transcript_from_innertube_caption_url -- --ignored
 
 ## Working Rules
 
-- Keep changes scoped to the Tauri rewrite unless asked otherwise.
-- Preserve `legacy-python/` until the user confirms deletion.
+- Keep changes scoped to the Tauri app unless asked otherwise.
 - Do not commit API keys, local databases or generated build output.
 - Prefer existing patterns in the app over introducing new frameworks.
 - When changing transcript, AI or storage behavior, run `npm run build` and `cargo test`.
