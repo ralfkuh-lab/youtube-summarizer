@@ -9,6 +9,9 @@
     "preview": "vite preview",
     "tauri": "tauri"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-opener": "^2.5.4",

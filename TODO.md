@@ -44,7 +44,6 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 
 - AI provider config refactoring & improvements — extract into reusable backend crate + framework-agnostic frontend component, plus the remaining prioritized UX/feature improvements (subscription pill, context/price tags, probe TTL cache, persisted free-only filter, relative refresh times, inline validation, default model per provider, per-use-case model assignment). Details and architecture proposal in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
 - Follow-up cleanup from the AI/provider settings changes:
-  - Check whether `marked` v18's Node >=20 requirement is acceptable for the project; pin/downgrade if Node 18 support is still desired.
   - Replace emoji trash buttons with a consistent icon approach when the frontend icon strategy is decided.
   - Consider splitting future broad UI commits more narrowly when they touch independent areas such as dependencies, link handling, Markdown rendering and settings UX.
 - Plan future toolbar/sidebar features:
@@ -75,6 +74,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Date: 2026-05-03
 - Build: `npm run build` passed after separating model refresh from model-specific chat tests and adding custom/local API-key-required settings.
 - Rust tests: `cargo test` passed with 2 tests passed and 1 network test ignored.
+- Node.js: development/build requires Node >=20 because of the current frontend dependency set; installed Tauri app does not require Node at runtime.
 - Format check: `cargo fmt --check` passed.
 - Automation API check: `GET /api/health`, `GET /api/providers`, `GET /api/config`, `POST /api/models/opencode_go` and `POST /api/models/opencode_zen` passed while the Tauri dev app was running.
 - Checked OpenCode Zen chat completions with the saved key: paid model `kimi-k2.6` returns `CreditsError` for insufficient balance, while free model `minimax-m2.5-free` succeeds. App error handling now reports the billing issue instead of saying the API key is invalid.
