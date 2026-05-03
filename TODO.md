@@ -33,6 +33,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 - Treat Ollama local as a user-added custom/local provider instead of a default provider; it can be added via an add-card and deleted like other custom providers.
 - Recommended provider cards now include provider homepage links, and the model selection view shows the selected model in a fixed panel above the model list.
 - Added per-provider enabled toggles. The model selection only includes models from enabled and configured providers, and the local config's old `ollama` provider entry was removed so Ollama local only appears after explicit add.
+- Added model-refresh based provider status, optional model-specific chat tests, provider-nav status dots, custom/local API-key-required settings and an API-key reveal toggle in the provider settings.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -41,7 +42,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 
 ## Next TODOs
 
-- AI provider config refactoring & improvements — extract into reusable backend crate + framework-agnostic frontend component, plus 11 prioritized UX/feature improvements (test connection button, status dots, subscription pill, context/price tags, key reveal, probe TTL cache, persisted free-only filter, relative refresh times, inline validation, default model per provider, per-use-case model assignment). Details and architecture proposal in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
+- AI provider config refactoring & improvements — extract into reusable backend crate + framework-agnostic frontend component, plus the remaining prioritized UX/feature improvements (subscription pill, context/price tags, probe TTL cache, persisted free-only filter, relative refresh times, inline validation, default model per provider, per-use-case model assignment). Details and architecture proposal in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
 - Follow-up cleanup from the AI/provider settings changes:
   - Check whether `marked` v18's Node >=20 requirement is acceptable for the project; pin/downgrade if Node 18 support is still desired.
   - Replace emoji trash buttons with a consistent icon approach when the frontend icon strategy is decided.
@@ -72,7 +73,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 ## Last Verified State
 
 - Date: 2026-05-03
-- Build: `npm run build` passed after the SQLite/schema cleanup and Ollama Cloud availability-state follow-up.
+- Build: `npm run build` passed after separating model refresh from model-specific chat tests and adding custom/local API-key-required settings.
 - Rust tests: `cargo test` passed with 2 tests passed and 1 network test ignored.
 - Format check: `cargo fmt --check` passed.
 - Automation API check: `GET /api/health`, `GET /api/providers`, `GET /api/config`, `POST /api/models/opencode_go` and `POST /api/models/opencode_zen` passed while the Tauri dev app was running.

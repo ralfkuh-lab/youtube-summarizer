@@ -45,6 +45,7 @@ pub fn run() {
             commands::add_custom_provider,
             commands::delete_custom_provider,
             commands::refresh_provider_models,
+            commands::test_provider_connection,
             commands::get_videos,
             commands::get_video_detail,
             commands::add_video,

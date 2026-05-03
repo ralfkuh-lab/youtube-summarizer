@@ -18,6 +18,7 @@ type AiProviderConfig = {
   id: string;
   name?: string | null;
   enabled: boolean;
+  api_key_required?: boolean;
   api_key: string;
   model: string;
   endpoint_override?: string | null;
@@ -93,6 +94,7 @@ let aiProviders: AiProviderInfo[] = [];
 let selectedSettingsProviderId = "opencode_go";
 let settingsSection: "providers" | "models" = "providers";
 let showOnlyFreeModels = false;
+const revealedApiKeys = new Set<string>();
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -363,6 +365,12 @@ function bindEvents() {
     if (target.closest("#settingsRefreshModelsBtn")) {
       void refreshModelsForProvider(selectedSettingsProviderId);
     }
+    if (target.closest("#settingsTestConnectionBtn")) {
+      void testProviderConnection(selectedSettingsProviderId);
+    }
+    if (target.closest("#toggleApiKeyVisibility")) {
+      toggleApiKeyVisibility(selectedSettingsProviderId);
+    }
     if (target.closest("#refreshAllModelsBtn")) {
       void refreshAllModels();
     }
@@ -387,7 +395,8 @@ function bindEvents() {
     if (
       target.id === "configApiKey" ||
       target.id === "configEndpoint" ||
-      target.id === "configProviderName"
+      target.id === "configProviderName" ||
+      target.id === "configApiKeyRequired"
     ) {
       void persistVisibleProviderForm(true)
         .then(() => setStatus("Konfiguration gespeichert"))
@@ -569,6 +578,9 @@ function renderSettings() {
   const selected = getProviderConfig(selectedSettingsProviderId) ?? getProviderConfig(aiConfig.provider);
   if (!selected) return;
   const info = getProviderInfo(selected.id);
+  const apiKeyVisible = revealedApiKeys.has(selected.id);
+  const apiKeyRequired = providerRequiresApiKey(selected);
+  const canTestChat = !!selected.model.trim();
   $("#providerSettingsList").innerHTML = renderProviderNavigation(selected.id);
 
   $("#providerSettingsBody").innerHTML = `
@@ -586,8 +598,15 @@ function renderSettings() {
       <label ${isCustomProvider(selected.id) ? "" : "hidden"}>Name
         <input id="configProviderName" type="text" value="${escapeHtml(providerDisplayName(selected))}" placeholder="Custom provider name" />
       </label>
+      <label class="toggle-row provider-api-key-required" ${isUserManagedProvider(selected.id) ? "" : "hidden"}>
+        <input id="configApiKeyRequired" type="checkbox" ${apiKeyRequired ? "checked" : ""} />
+        API key required
+      </label>
       <label>API key
-        <input id="configApiKey" type="password" value="${escapeHtml(selected.api_key)}" placeholder="${info?.requires_api_key ? "Required" : "Optional"}" />
+        <span class="secret-input-row">
+          <input id="configApiKey" type="${apiKeyVisible ? "text" : "password"}" value="${escapeHtml(selected.api_key)}" placeholder="${apiKeyRequired ? "Required" : "Optional"}" />
+          <button id="toggleApiKeyVisibility" class="icon-action-btn" type="button" title="${apiKeyVisible ? "Hide API key" : "Show API key"}" aria-label="${apiKeyVisible ? "Hide API key" : "Show API key"}">${apiKeyVisible ? "🙈" : "👁"}</button>
+        </span>
       </label>
       <input id="configModel" type="hidden" value="${escapeHtml(selected.model)}" />
       <label ${info?.endpoint_editable || isCustomProvider(selected.id) ? "" : "hidden"}>Chat endpoint
@@ -595,6 +614,7 @@ function renderSettings() {
       </label>
       <div class="provider-actions">
         <button id="settingsRefreshModelsBtn" type="button">Refresh models</button>
+        <button id="settingsTestConnectionBtn" type="button" ${canTestChat ? "" : "disabled"} title="${canTestChat ? "Send a minimal chat request to the selected model" : "Select a model before testing chat"}">Test chat</button>
         <span>${renderModelRefreshState(selected)}</span>
       </div>
       ${selected.last_error ? `<p class="settings-error">${escapeHtml(selected.last_error)}</p>` : ""}
@@ -633,12 +653,31 @@ function renderProviderNavItem(providerId: string, selectedId: string): string {
   return `
     <div class="provider-nav-row${active}">
       <button class="provider-nav-item" data-provider-id="${escapeHtml(providerId)}">
-        <span class="provider-name">${escapeHtml(config ? providerDisplayName(config) : info?.name ?? providerId)}</span>
+        <span class="provider-name-row">
+          <span class="provider-status-dot ${providerStatusClass(config)}" title="${escapeHtml(providerStatusLabel(config))}"></span>
+          <span class="provider-name">${escapeHtml(config ? providerDisplayName(config) : info?.name ?? providerId)}</span>
+        </span>
         <span class="provider-meta">${escapeHtml(info?.badge ?? "Custom")}${!enabled ? " · disabled" : ""}${configured ? " · configured" : ""}</span>
       </button>
       ${isUserManagedProvider(providerId) ? `<button class="delete-icon-btn" data-delete-provider-id="${escapeHtml(providerId)}" title="Delete provider" aria-label="Delete provider">🗑</button>` : ""}
     </div>
   `;
+}
+
+function providerStatusClass(provider?: AiProviderConfig): string {
+  if (!provider) return "unconfigured";
+  if (provider.last_error) return "error";
+  if (!isProviderConfigured(provider)) return "unconfigured";
+  if (!provider.enabled) return "disabled";
+  return "ready";
+}
+
+function providerStatusLabel(provider?: AiProviderConfig): string {
+  if (!provider) return "Not configured";
+  if (provider.last_error) return "Last check failed";
+  if (!isProviderConfigured(provider)) return "Not configured";
+  if (!provider.enabled) return "Configured but disabled";
+  return "Ready";
 }
 
 async function addCustomProvider() {
@@ -657,6 +696,7 @@ async function setProviderEnabled(providerId: string, enabled: boolean) {
     providerId,
     name: provider.name ?? null,
     enabled,
+    apiKeyRequired: provider.api_key_required ?? false,
     apiKey: provider.api_key,
     model: provider.model,
     endpointOverride: provider.endpoint_override ?? "",
@@ -687,13 +727,18 @@ async function persistVisibleProviderForm(reportErrors = false) {
   const apiKeyInput = document.querySelector<HTMLInputElement>("#configApiKey");
   const modelInput = document.querySelector<HTMLInputElement>("#configModel");
   const endpointInput = document.querySelector<HTMLInputElement>("#configEndpoint");
+  const apiKeyRequiredInput = document.querySelector<HTMLInputElement>("#configApiKeyRequired");
   if (!apiKeyInput || !modelInput) return;
   const currentEnabled = getProviderConfig(selectedSettingsProviderId)?.enabled ?? true;
+  const currentApiKeyRequired = isUserManagedProvider(selectedSettingsProviderId)
+    ? (apiKeyRequiredInput?.checked ?? false)
+    : providerRequiresApiKey(getProviderConfig(selectedSettingsProviderId));
 
   const config = await invoke<AiConfig>("save_provider_config", {
     providerId: selectedSettingsProviderId,
     name: document.querySelector<HTMLInputElement>("#configProviderName")?.value ?? null,
     enabled: currentEnabled,
+    apiKeyRequired: currentApiKeyRequired,
     apiKey: apiKeyInput.value,
     model: modelInput.value,
     endpointOverride: endpointInput?.value ?? "",
@@ -721,6 +766,41 @@ async function refreshModelsForProvider(providerId: string, silent = false) {
   } catch (error) {
     if (!silent) setStatus(errorMessage(error));
   }
+}
+
+async function testProviderConnection(providerId: string) {
+  try {
+    const provider = getProviderConfig(providerId);
+    if (!provider?.model.trim()) {
+      setStatus("Bitte zuerst im Models-Tab ein Modell auswählen");
+      return;
+    }
+    setStatus("Testing provider chat...");
+    if (!$("#settingsModal").hidden && document.querySelector("#configModel") && providerId === selectedSettingsProviderId) {
+      await persistVisibleProviderForm(true);
+    }
+    const config = await invoke<AiConfig>("test_provider_connection", { providerId });
+    applyConfig(config);
+    setStatus("Provider chat works");
+  } catch (error) {
+    setStatus(errorMessage(error));
+    try {
+      const config = await invoke<AiConfig>("get_config");
+      applyConfig(config);
+    } catch {
+      // Keep the original connection-test error visible.
+    }
+  }
+}
+
+function toggleApiKeyVisibility(providerId: string) {
+  if (revealedApiKeys.has(providerId)) {
+    revealedApiKeys.delete(providerId);
+  } else {
+    revealedApiKeys.add(providerId);
+  }
+  renderSettings();
+  queueMicrotask(() => document.querySelector<HTMLInputElement>("#configApiKey")?.focus());
 }
 
 async function refreshAllModels() {
@@ -839,6 +919,7 @@ async function selectGlobalModel(providerId: string, modelId: string) {
     providerId,
     name: provider.name ?? null,
     enabled: true,
+    apiKeyRequired: provider.api_key_required ?? false,
     apiKey: provider.api_key,
     model: modelId,
     endpointOverride: provider.endpoint_override ?? "",
@@ -936,11 +1017,16 @@ function isUserManagedProvider(providerId: string): boolean {
 }
 
 function isProviderConfigured(provider: AiProviderConfig): boolean {
-  const info = getProviderInfo(provider.id);
-  if (info?.requires_api_key && !provider.api_key.trim()) return false;
+  if (providerRequiresApiKey(provider) && !provider.api_key.trim()) return false;
   if (isUserManagedProvider(provider.id) && !provider.endpoint_override?.trim()) return false;
   if (!provider.models.length) return false;
   return true;
+}
+
+function providerRequiresApiKey(provider?: AiProviderConfig): boolean {
+  if (!provider) return false;
+  const info = getProviderInfo(provider.id);
+  return info?.requires_api_key ?? !!provider.api_key_required;
 }
 
 function providerDisplayName(provider: AiProviderConfig): string {

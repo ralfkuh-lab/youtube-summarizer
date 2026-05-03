@@ -7,7 +7,8 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::models::{
-    default_ai_provider_configs, AiConfig, AiProviderConfig, AppConfig, Chapter, NewVideo, Video,
+    default_ai_provider_configs, AiConfig, AiModel, AiProviderConfig, AppConfig, Chapter, NewVideo,
+    Video,
 };
 
 pub type AppResult<T> = Result<T, String>;
@@ -97,6 +98,7 @@ pub fn update_provider_config(
     provider_id: String,
     name: Option<String>,
     enabled: bool,
+    api_key_required: Option<bool>,
     api_key: String,
     model: String,
     endpoint_override: Option<String>,
@@ -111,12 +113,17 @@ pub fn update_provider_config(
         provider_config(&ai, &provider_id).and_then(|provider| provider.models_updated_at.clone());
     let existing_name =
         provider_config(&ai, &provider_id).and_then(|provider| provider.name.clone());
+    let existing_api_key_required =
+        provider_config(&ai, &provider_id).map(|provider| provider.api_key_required);
     upsert_provider(
         &mut ai,
         AiProviderConfig {
             id: provider_id.clone(),
             name: normalize_name(name).or(existing_name),
             enabled,
+            api_key_required: api_key_required
+                .or(existing_api_key_required)
+                .unwrap_or(false),
             api_key: api_key.clone(),
             model: model.clone(),
             endpoint_override: normalize_endpoint(endpoint_override.clone()),
@@ -153,6 +160,7 @@ pub fn add_custom_provider(paths: &AppPaths, local_ollama: bool) -> AppResult<Ai
                 id: "ollama".to_string(),
                 name: Some("Ollama local".to_string()),
                 enabled: true,
+                api_key_required: false,
                 api_key: String::new(),
                 model: "llama3.2".to_string(),
                 endpoint_override: Some("http://localhost:11434/v1/chat/completions".to_string()),
@@ -175,6 +183,7 @@ pub fn add_custom_provider(paths: &AppPaths, local_ollama: bool) -> AppResult<Ai
                 id,
                 name: Some(format!("Custom {next_number}")),
                 enabled: true,
+                api_key_required: false,
                 api_key: String::new(),
                 model: String::new(),
                 endpoint_override: Some("http://localhost:1234/v1/chat/completions".to_string()),
@@ -218,7 +227,7 @@ fn is_user_managed_provider(provider_id: &str) -> bool {
 pub fn update_provider_models(
     paths: &AppPaths,
     provider_id: &str,
-    models: Vec<crate::models::AiModel>,
+    models: Vec<AiModel>,
     updated_at: String,
     last_error: Option<String>,
 ) -> AppResult<AiConfig> {
@@ -229,19 +238,59 @@ pub fn update_provider_models(
         .iter_mut()
         .find(|provider| provider.id == provider_id)
     {
+        let selected_model = if provider.model.trim().is_empty()
+            || !models.iter().any(|model| model.id == provider.model)
+        {
+            preferred_model_id(&models)
+        } else {
+            Some(provider.model.clone())
+        };
+
         provider.models = models;
+        if let Some(model) = selected_model {
+            provider.model = model;
+        }
         provider.models_updated_at = Some(updated_at);
         provider.last_error = last_error;
+    }
+    if ai.provider == provider_id {
+        if let Some(active) = ai
+            .providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+        {
+            ai.model = active.model.clone();
+        }
     }
     config.ai = normalize_ai_config(ai);
     save_config(paths, &config)?;
     Ok(config.ai)
 }
 
+fn preferred_model_id(models: &[AiModel]) -> Option<String> {
+    models
+        .iter()
+        .find(|model| model.free)
+        .or_else(|| models.first())
+        .map(|model| model.id.clone())
+}
+
 pub fn set_provider_error(
     paths: &AppPaths,
     provider_id: &str,
     error: String,
+) -> AppResult<AiConfig> {
+    set_provider_last_error(paths, provider_id, Some(error))
+}
+
+pub fn clear_provider_error(paths: &AppPaths, provider_id: &str) -> AppResult<AiConfig> {
+    set_provider_last_error(paths, provider_id, None)
+}
+
+fn set_provider_last_error(
+    paths: &AppPaths,
+    provider_id: &str,
+    error: Option<String>,
 ) -> AppResult<AiConfig> {
     let mut config = load_config(paths)?;
     let mut ai = normalize_ai_config(config.ai);
@@ -250,7 +299,7 @@ pub fn set_provider_error(
         .iter_mut()
         .find(|provider| provider.id == provider_id)
     {
-        provider.last_error = Some(error);
+        provider.last_error = error;
     }
     config.ai = normalize_ai_config(ai);
     save_config(paths, &config)?;

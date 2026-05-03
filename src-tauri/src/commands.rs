@@ -51,6 +51,7 @@ pub fn save_provider_config(
     provider_id: String,
     name: Option<String>,
     enabled: Option<bool>,
+    api_key_required: Option<bool>,
     api_key: String,
     model: String,
     endpoint_override: Option<String>,
@@ -61,6 +62,7 @@ pub fn save_provider_config(
         provider_id,
         name,
         enabled.unwrap_or(true),
+        api_key_required,
         api_key,
         model,
         endpoint_override,
@@ -107,6 +109,30 @@ pub async fn refresh_provider_models(
             chrono::Utc::now().to_rfc3339(),
             None,
         ),
+        Err(error) => {
+            let _ = storage::set_provider_error(&paths, &provider_id, error.clone());
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn test_provider_connection(
+    paths: State<'_, AppPaths>,
+    provider_id: String,
+) -> AppResult<AiConfig> {
+    let config = storage::get_ai_config(&paths)?;
+    let provider = storage::provider_config(&config, &provider_id)
+        .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
+    let mut request_config = config.clone();
+    request_config.provider = provider.id.clone();
+    request_config.api_key = provider.api_key.clone();
+    request_config.model = provider.model.clone();
+    request_config.endpoint_override = provider.endpoint_override.clone();
+
+    let client = http_client()?;
+    match ai::test_connection(&client, &request_config).await {
+        Ok(()) => storage::clear_provider_error(&paths, &provider_id),
         Err(error) => {
             let _ = storage::set_provider_error(&paths, &provider_id, error.clone());
             Err(error)

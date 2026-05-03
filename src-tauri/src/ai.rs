@@ -117,6 +117,52 @@ pub async fn fetch_models(
     Ok(models)
 }
 
+pub async fn test_connection(client: &Client, ai: &AiConfig) -> AppResult<()> {
+    if ai.model.trim().is_empty() {
+        return Err("Bitte zuerst ein Modell auswählen".to_string());
+    }
+
+    let endpoint = endpoint(ai)?;
+    let mut request = client
+        .post(&endpoint)
+        .header("Content-Type", "application/json");
+    if !ai.api_key.trim().is_empty() {
+        request = request.bearer_auth(ai.api_key.trim());
+    }
+
+    let payload = if ai.provider == "ollama_cloud" {
+        json!({
+            "model": ai.model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "stream": false,
+            "options": {"num_predict": 1}
+        })
+    } else {
+        json!({
+            "model": ai.model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "temperature": 0,
+            "max_tokens": 1
+        })
+    };
+
+    let response = request
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| format!("Verbindungstest fehlgeschlagen: {err}"))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|err| {
+        format!("Antwort des Verbindungstests konnte nicht gelesen werden: {err}")
+    })?;
+
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(api_error_message(status.as_u16(), &body))
+    }
+}
+
 async fn probe_ollama_cloud_free(client: &Client, api_key: &str, models: &mut [AiModel]) {
     use std::sync::Arc;
     use tokio::sync::Semaphore;
