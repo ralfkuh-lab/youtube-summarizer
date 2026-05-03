@@ -1,6 +1,6 @@
 # AI-Provider-Config — Verbesserungen & Refactoring-Plan
 
-Stand: 2026-05-02. Bezugspunkt ist die aktuelle KI-Config in `src/main.ts` + `src-tauri/src/ai.rs` / `models.rs` / `storage.rs`.
+Stand: 2026-05-03. Bezugspunkt ist die aktuelle KI-Config in `src/main.ts` + `src-tauri/src/ai.rs` / `models.rs` / `storage.rs`.
 
 ## Ist-Zustand (was bereits gut funktioniert)
 
@@ -9,46 +9,24 @@ Stand: 2026-05-02. Bezugspunkt ist die aktuelle KI-Config in `src/main.ts` + `sr
 - **Slider-Toggle** im Models-Tab pro Provider (enabled/disabled), automatisch deaktiviert solange der Provider nicht konfiguriert ist (`isProviderConfigured`).
 - **Recommended / Custom-Local** als Sektionen im Provider-Nav.
 - Pro Provider: `description`, `badge`, `recommended`, `homepage_url`, `default_endpoint`, `requires_api_key`, `endpoint_editable`, `supports_model_refresh`.
-- **Probing für Ollama Cloud** beim Refresh: Ein Mini-Chat-Call pro Modell (`num_predict: 1`, max. 6 parallel via Semaphore). 200 → free, 403 → paid, sonst konservativ false.
+- **Probing für Ollama Cloud** beim Refresh — nur im Free-Tier, nur für Modelle ohne bekannten Status. Ein Mini-Chat-Call pro Modell (`num_predict: 1`, max. 6 parallel via Semaphore). 200 → free, 403 → subscription_required, sonst unknown. Auf Pro/Max-Tier wird das Probing übersprungen und Free/Subscription-Tags werden überall unterdrückt. Manueller Re-Probe-Knopf für Edge-Cases.
+- **Account-Tier** (Free/Pro/Max) pro Ollama-Cloud-Provider speicherbar.
 - `last_error` pro Provider sichtbar.
-- **Free-only-Filter** in der globalen Modellsuche.
+- **Free-only-Filter** in der globalen Modellsuche, Auswahl persistiert in `localStorage`.
 - **Selected-Model-Card** dauerhaft sichtbar.
 - **Custom-Provider** anlegen/löschen, plus „Ollama local" als user-managed Sonderfall.
 - **External-Link-Plugin** (`tauri-plugin-opener`) für Provider-Website-Links.
 - **Provider+Modell pro Zusammenfassung** in DB persistiert, im Detail-Header angezeigt.
+- **Per-Modell „Test chat"** als kleiner Multi-Turn-Dialog mit „Hi"-Vorbelegung.
+- **Status-Punkt** im Provider-Nav (ready / disabled / unconfigured / error).
+- **API-Key-Reveal-Toggle** (👁) am Password-Feld.
+- **Subscription-required-Tag** für Ollama-Cloud-Modelle die im Probe 403 lieferten.
+- **Relative Refresh-Zeit** („vor 3 Tagen") mit absolutem Datum als Tooltip.
 - DB-Reads über **Spaltenname** (`row.get("…")`) und `SELECT *` — robust gegen Schema-Erweiterungen.
 
-## Verbesserungen (sortiert nach Nutzen)
+## Offene Verbesserungen
 
-### 1. „Test connection"-Button pro Provider
-
-**Was:** Neben „Refresh models" ein zweiter Button. Sendet einen 1-Token-Chat-Call gegen das aktuell ausgewählte Modell des Providers. Zeigt: ✅ ok / ❌ Fehlermeldung mit HTTP-Status.
-
-**Warum:** Heute weiß man erst beim ersten echten Summary, ob Key/Endpoint/Modell zusammen funktionieren. Häufige Fehlerursachen (falscher Endpoint-Pfad, abgelaufener Key, Modell ausgemustert) werden so vor dem ersten produktiven Lauf gefunden.
-
-**Aufwand:** Klein. Die Probe-Logik aus `probe_ollama_cloud_free` lässt sich für einen Einzelaufruf trivial extrahieren.
-
-### 2. Status-Punkt im Provider-Nav
-
-**Was:** Farbiger Dot links neben dem Provider-Namen.
-- 🟢 enabled + configured + kein `last_error`
-- 🟡 configured aber disabled
-- ⚫ nicht konfiguriert
-- 🔴 `last_error` gesetzt
-
-**Warum:** Der heutige Text-Suffix („· configured · disabled") scannt sich schlecht. Ein Dot ist sofort erkennbar, gerade bei vielen Providern.
-
-**Aufwand:** Klein, reines CSS + Render-Funktion in `renderProviderNavItem`.
-
-### 3. „Subscription required"-Pill für Ollama-Cloud-Modelle ohne Free-Status
-
-**Was:** In der Modellliste explizit anzeigen, wenn ein Ollama-Cloud-Modell beim letzten Probe 403 lieferte. Aktuell ist nur die Abwesenheit des Free-Tags zu sehen.
-
-**Warum:** Schließt die UX-Schleife zum Probing. Verhindert „warum kann ich dieses Modell nicht nutzen?"-Verwirrung.
-
-**Aufwand:** Klein. Erfordert ein zusätzliches Feld am `AiModel` (z. B. `requires_subscription: bool`) oder ein Tag-Eintrag „Subscription".
-
-### 4. Context-Window + Preis als Tags
+### 1. Context-Window + Preis als Tags
 
 **Was:** OpenRouter und OpenCode liefern in `/v1/models` Felder wie `context_length`, `pricing.prompt`, `pricing.completion`. Als kleine Tags rendern (z. B. „128k", „$0.50/1M in").
 
@@ -56,39 +34,7 @@ Stand: 2026-05-02. Bezugspunkt ist die aktuelle KI-Config in `src/main.ts` + `sr
 
 **Aufwand:** Mittel. `AiModel` um optionale Felder erweitern, `parse_models` pro Provider erweitern, Render anpassen.
 
-### 5. API-Key-Reveal-Toggle (👁)
-
-**Was:** Augen-Icon am Password-Feld. Klick toggelt zwischen `type="password"` und `type="text"`.
-
-**Warum:** Standard-UX-Pattern. Hilft beim Verifizieren des Keys ohne ihn neu reinzukopieren.
-
-**Aufwand:** Trivial, reines Frontend.
-
-### 6. Probe-Cache mit TTL
-
-**Was:** Probe-Ergebnis (free / paid) pro Modell mit Zeitstempel speichern. Beim Refresh nur neu proben, wenn der letzte Probe älter als z. B. 7 Tage ist (oder der Modellname neu auftaucht).
-
-**Warum:** Aktuell pingt jeder Refresh alle 39 Ollama-Cloud-Modelle — vergeudet Zeit (~10 s) und einen winzigen Teil der Free-Quota. Ein „Force re-probe"-Knopf für Edge-Cases.
-
-**Aufwand:** Klein-mittel. `AiModel` um `free_probed_at: Option<String>` erweitern, Logik in `probe_ollama_cloud_free` anpassen.
-
-### 7. `showOnlyFreeModels` persistieren
-
-**Was:** Aktueller `let showOnlyFreeModels = false` in `main.ts` ist nur in-memory. In `AiConfig` (oder einem `UiPrefs`-Block) ablegen.
-
-**Warum:** Klein, aber lästig dass die Filter-Einstellung jeden Neustart vergessen wird.
-
-**Aufwand:** Trivial.
-
-### 8. „Refreshed: 2.5.2026" → relative Zeit
-
-**Was:** „vor 3 Tagen" / „gerade eben" statt absolutem Datum. Original-Datum als `title`-Tooltip.
-
-**Warum:** Für „ist das aktuell genug?" ist die relative Zeit informativer.
-
-**Aufwand:** Klein, Helper-Funktion plus Render-Anpassung.
-
-### 9. Bessere Fehleranzeige inline
+### 2. Bessere Fehleranzeige inline
 
 **Was:** Bei ungültigem Key / unerreichbarem Endpoint Feld-Border rot + Inline-Fehlermeldung am Feld, statt nur in der globalen Status-Zeile.
 
@@ -100,12 +46,19 @@ Stand: 2026-05-02. Bezugspunkt ist die aktuelle KI-Config in `src/main.ts` + `sr
 
 Heute ist die KI-Config eng mit `main.ts` verzahnt: HTML-Strings, globale Variablen (`aiConfig`, `aiProviders`, `selectedSettingsProviderId`), direkte `setStatus`-Aufrufe, `invoke()`-Calls. Für Wiederverwendung in anderen Apps zu unspezifisch.
 
-### Ziel-Architektur
+### Pragmatische erste Stufe (geplant)
+
+Statt direkt eines eigenen Crates + Web Component erst nur **Modul-Separation in dieser App**, damit der Code für andere Projekte einfach rauszuziehen ist:
+
+- Backend: eigenes Modul `ai_config/` (Types, HTTP-Client, JSON-Config-Persistierung) — entkoppelt von `models.rs`/`storage.rs` der Video-App.
+- Frontend: AI-Settings-UI in eigene Datei (`src/ai-config.ts` o. ä.) statt im `main.ts`-Sammelbecken.
+
+### Spätere Ziel-Architektur (wenn der Bedarf konkret wird)
 
 **Backend-Crate** (`ai-providers` als eigenständiges Rust-Crate, Tauri-unabhängig):
 
 - `pub fn provider_catalog() -> Vec<AiProviderInfo>`
-- `pub async fn fetch_models(client, ai, provider_id) -> Result<Vec<AiModel>>`
+- `pub async fn fetch_models(client, ai, provider_id, …) -> Result<Vec<AiModel>>`
 - `pub async fn summarize(client, ai, transcript, opts) -> Result<String>`
 - `pub async fn chat(client, ai, messages) -> Result<String>` (für Multi-Use-Case)
 - `pub async fn probe_model(client, ai, model_id) -> ProbeResult`
@@ -143,15 +96,8 @@ Slot für Custom-Status-Zeile / Custom-Header.
 
 `AiConfig` um `schema_version: u32` erweitern. Migrationsfunktionen pro Version. Verhindert Datenverlust beim App-Update mit erweitertem Schema.
 
-### Reihenfolge
-
-1. **Erst die Architektur entscheiden** (eigenes Crate + Web Component? oder vorerst nur Modul-Refactor in dieser App?). Sonst werden alle Verbesserungen unten doppelt gepflegt.
-2. **Dann Punkte 1, 2, 3, 5, 7** als Quick-Wins (alle klein, hohe Sichtbarkeit).
-3. **Punkt 6, 8** als zweite Welle.
-4. **Punkt 4, 9** wenn der Bedarf konkret wird.
-
 ## Notizen aus Diskussion
 
 - Ollama Cloud hat aktuell **keinen API-Endpoint** der Free vs. Subscription unterscheidet. Probing bleibt bis auf weiteres der einzige Weg. Ggf. gelegentlich `https://docs.ollama.com/cloud` checken ob ein neues Feld in `/v1/models` dazukommt.
 - Ollama Cloud rechnet nach **GPU-Zeit pro Tier** (Free / Pro $20 / Max $100), nicht per-Token. Manche Modelle sind für Free schlicht gesperrt — daher der 403.
-- `probe_ollama_cloud_free` verbraucht pro freiem Modell ~1 Token Free-Quota pro Refresh. Vernachlässigbar, aber Argument für TTL-Cache (Punkt 6).
+- Pro/Max-Tier: alle Aufrufe gehen aufs Plan-Kontingent, daher wird der Free-vs-Subscription-Unterschied im UI ausgeblendet.

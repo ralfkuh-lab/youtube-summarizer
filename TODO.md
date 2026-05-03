@@ -47,7 +47,7 @@ The app is being rewritten from Python/PySide to Tauri 2 with a TypeScript front
 
 ## Next TODOs
 
-- AI provider config refactoring & improvements — extract into reusable backend crate + framework-agnostic frontend component, plus the remaining prioritized UX/feature improvements (context/price tags, probe TTL cache, inline validation). Details and architecture proposal in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
+- AI provider config refactoring & improvements — first separate the AI-config code into its own backend module and frontend file so it can be lifted into other apps; later extract into reusable backend crate + framework-agnostic frontend component. Remaining UX work: context/price tags, inline field validation. Details in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
 - Follow-up cleanup from the AI/provider settings changes:
   - Replace emoji trash buttons with a consistent icon approach when the frontend icon strategy is decided.
   - Consider splitting future broad UI commits more narrowly when they touch independent areas such as dependencies, link handling, Markdown rendering and settings UX.
