@@ -7,8 +7,9 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::ai_config::{self, AiConfig};
+use crate::commands;
 use crate::storage::{self, AppPaths, AppResult};
-use crate::{ai, commands};
 
 #[derive(Debug, Deserialize)]
 struct AddVideoRequest {
@@ -120,8 +121,8 @@ fn route(
 ) -> AppResult<()> {
     match (method, path) {
         ("GET", "/api/health") => write_json(stream, 200, &json!({"status": "ok"})),
-        ("GET", "/api/config") => write_result(stream, storage::get_ai_config(paths)),
-        ("GET", "/api/providers") => write_json(stream, 200, &ai::provider_catalog()),
+        ("GET", "/api/config") => write_result(stream, ai_config::get_ai_config(paths)),
+        ("GET", "/api/providers") => write_json(stream, 200, &ai_config::provider_catalog()),
         _ if method == "POST" && path.starts_with("/api/models/") => {
             let provider_id = path
                 .strip_prefix("/api/models/")
@@ -184,12 +185,9 @@ fn route(
     }
 }
 
-async fn refresh_models_impl(
-    paths: &AppPaths,
-    provider_id: &str,
-) -> AppResult<crate::models::AiConfig> {
-    let config = storage::get_ai_config(paths)?;
-    let provider = storage::provider_config(&config, provider_id)
+async fn refresh_models_impl(paths: &AppPaths, provider_id: &str) -> AppResult<AiConfig> {
+    let config = ai_config::get_ai_config(paths)?;
+    let provider = ai_config::provider_config(&config, provider_id)
         .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
     let mut request_config = config.clone();
     request_config.provider = provider.id.clone();
@@ -206,7 +204,7 @@ async fn refresh_models_impl(
         .account_tier
         .clone()
         .unwrap_or_else(|| "free".to_string());
-    let models = ai::fetch_models(
+    let models = ai_config::fetch_models(
         &client,
         &request_config,
         provider_id,
@@ -215,7 +213,7 @@ async fn refresh_models_impl(
         false,
     )
     .await?;
-    storage::update_provider_models(
+    ai_config::update_provider_models(
         paths,
         provider_id,
         models,

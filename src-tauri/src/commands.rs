@@ -1,19 +1,19 @@
 use reqwest::Client;
 use tauri::State;
 
-use crate::ai;
-use crate::models::{AiChatMessage, AiConfig, AiProviderInfo, NewVideo, Video};
+use crate::ai_config::{self, AiChatMessage, AiConfig, AiProviderInfo};
+use crate::models::{NewVideo, Video};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::youtube;
 
 #[tauri::command]
 pub fn get_config(paths: State<'_, AppPaths>) -> AppResult<AiConfig> {
-    storage::get_ai_config(&paths)
+    ai_config::get_ai_config(&paths)
 }
 
 #[tauri::command]
 pub fn get_ai_providers() -> Vec<AiProviderInfo> {
-    ai::provider_catalog()
+    ai_config::provider_catalog()
 }
 
 #[tauri::command]
@@ -33,7 +33,7 @@ pub fn save_config(
         }
     });
 
-    storage::update_ai_config(
+    ai_config::update_ai_config(
         &paths,
         AiConfig {
             provider,
@@ -58,7 +58,7 @@ pub fn save_provider_config(
     activate: Option<bool>,
     account_tier: Option<String>,
 ) -> AppResult<AiConfig> {
-    storage::update_provider_config(
+    ai_config::update_provider_config(
         &paths,
         provider_id,
         name,
@@ -77,7 +77,7 @@ pub fn add_custom_provider(
     paths: State<'_, AppPaths>,
     local_ollama: Option<bool>,
 ) -> AppResult<AiConfig> {
-    storage::add_custom_provider(&paths, local_ollama.unwrap_or(false))
+    ai_config::add_custom_provider(&paths, local_ollama.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -85,7 +85,7 @@ pub fn delete_custom_provider(
     paths: State<'_, AppPaths>,
     provider_id: String,
 ) -> AppResult<AiConfig> {
-    storage::delete_custom_provider(&paths, &provider_id)
+    ai_config::delete_custom_provider(&paths, &provider_id)
 }
 
 #[tauri::command]
@@ -94,8 +94,8 @@ pub async fn refresh_provider_models(
     provider_id: String,
     force_reprobe: Option<bool>,
 ) -> AppResult<AiConfig> {
-    let config = storage::get_ai_config(&paths)?;
-    let provider = storage::provider_config(&config, &provider_id)
+    let config = ai_config::get_ai_config(&paths)?;
+    let provider = ai_config::provider_config(&config, &provider_id)
         .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
     let mut request_config = config.clone();
     request_config.provider = provider.id.clone();
@@ -109,7 +109,7 @@ pub async fn refresh_provider_models(
         .unwrap_or_else(|| "free".to_string());
 
     let client = http_client()?;
-    match ai::fetch_models(
+    match ai_config::fetch_models(
         &client,
         &request_config,
         &provider_id,
@@ -119,7 +119,7 @@ pub async fn refresh_provider_models(
     )
     .await
     {
-        Ok(models) => storage::update_provider_models(
+        Ok(models) => ai_config::update_provider_models(
             &paths,
             &provider_id,
             models,
@@ -127,7 +127,7 @@ pub async fn refresh_provider_models(
             None,
         ),
         Err(error) => {
-            let _ = storage::set_provider_error(&paths, &provider_id, error.clone());
+            let _ = ai_config::set_provider_error(&paths, &provider_id, error.clone());
             Err(error)
         }
     }
@@ -140,8 +140,8 @@ pub async fn test_provider_model_chat(
     model_id: String,
     messages: Vec<AiChatMessage>,
 ) -> AppResult<String> {
-    let config = storage::get_ai_config(&paths)?;
-    let provider = storage::provider_config(&config, &provider_id)
+    let config = ai_config::get_ai_config(&paths)?;
+    let provider = ai_config::provider_config(&config, &provider_id)
         .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
     let mut request_config = config.clone();
     request_config.provider = provider.id.clone();
@@ -150,7 +150,7 @@ pub async fn test_provider_model_chat(
     request_config.endpoint_override = provider.endpoint_override.clone();
 
     let client = http_client()?;
-    ai::test_chat(&client, &request_config, &messages).await
+    ai_config::test_chat(&client, &request_config, &messages).await
 }
 
 #[tauri::command]
@@ -235,10 +235,10 @@ pub async fn summarize_video_impl(
         .chapters
         .as_ref()
         .and_then(|chapters| serde_json::to_string(chapters).ok());
-    let ai_config = storage::get_ai_config(paths)?;
+    let ai_config = ai_config::get_ai_config(paths)?;
     let client = http_client()?;
     let prompt = system_prompt.trim();
-    let summary = ai::summarize(
+    let summary = ai_config::summarize(
         &client,
         &ai_config,
         &transcript_text,
@@ -253,10 +253,10 @@ pub async fn summarize_video_impl(
     )
     .await?;
 
-    let provider_label = storage::provider_config(&ai_config, &ai_config.provider)
+    let provider_label = ai_config::provider_config(&ai_config, &ai_config.provider)
         .and_then(|p| p.name.clone())
         .or_else(|| {
-            ai::provider_catalog()
+            ai_config::provider_catalog()
                 .into_iter()
                 .find(|info| info.id == ai_config.provider)
                 .map(|info| info.name)

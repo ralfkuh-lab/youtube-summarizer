@@ -1,7 +1,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use crate::models::{AiChatMessage, AiConfig, AiModel, AiProviderInfo};
+use super::types::{AiChatMessage, AiConfig, AiModel, AiProviderInfo};
 use crate::storage::AppResult;
 
 const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a helpful assistant that summarizes YouTube video transcripts.

@@ -1,4 +1,4 @@
-mod ai;
+mod ai_config;
 #[cfg(debug_assertions)]
 mod automation;
 mod commands;
