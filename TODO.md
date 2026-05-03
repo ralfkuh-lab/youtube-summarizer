@@ -43,6 +43,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 - Added an Ollama Cloud Plan (Free/Pro/Max) selector with selective probing: probe only on Free tier and only for models without a stored availability, plus a manual "Re-probe availability" button. Pro/Max suppresses Free / Subscription tags.
 - Pulled the AI provider config out of the app's general modules: backend now lives under `src-tauri/src/ai_config/` (types, client, store), and the frontend UI moved to `src/ai-config.ts` with shared helpers in `src/dom-utils.ts`.
 - Added sidebar video search plus transcript/summary availability filters with compact status chips.
+- Replaced the Tauri app icon set with a generated video/transcript/sparkle icon that includes a light outer rim for dark taskbars.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -77,6 +78,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 ## Last Verified State
 
 - Date: 2026-05-03
+- Release build: `npm run tauri -- build` passed after replacing the app icon assets and produced Linux deb/rpm/AppImage bundles.
 - Docs: README, AGENTS and TODO updated after removing the Python legacy implementation and checking the next TODO order.
 - Build: `npm run build` passed after adding sidebar search/filter controls, removing the old Python implementation and updating docs/TODOs.
 - Previous Rust tests: `cargo test` passed with 2 tests passed and 1 network test ignored.
