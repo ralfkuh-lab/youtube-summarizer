@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "url": "http://localhost:14220",
+        "url": "http://localhost:14220/index.html",
         "title": "YouTube Summarizer",
         "width": 1200,
         "height": 760,
