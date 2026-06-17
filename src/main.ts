@@ -952,8 +952,24 @@ function updateSummaryPrompt() {
   $<HTMLTextAreaElement>("#summaryPrompt").value = buildSummaryPrompt();
 }
 
+// Some models wrap their entire Markdown reply in a single ```markdown ... ```
+// code fence. marked would then render the whole summary as one <pre><code>
+// block, showing the raw Markdown source. Strip such a wrapping fence before
+// parsing. Only strips when the fence wraps the complete text and the content
+// itself contains no further fences, so genuine code blocks stay intact.
+function stripWrappingCodeFence(markdown: string): string {
+  const trimmed = markdown.trim();
+  const match = /^```([^\n]*)\n([\s\S]*?)\n?```$/.exec(trimmed);
+  if (!match) return markdown;
+  const info = match[1].trim().toLowerCase();
+  if (info !== "" && info !== "markdown" && info !== "md") return markdown;
+  const inner = match[2];
+  if (/^[ \t]*```/m.test(inner)) return markdown;
+  return inner;
+}
+
 function markdownToHtml(markdown: string): string {
-  const rendered = marked.parse(markdown, { async: false }) as string;
+  const rendered = marked.parse(stripWrappingCodeFence(markdown), { async: false }) as string;
   return DOMPurify.sanitize(rendered, {
     ADD_ATTR: ["target", "rel"],
   });

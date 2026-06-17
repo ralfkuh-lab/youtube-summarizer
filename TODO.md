@@ -46,6 +46,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 - Added sidebar video search plus transcript/summary availability filters with compact status chips.
 - Replaced the Tauri app icon set with a generated video/transcript/sparkle icon that includes a light outer rim for dark taskbars.
 - Implemented local collections with create/rename/delete, multi-collection video assignment, collection counts and combined collection/search/status filtering in the sidebar.
+- Fixed summaries showing raw Markdown source: some models (e.g. deepseek-v4-flash via OpenCode Go) wrap their whole reply in a single ```markdown ... ``` fence, which marked renders as one `<pre><code>` block. Now stripped in `parse_summary_response` (backend, so the DB stays clean) with a defensive frontend strip in `markdownToHtml`; both only unwrap a fence that spans the entire text and contains no inner fence. Cleaned the one already-affected DB row.
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -81,6 +82,8 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-06-17
+- Markdown fence fix: `cargo test` (5 new `strip_wrapping_code_fence` unit tests plus existing suite) and `cargo fmt --check` passed; `npm run build` passed. Dev app (`npm run tauri dev`) was running during the change; existing DB row id=35 cleaned in place (backup at `videos.db.bak-20260617`). Reload/restart needed for the in-memory frontend list to pick up the cleaned row, though the frontend strip already renders it correctly via HMR.
 - Date: 2026-05-03
 - Release build: `npm run tauri -- build` passed after switching the installed app to localhost asset serving for YouTube embeds.
 - Build/tests: `npm run build`, `cargo test` and `cargo fmt --check` passed after implementing local collections.

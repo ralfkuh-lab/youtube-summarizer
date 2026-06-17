@@ -1,3 +1,4 @@
+use regex::Regex;
 use reqwest::Client;
 use serde_json::{json, Value};
 
@@ -399,8 +400,34 @@ fn parse_summary_response(ai: &AiConfig, body: &str) -> AppResult<String> {
     content
         .map(str::trim)
         .filter(|content| !content.is_empty())
-        .map(str::to_string)
+        .map(strip_wrapping_code_fence)
         .ok_or_else(|| "KI hat eine leere oder unerwartete Antwort zurückgegeben".to_string())
+}
+
+/// Some models wrap their entire Markdown reply in a single ```markdown ... ```
+/// code fence, which would then be stored and rendered as a raw code block.
+/// Strip such a wrapping fence so only the Markdown itself is persisted. Only
+/// strips when the fence wraps the complete text and the content itself
+/// contains no further fences, so genuine code blocks inside a summary stay
+/// intact.
+fn strip_wrapping_code_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    let re = Regex::new(r"(?s)^```([^\n]*)\n(.*?)\n?```$").expect("valid fence regex");
+    let Some(caps) = re.captures(trimmed) else {
+        return trimmed.to_string();
+    };
+    let info = caps[1].trim().to_lowercase();
+    if !info.is_empty() && info != "markdown" && info != "md" {
+        return trimmed.to_string();
+    }
+    let inner = &caps[2];
+    if inner
+        .lines()
+        .any(|line| line.trim_start().starts_with("```"))
+    {
+        return trimmed.to_string();
+    }
+    inner.to_string()
 }
 
 fn api_error_message(status: u16, body: &str) -> String {
@@ -509,4 +536,45 @@ fn model_tags(provider_id: &str, id: &str) -> Vec<String> {
         tags.push("Free".to_string());
     }
     tags
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_wrapping_code_fence;
+
+    #[test]
+    fn strips_markdown_wrapping_fence() {
+        let input = "```markdown\n# Title\n\nBody **bold**.\n```";
+        assert_eq!(
+            strip_wrapping_code_fence(input),
+            "# Title\n\nBody **bold**."
+        );
+    }
+
+    #[test]
+    fn strips_bare_wrapping_fence() {
+        let input = "```\n# Title\n\nBody\n```";
+        assert_eq!(strip_wrapping_code_fence(input), "# Title\n\nBody");
+    }
+
+    #[test]
+    fn leaves_plain_markdown_untouched() {
+        let input = "# Title\n\nBody **bold**.";
+        assert_eq!(strip_wrapping_code_fence(input), input);
+    }
+
+    #[test]
+    fn keeps_embedded_code_block() {
+        // A summary wrapped in a fence but containing its own code block must
+        // not be unwrapped, otherwise the inner block would break.
+        let input = "```markdown\nHere is code:\n```python\nx = 1\n```\ndone\n```";
+        assert_eq!(strip_wrapping_code_fence(input), input);
+    }
+
+    #[test]
+    fn keeps_standalone_language_block() {
+        // A genuine, non-markdown single code block is not a wrapper.
+        let input = "```python\nprint(1)\n```";
+        assert_eq!(strip_wrapping_code_fence(input), input);
+    }
 }
