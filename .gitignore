@@ -14,3 +14,6 @@ legacy-python/**/*.pyc
 legacy-python/.venv/
 .DS_Store
 Thumbs.db
+
+# Local convenience symlink to the built .deb installer
+/youtube-summarizer.deb
