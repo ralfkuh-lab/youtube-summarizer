@@ -40,13 +40,52 @@ pub fn thumbnail_url(video_id: &str) -> String {
 }
 
 pub async fn fetch_video_info(client: &Client, video_id: &str) -> AppResult<VideoInfo> {
+    // Bevorzugt aus dem Watch-HTML lesen: Es ist auch für Videos verfügbar, bei denen
+    // das Einbetten deaktiviert ist. Der oembed-Endpunkt liefert für solche Videos
+    // 401 Unauthorized und wird daher nur noch als Fallback genutzt.
+    let html = fetch_watch_html(client, video_id).await.ok();
+
+    let published_at = html.as_deref().and_then(extract_publish_date);
+    let title = match html.as_deref().and_then(extract_title) {
+        Some(title) => title,
+        None => fetch_oembed_title(client, video_id).await?,
+    };
+
+    Ok(VideoInfo {
+        title,
+        thumbnail_url: thumbnail_url(video_id),
+        published_at,
+    })
+}
+
+fn extract_title(html: &str) -> Option<String> {
+    let player = extract_json_assignment(html, "ytInitialPlayerResponse")?;
+    let title = player
+        .pointer("/videoDetails/title")
+        .and_then(Value::as_str)?
+        .trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
+}
+
+fn extract_publish_date(html: &str) -> Option<String> {
+    let pattern = Regex::new(r#""publishDate"\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"#).ok()?;
+    pattern
+        .captures(html)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+async fn fetch_oembed_title(client: &Client, video_id: &str) -> AppResult<String> {
     let url = video_url(video_id);
     let oembed_url = format!("https://www.youtube.com/oembed?url={url}&format=json");
-    let oembed_future = client.get(oembed_url).send();
-    let publish_date_future = fetch_publish_date(client, video_id);
-    let (oembed_response, published_at) = tokio::join!(oembed_future, publish_date_future);
-
-    let data = oembed_response
+    let data = client
+        .get(oembed_url)
+        .send()
+        .await
         .map_err(|err| format!("YouTube-Metadaten konnten nicht geladen werden: {err}"))?
         .error_for_status()
         .map_err(|err| format!("YouTube-Metadaten konnten nicht geladen werden: {err}"))?
@@ -54,20 +93,7 @@ pub async fn fetch_video_info(client: &Client, video_id: &str) -> AppResult<Vide
         .await
         .map_err(|err| format!("YouTube-Metadaten konnten nicht gelesen werden: {err}"))?;
 
-    Ok(VideoInfo {
-        title: data.title.unwrap_or_else(|| video_id.to_string()),
-        thumbnail_url: thumbnail_url(video_id),
-        published_at,
-    })
-}
-
-pub async fn fetch_publish_date(client: &Client, video_id: &str) -> Option<String> {
-    let html = fetch_watch_html(client, video_id).await.ok()?;
-    let pattern = Regex::new(r#""publishDate"\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"#).ok()?;
-    pattern
-        .captures(&html)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string())
+    Ok(data.title.unwrap_or_else(|| video_id.to_string()))
 }
 
 pub async fn download_thumbnail(client: &Client, video_id: &str) -> Option<Vec<u8>> {
@@ -411,6 +437,23 @@ mod tests {
         assert!(language_matches(Some("de-DE"), "de"));
         assert!(language_matches(Some("en"), "en"));
         assert!(!language_matches(Some("pt-BR"), "de"));
+    }
+
+    #[test]
+    fn extracts_and_decodes_title_from_player_response() {
+        let html = r#"<script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"abc","title":"Anthropic & \"KI\""},"x":1};</script>"#;
+        assert_eq!(extract_title(html).as_deref(), Some("Anthropic & \"KI\""));
+    }
+
+    #[test]
+    fn extract_title_returns_none_without_player_response() {
+        assert_eq!(extract_title("<html>no data here</html>"), None);
+    }
+
+    #[test]
+    fn extracts_publish_date_from_html() {
+        let html = r#"...,"uploadDate":"2024-04-30","publishDate":"2024-05-01",..."#;
+        assert_eq!(extract_publish_date(html).as_deref(), Some("2024-05-01"));
     }
 
     #[tokio::test]

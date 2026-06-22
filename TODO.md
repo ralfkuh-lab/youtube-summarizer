@@ -52,6 +52,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   - `cargo test`
   - `npm run tauri -- build`
   - Live automation flow for health, transcript loading, summarization and cleanup.
+- Fixed metadata loading failing with `401 Unauthorized` for videos that have embedding disabled (`playableInEmbed: false`): YouTube's oembed endpoint returns 401 for such videos regardless of user-agent. `fetch_video_info` now reads the title from the watch HTML (`ytInitialPlayerResponse → videoDetails.title`) and the publish date from the same single fetch, keeping oembed only as a fallback. Added unit tests for title/publish-date extraction.
 
 ## Next TODOs
 
@@ -82,6 +83,8 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-06-22
+- oembed 401 fix: `cargo test` passed (10 tests, incl. 3 new title/publish-date extraction tests; 1 network test ignored) and `npm run build` passed. Confirmed via curl that `JaP6hbmTJEc` (embedding disabled) returns oembed `401 Unauthorized` while its watch page still exposes `videoDetails.title`.
 - Date: 2026-06-17
 - Markdown fence fix: `cargo test` (5 new `strip_wrapping_code_fence` unit tests plus existing suite) and `cargo fmt --check` passed; `npm run build` passed. Dev app (`npm run tauri dev`) was running during the change; existing DB row id=35 cleaned in place (backup at `videos.db.bak-20260617`). Reload/restart needed for the in-memory frontend list to pick up the cleaned row, though the frontend strip already renders it correctly via HMR.
 - Date: 2026-05-03
