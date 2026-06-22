@@ -18,5 +18,5 @@ Thumbs.db
 # Local convenience symlink to the built .deb installer
 /youtube-summarizer.deb
 
-# Local convenience link to the built Windows NSIS installer
-/youtube-summarizer-setup.exe
+# Local convenience shortcut to the built Windows NSIS installer
+/youtube-summarizer-setup.lnk
