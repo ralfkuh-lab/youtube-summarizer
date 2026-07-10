@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -6,7 +5,7 @@ use base64::Engine;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use crate::models::{AppConfig, Chapter, Collection, NewVideo, Video};
+use crate::models::{Chapter, Collection, NewVideo, Video};
 
 pub type AppResult<T> = Result<T, String>;
 
@@ -78,29 +77,6 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
     )
     .map_err(|err| format!("Datenbank konnte nicht initialisiert werden: {err}"))?;
     Ok(())
-}
-
-pub fn load_config(paths: &AppPaths) -> AppResult<AppConfig> {
-    if !paths.config_path.exists() {
-        let cfg = AppConfig::default();
-        save_config(paths, &cfg)?;
-        return Ok(cfg);
-    }
-
-    let raw = fs::read_to_string(&paths.config_path)
-        .map_err(|err| format!("Konfiguration konnte nicht gelesen werden: {err}"))?;
-    serde_json::from_str(&raw).map_err(|err| format!("Konfiguration ist ungültig: {err}"))
-}
-
-pub fn save_config(paths: &AppPaths, config: &AppConfig) -> AppResult<()> {
-    if let Some(parent) = paths.config_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("Konfigurationsordner konnte nicht erstellt werden: {err}"))?;
-    }
-    let raw = serde_json::to_string_pretty(config)
-        .map_err(|err| format!("Konfiguration konnte nicht serialisiert werden: {err}"))?;
-    fs::write(&paths.config_path, raw)
-        .map_err(|err| format!("Konfiguration konnte nicht gespeichert werden: {err}"))
 }
 
 pub fn video_exists(paths: &AppPaths, video_id: &str) -> AppResult<bool> {
@@ -421,4 +397,26 @@ fn row_to_collection(row: &Row<'_>) -> rusqlite::Result<Collection> {
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
+}
+
+/// Returns a sibling file path next to config.json (e.g. ai.json, auth.json, ai-catalog.json).
+pub fn ai_data_file(paths: &AppPaths, name: &str) -> PathBuf {
+    let dir = paths
+        .config_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    dir.join(name)
+}
+
+pub fn ai_json_path(paths: &AppPaths) -> PathBuf {
+    ai_data_file(paths, "ai.json")
+}
+
+pub fn auth_json_path(paths: &AppPaths) -> PathBuf {
+    ai_data_file(paths, "auth.json")
+}
+
+pub fn ai_catalog_cache_path(paths: &AppPaths) -> PathBuf {
+    ai_data_file(paths, "ai-catalog.json")
 }

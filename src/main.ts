@@ -3,14 +3,12 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import "./styles.css";
+import "./settings-ai.css";
 import {
   applyConfig,
   bindAiConfigEvents,
   initAiConfig,
-  refreshModelsForProvider,
-  setProviders,
   type AiConfig,
-  type AiProviderInfo,
 } from "./ai-config";
 import { $, confirmDialog, errorMessage, escapeHtml, hideModal, showModal } from "./dom-utils";
 
@@ -168,20 +166,64 @@ app.innerHTML = `
 
   <div id="settingsModal" class="modal" hidden>
     <div class="modal-content settings-content">
-      <div class="settings-sidebar">
-        <div class="settings-title">
-          <h2>KI</h2>
-          <p>Connect providers and choose the model used for summaries.</p>
+      <div class="settings-dialog__panel">
+        <div class="settings-dialog__tabs" role="tablist" aria-label="KI Einstellungen">
+          <button id="settings-tab-ki-anbieter" role="tab" aria-selected="true" aria-controls="settings-panel-ki-anbieter" tabindex="0" class="settings-dialog__tab settings-dialog__tab--active">KI-Anbieter</button>
+          <button id="settings-tab-ki-modelle" role="tab" aria-selected="false" aria-controls="settings-panel-ki-modelle" tabindex="-1" class="settings-dialog__tab">KI-Modelle</button>
         </div>
-        <div id="settingsSelectedModel"></div>
-        <div id="providerSettingsList"></div>
-      </div>
-      <div class="settings-main">
-        <div class="settings-nav">
-          <button class="settings-nav-item active" data-settings-section="providers">Provider Details</button>
-          <button class="settings-nav-item" data-settings-section="models">All Models</button>
+        <div class="settings-dialog__tabpanel settings-ai-panel" id="settings-panel-ki-anbieter" role="tabpanel" aria-labelledby="settings-tab-ki-anbieter" data-settings-tab="ki-anbieter" hidden>
+          <section class="settings-section">
+            <h3 class="settings-section__title">KI-Anbieter</h3>
+            <p class="settings-hint">Schlüssel liegen im Klartext in <code>auth.json</code> im Config-Verzeichnis (Dateirechte 0600).</p>
+            <div class="settings-ai-toolbar">
+              <input type="search" id="ai-provider-search" class="settings-input" placeholder="Anbieter suchen…" autocomplete="off" />
+              <button type="button" id="ai-custom-add" class="settings-ai-button">Anbieter hinzufügen</button>
+            </div>
+            <p class="settings-hint">Die vordefinierten Anbieter stammen aus dem <code>models.dev</code>-Katalog; aktualisieren lässt er sich im Reiter „KI-Modelle“. Eigene (OpenAI-kompatible) Anbieter lassen sich über „Anbieter hinzufügen“ ergänzen.</p>
+            <p id="ai-providers-error" class="settings-ai-error" hidden></p>
+            <div id="ai-provider-list" class="settings-ai-list" aria-live="polite"></div>
+          </section>
+          <div id="ai-custom-dialog" class="settings-ai-overlay" hidden>
+            <form id="ai-custom-form" class="settings-ai-dialog" role="dialog" aria-modal="true" aria-labelledby="ai-custom-title">
+              <h3 id="ai-custom-title">Anbieter hinzufügen</h3>
+              <label for="ai-custom-id">ID</label>
+              <input type="text" id="ai-custom-id" class="settings-input" autocomplete="off" spellcheck="false" />
+              <p class="settings-hint">Nur Kleinbuchstaben, Zahlen, - und _</p>
+              <label for="ai-custom-name">Anzeigename</label>
+              <input type="text" id="ai-custom-name" class="settings-input" autocomplete="off" />
+              <label for="ai-custom-base-url">Basis-URL</label>
+              <input type="url" id="ai-custom-base-url" class="settings-input" placeholder="http://localhost:11434/v1" autocomplete="off" spellcheck="false" />
+              <p class="settings-hint">OpenAI-kompatibler Endpoint.</p>
+              <label for="ai-custom-key">Schlüssel (optional)</label>
+              <input type="password" id="ai-custom-key" class="settings-input" autocomplete="new-password" />
+              <p id="ai-custom-error" class="settings-ai-error" hidden></p>
+              <div class="settings-ai-dialog__actions">
+                <button type="button" id="ai-custom-cancel">Abbrechen</button>
+                <button type="submit" id="ai-custom-save" class="primary">Speichern</button>
+              </div>
+            </form>
+          </div>
         </div>
-        <div id="providerSettingsBody"></div>
+        <div class="settings-dialog__tabpanel settings-ai-panel" id="settings-panel-ki-modelle" role="tabpanel" aria-labelledby="settings-tab-ki-modelle" data-settings-tab="ki-modelle" hidden>
+          <section class="settings-section">
+            <div class="settings-ai-toolbar">
+              <input type="search" id="ai-model-search" class="settings-input" placeholder="Provider oder Modell suchen…" autocomplete="off" />
+              <button type="button" id="ai-catalog-refresh" class="settings-ai-button" title="Lädt den Anbieter- und Modellkatalog der vordefinierten Cloud-Provider neu von models.dev.">Anbieter-/Modellkatalog aktualisieren</button>
+            </div>
+            <p class="settings-hint">Lädt Anbieter- und Modellliste der vordefinierten Cloud-Provider von <code>models.dev</code>. Modelle eigener Anbieter holst du im jeweiligen Anbieter über „Modelle abrufen“.</p>
+            <p id="ai-catalog-updated" class="settings-hint"></p>
+            <p id="ai-models-error" class="settings-ai-error" hidden></p>
+            <div class="settings-row">
+              <label for="ai-default-model">Default-Modell</label>
+              <select id="ai-default-model" class="settings-input">
+                <option value="">(keins)</option>
+              </select>
+            </div>
+          </section>
+          <section class="settings-section">
+            <div id="ai-model-list" class="settings-ai-model-list" aria-live="polite"></div>
+          </section>
+        </div>
       </div>
       <div class="modal-actions">
         <button id="configClose">Schließen</button>
@@ -362,19 +404,17 @@ function bindEvents() {
 async function loadInitialData() {
   setBusy(true, "Videos werden geladen...");
   try {
-    const [loadedVideos, loadedCollections, config, providers] = await Promise.all([
+    const [loadedVideos, loadedCollections, config] = await Promise.all([
       invoke<Video[]>("get_videos"),
       invoke<Collection[]>("get_collections"),
-      invoke<AiConfig>("get_config"),
-      invoke<AiProviderInfo[]>("get_ai_providers"),
+      invoke<AiConfig>("ai_config_get"),
     ]);
     videos = loadedVideos;
     collections = loadedCollections;
-    setProviders(providers);
+    // providers/catalog now via ai_catalog_get inside settings
     renderCollectionList();
     renderVideoList();
     applyConfig(config);
-    void refreshModelsForProvider(config.provider, true);
     setStatus("Bereit");
   } catch (error) {
     setStatus(errorMessage(error));

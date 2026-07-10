@@ -1,78 +1,52 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  $,
-  confirmDialog,
-  errorMessage,
-  escapeHtml,
-  hideModal,
-  showModal,
-} from "./dom-utils";
+import { makeToggle } from "./dom-utils";
+import { errorMessage, escapeHtml, hideModal, showModal } from "./dom-utils";
+
+export type CatalogModel = {
+    id: string;
+    name?: string;
+    reasoning?: boolean;
+    tool_call?: boolean;
+    limit?: { context?: number };
+    cost?: { input?: number; output?: number };
+};
+
+export type CatalogProvider = {
+    id: string;
+    name?: string;
+    api?: string;
+    doc?: string;
+    models: Record<string, CatalogModel>;
+};
+
+export type CatalogResult = {
+    catalog: Record<string, CatalogProvider>;
+    source: 'snapshot' | 'cache';
+    updatedAt: string;
+};
+
+type ConfiguredModel = { name?: string };
+
+export type ProviderConfig = {
+    enabled: boolean;
+    name?: string;
+    custom?: boolean;
+    options?: { baseURL: string };
+    models?: Record<string, ConfiguredModel>;
+    whitelist: string[];
+};
 
 export type AiConfig = {
-  provider: string;
-  api_key: string;
-  model: string;
-  endpoint_override?: string | null;
-  providers: AiProviderConfig[];
+    provider: Record<string, ProviderConfig>;
+    defaultModel?: { provider: string; model: string } | null;
 };
 
-export type AiProviderConfig = {
-  id: string;
-  name?: string | null;
-  enabled: boolean;
-  api_key_required?: boolean;
-  api_key: string;
-  model: string;
-  endpoint_override?: string | null;
-  models: AiModel[];
-  models_updated_at?: string | null;
-  last_error?: string | null;
-  account_tier?: AccountTier | null;
-};
+type InvokeResult<T> = { value: T; error?: never } | { value?: never; error: string };
 
-export type AccountTier = "free" | "pro" | "max";
-
-export type AiModel = {
-  id: string;
-  name: string;
-  tags: string[];
-  free: boolean;
-  availability?: "free" | "subscription_required" | "unknown" | null;
-};
-
-export type AiProviderInfo = {
-  id: string;
-  name: string;
-  description: string;
-  badge: string;
-  homepage_url?: string | null;
-  default_endpoint?: string | null;
-  requires_api_key: boolean;
-  supports_model_refresh: boolean;
-  endpoint_editable: boolean;
-  recommended: boolean;
-};
-
-type ModelEntry = {
-  provider: AiProviderConfig;
-  providerInfo?: AiProviderInfo;
-  model: AiModel;
-};
-
-type ChatTestMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
-
+let catalogResult: CatalogResult | null = null;
 let aiConfig: AiConfig | null = null;
-let aiProviders: AiProviderInfo[] = [];
-let selectedSettingsProviderId = "opencode_go";
-let settingsSection: "providers" | "models" = "providers";
-const FREE_MODELS_ONLY_KEY = "settings.freeModelsOnly";
-let showOnlyFreeModels = localStorage.getItem(FREE_MODELS_ONLY_KEY) === "true";
-const revealedApiKeys = new Set<string>();
-let chatTestTarget: { providerId: string; modelId: string } | null = null;
-let chatTestMessages: ChatTestMessage[] = [];
+let authStatus: Record<string, boolean> = {};
+let loadPromise: Promise<void> | null = null;
 
 let statusModelEl: HTMLElement | null = null;
 let setStatusFn: (message: string) => void = () => {};
@@ -91,137 +65,890 @@ export function getAiConfig(): AiConfig | null {
   return aiConfig;
 }
 
-export function setProviders(providers: AiProviderInfo[]) {
-  aiProviders = providers;
-}
-
 export function bindAiConfigEvents() {
-  $("#settingsBtn").addEventListener("click", () => void openSettings());
-  $("#configClose").addEventListener("click", () => hideModal("#settingsModal"));
-  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
-    button.addEventListener("click", () => {
-      const section = button.dataset.settingsSection;
-      if (section === "providers" || section === "models") {
-        void persistVisibleProviderForm();
-        settingsSection = section;
-        renderSettings();
-      }
+  const settingsBtn = document.getElementById("settingsBtn");
+  if (settingsBtn) settingsBtn.addEventListener("click", () => void openSettings());
+  const closeBtn = document.getElementById("configClose");
+  if (closeBtn) closeBtn.addEventListener("click", () => hideModal("#settingsModal"));
+
+  // Tab navigation for visibility (activate); load listeners attached inside initSettingsAi
+  const tabs = [
+    document.getElementById("settings-tab-ki-anbieter") as HTMLButtonElement,
+    document.getElementById("settings-tab-ki-modelle") as HTMLButtonElement,
+  ].filter(Boolean);
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => {
+      activateSettingsTab(tab.id.replace("settings-tab-", ""));
+    });
+    tab.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      e.preventDefault();
+      const offset = e.key === "ArrowDown" ? 1 : -1;
+      const next = tabs[(index + offset + tabs.length) % tabs.length];
+      next.click();
+      next.focus();
     });
   });
-  $("#providerSettingsList").addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const addProvider = target.closest<HTMLElement>("[data-add-provider]");
-    if (addProvider) {
-      void addCustomProvider();
-      return;
+
+  // Custom dialog static listeners (markup now provides the elements)
+  const customCancel = document.getElementById('ai-custom-cancel');
+  if (customCancel) customCancel.addEventListener('click', closeCustomDialog);
+  const customForm = document.getElementById('ai-custom-form') as HTMLFormElement | null;
+  if (customForm) customForm.addEventListener('submit', (ev) => { ev.preventDefault(); void saveCustomProvider(ev as Event); });
+  const customDialogEl = document.getElementById('ai-custom-dialog');
+  if (customDialogEl) {
+    customDialogEl.addEventListener('keydown', (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeCustomDialog();
+    });
+  }
+
+  initSettingsAi();
+}
+
+function el(id: string): HTMLElement | null {
+    return document.getElementById(id);
+}
+
+function input(id: string): HTMLInputElement | null {
+    return el(id) as HTMLInputElement | null;
+}
+
+function select(id: string): HTMLSelectElement | null {
+    return el(id) as HTMLSelectElement | null;
+}
+
+async function invokeUi<T>(cmd: string, args: any, operation: string): Promise<InvokeResult<T>> {
+    try {
+        const value = await invoke<T>(cmd, args);
+        return { value };
+    } catch (error) {
+        console.warn('settings-ai', operation, { cmd, error: String(error) });
+        return { error: String(error) };
     }
-    if (target.closest(".provider-toggle")) {
-      return;
+}
+
+function setError(id: string, message: string | null): void {
+    const element = el(id);
+    if (!element) return;
+    element.textContent = message || '';
+    element.hidden = !message;
+}
+
+function providerName(id: string, provider?: CatalogProvider, configured?: ProviderConfig): string {
+    return configured?.name || provider?.name || id;
+}
+
+function button(text: string, className = 'settings-ai-button'): HTMLButtonElement {
+    const element = document.createElement('button');
+    element.type = 'button';
+    element.className = className;
+    element.textContent = text;
+    return element;
+}
+
+function renderAuthRow(providerId: string, isCustom = false): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'settings-ai-auth';
+    row.dataset.aiAuthProvider = providerId;
+
+    const stored = authStatus[providerId] === true;
+    const status = document.createElement('span');
+    status.className = 'settings-ai-auth__status';
+    if (stored || !isCustom) {
+        // Bei Custom-Providern ist der Schlüssel optional — kein "fehlt"-Status.
+        const dot = document.createElement('span');
+        dot.className = 'settings-ai-status-dot' +
+            (stored ? ' settings-ai-status-dot--stored' : '');
+        dot.setAttribute('aria-hidden', 'true');
+        const statusText = document.createElement('span');
+        statusText.textContent = stored ? 'Schlüssel hinterlegt' : 'Schlüssel fehlt';
+        status.append(dot, statusText);
     }
-    const deleteButton = target.closest<HTMLElement>("[data-delete-provider-id]");
-    if (deleteButton?.dataset.deleteProviderId) {
-      void deleteCustomProvider(deleteButton.dataset.deleteProviderId);
-      return;
+
+    const edit = button(
+        stored ? 'Schlüssel ändern' : isCustom ? 'Schlüssel setzen (optional)' : 'Schlüssel setzen',
+    );
+    edit.id = `ai-auth-edit-${providerId}`;
+    edit.dataset.aiAuthEdit = providerId;
+    const remove = button('Entfernen');
+    remove.id = `ai-auth-remove-${providerId}`;
+    remove.dataset.aiAuthRemove = providerId;
+    remove.hidden = !stored;
+
+    const editor = document.createElement('div');
+    editor.className = 'settings-ai-auth__editor';
+    editor.hidden = true;
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.id = `ai-auth-key-${providerId}`;
+    keyInput.dataset.aiAuthInput = providerId;
+    keyInput.className = 'settings-input';
+    keyInput.autocomplete = 'new-password';
+    keyInput.setAttribute('aria-label', `Schlüssel für ${providerId}`);
+    const save = button('Speichern');
+    save.id = `ai-auth-save-${providerId}`;
+    save.dataset.aiAuthSave = providerId;
+    const cancel = button('Abbrechen');
+    editor.append(keyInput, save, cancel);
+
+    const error = document.createElement('p');
+    error.className = 'settings-ai-error';
+    error.id = `ai-auth-error-${providerId}`;
+    error.hidden = true;
+
+    edit.addEventListener('click', () => {
+        keyInput.value = '';
+        editor.hidden = false;
+        keyInput.focus();
+    });
+    cancel.addEventListener('click', () => {
+        keyInput.value = '';
+        editor.hidden = true;
+        setError(error.id, null);
+    });
+    save.addEventListener('click', () => saveAuth(providerId, keyInput));
+    remove.addEventListener('click', () => removeAuth(providerId, error.id));
+    if (status.childElementCount > 0) row.append(status);
+    row.append(edit, remove, editor, error);
+    return row;
+}
+
+async function reloadAuthStatus(): Promise<boolean> {
+    const result = await invokeUi<Record<string, boolean>>(
+        'ai_auth_status',
+        undefined,
+        'KI-Schlüsselstatus konnte nicht geladen werden',
+    );
+    if (result.error) return false;
+    authStatus = result.value || {};
+    return true;
+}
+
+async function saveAuth(providerId: string, keyInput: HTMLInputElement): Promise<void> {
+    const key = keyInput.value;
+    const errorId = `ai-auth-error-${providerId}`;
+    if (!key.trim()) {
+        setError(errorId, 'Schlüssel darf nicht leer sein.');
+        return;
     }
-    const item = target.closest<HTMLElement>("[data-provider-id]");
-    if (item?.dataset.providerId) {
-      selectSettingsProvider(item.dataset.providerId);
+    setError(errorId, null);
+    const result = await invokeUi<Record<string, boolean>>(
+        'ai_auth_set',
+        { providerId, key },
+        'KI-Schlüssel konnte nicht gespeichert werden',
+    );
+    keyInput.value = '';
+    if (result.value) authStatus = result.value;
+    await reloadAuthStatus();
+    if (result.error) {
+        setError(errorId, result.error);
+        return;
     }
-  });
-  $("#providerSettingsList").addEventListener("change", (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLInputElement) || !target.dataset.toggleProviderId) return;
-    void setProviderEnabled(target.dataset.toggleProviderId, target.checked);
-  });
-  $("#providerSettingsBody").addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    if (target.closest("#openModelPickerBtn")) {
-      settingsSection = "models";
-      renderSettings();
+    renderProviders();
+}
+
+async function removeAuth(providerId: string, errorId: string): Promise<void> {
+    setError(errorId, null);
+    const result = await invokeUi<Record<string, boolean>>(
+        'ai_auth_remove',
+        { providerId },
+        'KI-Schlüssel konnte nicht entfernt werden',
+    );
+    if (result.value) authStatus = result.value;
+    await reloadAuthStatus();
+    if (result.error) {
+        setError(errorId, result.error);
+        return;
     }
-    if (target.closest("#settingsRefreshModelsBtn")) {
-      void refreshModelsForProvider(selectedSettingsProviderId);
+    renderProviders();
+}
+
+async function setProviderEnabled(providerId: string, enabled: boolean): Promise<void> {
+    const result = await invokeUi<AiConfig>(
+        'ai_provider_enable',
+        { providerId, enabled },
+        'KI-Anbieter konnte nicht geändert werden',
+    );
+    if (result.error) {
+        setError('ai-providers-error', result.error);
+        renderProviders();
+        return;
     }
-    if (target.closest("#settingsReprobeBtn")) {
-      void refreshModelsForProvider(selectedSettingsProviderId, false, true);
-    }
-    if (target.closest("#toggleApiKeyVisibility")) {
-      toggleApiKeyVisibility(selectedSettingsProviderId);
-    }
-    if (target.closest("#refreshAllModelsBtn")) {
-      void refreshAllModels();
-    }
-    const chatButton = target.closest<HTMLElement>("[data-test-chat-model-id][data-test-chat-provider-id]");
-    if (chatButton?.dataset.testChatModelId && chatButton.dataset.testChatProviderId) {
-      openChatTestDialog(chatButton.dataset.testChatProviderId, chatButton.dataset.testChatModelId);
-      return;
-    }
-    const modelItem = target.closest<HTMLElement>("[data-model-id][data-model-provider-id]");
-    if (modelItem?.dataset.modelId && modelItem.dataset.modelProviderId) {
-      const { modelId, modelProviderId } = modelItem.dataset;
-      void (async () => {
-        if (!$("#settingsModal").hidden && document.querySelector("#configModel")) {
-          await persistVisibleProviderForm();
+    aiConfig = result.value!;
+    setError('ai-providers-error', null);
+    renderProviders();
+    renderModels();
+}
+
+function providerCard(
+    providerId: string,
+    name: string,
+    enabled: boolean,
+    api?: string,
+    doc?: string,
+    isCustom = false,
+): HTMLElement {
+    const card = document.createElement('article');
+    card.className = 'settings-ai-card';
+    card.dataset.aiProviderId = providerId;
+
+    const header = document.createElement('div');
+    header.className = 'settings-ai-card__header';
+    const title = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = name;
+    const idText = document.createElement('span');
+    idText.className = 'settings-ai-card__id';
+    idText.textContent = providerId;
+    title.append(strong, idText);
+    header.append(
+        title,
+        makeToggle(
+            `ai-provider-enabled-${providerId}`,
+            enabled,
+            'Aktiv',
+            (checked) => setProviderEnabled(providerId, checked),
+        ),
+    );
+    card.appendChild(header);
+
+    if (api || doc) {
+        const details = document.createElement('div');
+        details.className = 'settings-ai-card__details';
+        if (api) {
+            const endpoint = document.createElement('span');
+            endpoint.textContent = `API: ${api}`;
+            details.appendChild(endpoint);
         }
-        await selectGlobalModel(modelProviderId, modelId);
-      })();
+        if (doc) {
+            const documentation = document.createElement('span');
+            documentation.textContent = `Doku: ${doc}`;
+            details.appendChild(documentation);
+        }
+        card.appendChild(details);
     }
+    card.appendChild(renderAuthRow(providerId, isCustom));
+    return card;
+}
+
+// Rang für die Anbieter-Sortierung: aktive zuerst (0), dann verwendbare —
+// hinterlegter Schlüssel oder Custom-Eintrag (1) —, dann der Rest (2).
+// Innerhalb jeder Gruppe alphabetisch.
+function providerRank(id: string): number {
+    const cfg = aiConfig?.provider[id];
+    if (cfg?.enabled) return 0;
+    if (cfg?.custom || authStatus[id] === true) return 1;
+    return 2;
+}
+
+function providerMatchesTerm(id: string, name: string, term: string): boolean {
+    return !term || `${name} ${id}`.toLocaleLowerCase('de').includes(term);
+}
+
+type ProviderListEntry = {
+    id: string;
+    name: string;
+    custom: boolean;
+    api?: string;
+    doc?: string;
+};
+
+function renderProviders(): void {
+    const list = el('ai-provider-list');
+    if (!list || !catalogResult || !aiConfig) return;
+    list.textContent = '';
+    const term = (input('ai-provider-search')?.value || '')
+        .trim()
+        .toLocaleLowerCase('de');
+
+    // Katalog- und Custom-Provider in EINER Liste: aktiv (0) → verwendbar (1) → Rest (2).
+    const entries: ProviderListEntry[] = Object.entries(catalogResult.catalog)
+        .filter(([id]) => !aiConfig!.provider[id]?.custom)
+        .map(([id, provider]) => ({
+            id,
+            name: providerName(id, provider),
+            custom: false,
+            api: provider.api,
+            doc: provider.doc,
+        }));
+    for (const [id, provider] of Object.entries(aiConfig.provider)) {
+        if (!provider.custom) continue;
+        entries.push({
+            id,
+            name: providerName(id, undefined, provider),
+            custom: true,
+            api: provider.options?.baseURL,
+        });
+    }
+
+    const providers = entries
+        .filter((entry) => providerMatchesTerm(entry.id, entry.name, term))
+        .sort((a, b) => {
+            const byRank = providerRank(a.id) - providerRank(b.id);
+            return byRank !== 0 ? byRank : a.name.localeCompare(b.name, 'de');
+        });
+    if (providers.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'settings-hint';
+        empty.textContent = term ? 'Keine passenden Anbieter.' : 'Keine Anbieter im Katalog.';
+        list.appendChild(empty);
+    }
+    for (const entry of providers) {
+        const card = providerCard(
+            entry.id,
+            entry.name,
+            aiConfig.provider[entry.id]?.enabled === true,
+            entry.api,
+            entry.doc,
+            entry.custom,
+        );
+        if (entry.custom) {
+            card.classList.add('settings-ai-card--custom');
+            const actions = document.createElement('div');
+            actions.className = 'settings-ai-card__actions';
+            const edit = button('Bearbeiten');
+            edit.id = `ai-custom-edit-${entry.id}`;
+            edit.dataset.aiCustomEdit = entry.id;
+            edit.addEventListener('click', () => openCustomDialog(entry.id));
+            const remove = button('Löschen');
+            remove.id = `ai-custom-delete-${entry.id}`;
+            remove.dataset.aiCustomDelete = entry.id;
+            remove.addEventListener('click', () => deleteCustomProvider(entry.id));
+            actions.append(edit, remove);
+            card.appendChild(actions);
+        }
+        list.appendChild(card);
+    }
+}
+
+function openCustomDialog(providerId?: string): void {
+    const dialog = el('ai-custom-dialog');
+    const idInput = input('ai-custom-id');
+    const nameInput = input('ai-custom-name');
+    const baseUrlInput = input('ai-custom-base-url');
+    const keyInput = input('ai-custom-key');
+    if (!dialog || !idInput || !nameInput || !baseUrlInput || !keyInput) return;
+    const provider = providerId ? aiConfig?.provider[providerId] : undefined;
+    const titleEl = el('ai-custom-title');
+    if (titleEl) titleEl.textContent = provider ? 'Anbieter bearbeiten' : 'Anbieter hinzufügen';
+    idInput.value = providerId || '';
+    idInput.disabled = !!provider;
+    nameInput.value = provider?.name || '';
+    baseUrlInput.value = provider?.options?.baseURL || '';
+    keyInput.value = '';
+    setError('ai-custom-error', null);
+    (dialog as HTMLDivElement).hidden = false;
+    (provider ? nameInput : idInput).focus();
+}
+
+function closeCustomDialog(): void {
+    const dialog = el('ai-custom-dialog') as HTMLDivElement | null;
+    const keyInput = input('ai-custom-key');
+    if (keyInput) keyInput.value = '';
+    if (dialog) dialog.hidden = true;
+    setError('ai-custom-error', null);
+}
+
+async function saveCustomProvider(event?: Event): Promise<void> {
+    if (event) event.preventDefault();
+    const idInput = input('ai-custom-id');
+    const nameInput = input('ai-custom-name');
+    const baseUrlInput = input('ai-custom-base-url');
+    const keyInput = input('ai-custom-key');
+    if (!idInput || !nameInput || !baseUrlInput || !keyInput) return;
+    setError('ai-custom-error', null);
+    const definition = {
+        id: idInput.value.trim(),
+        name: nameInput.value.trim(),
+        baseURL: baseUrlInput.value.trim(),
+    };
+    const result = await invokeUi<AiConfig>(
+        'ai_custom_upsert',
+        { definition },
+        'Custom-Provider konnte nicht gespeichert werden',
+    );
+    if (result.error) {
+        setError('ai-custom-error', result.error);
+        return;
+    }
+    aiConfig = result.value!;
+
+    const key = keyInput.value;
+    keyInput.value = '';
+    if (key.trim()) {
+        const authResult = await invokeUi<Record<string, boolean>>(
+            'ai_auth_set',
+            { providerId: definition.id, key },
+            'Schlüssel des Custom-Providers konnte nicht gespeichert werden',
+        );
+        await reloadAuthStatus();
+        if (authResult.error) {
+            setError('ai-custom-error', authResult.error);
+            renderProviders();
+            return;
+        }
+    }
+    closeCustomDialog();
+    renderProviders();
+    renderModels();
+}
+
+async function deleteCustomProvider(providerId: string): Promise<void> {
+    const result = await invokeUi<AiConfig>(
+        'ai_custom_delete',
+        { id: providerId },
+        'Custom-Provider konnte nicht gelöscht werden',
+    );
+    if (result.error) {
+        setError('ai-providers-error', result.error);
+        return;
+    }
+    aiConfig = result.value!;
+    renderProviders();
+    renderModels();
+}
+
+function formatCount(value: number): string {
+    if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}m`;
+    if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}k`;
+    return String(value);
+}
+
+function formatCost(value: number): string {
+    return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
+}
+
+function modelBadges(model?: CatalogModel): string[] {
+    if (!model) return [];
+    const badges: string[] = [];
+    if (model.limit?.context) badges.push(`Kontext ${formatCount(model.limit.context)}`);
+    if (model.reasoning) badges.push('Reasoning');
+    if (model.tool_call) badges.push('Tools');
+    if (model.cost?.input !== undefined && model.cost.output !== undefined) {
+        badges.push(
+            `$${formatCost(model.cost.input)}/$${formatCost(model.cost.output)} je 1M`,
+        );
+    }
+    return badges;
+}
+
+function configuredModels(
+    providerId: string,
+    provider: ProviderConfig,
+): Array<[string, CatalogModel | ConfiguredModel]> {
+    const source: Record<string, CatalogModel | ConfiguredModel> = provider.custom
+        ? provider.models || {}
+        : catalogResult?.catalog[providerId]?.models || {};
+    const ids = new Set([...Object.keys(source), ...(provider.whitelist || [])]);
+    const whitelisted = new Set(provider.whitelist || []);
+    return Array.from(ids)
+        .map((id) => [id, source[id] || {}] as [string, CatalogModel | ConfiguredModel])
+        .sort(([idA, a], [idB, b]) => {
+            // Verwendete (whitelistete) Modelle zuerst, danach der Rest —
+            // jede Gruppe alphabetisch.
+            const byUse = (whitelisted.has(idA) ? 0 : 1) - (whitelisted.has(idB) ? 0 : 1);
+            if (byUse !== 0) return byUse;
+            return (a.name || idA).localeCompare(b.name || idB, 'de');
+        });
+}
+
+async function toggleModel(providerId: string, modelId: string, on: boolean): Promise<void> {
+    const result = await invokeUi<AiConfig>(
+        'ai_model_toggle',
+        { providerId, modelId, on },
+        'KI-Modell konnte nicht geändert werden',
+    );
+    if (result.error) {
+        setError('ai-models-error', result.error);
+        renderModels();
+        return;
+    }
+    aiConfig = result.value!;
+    setError('ai-models-error', null);
+    renderModels();
+}
+
+function modelRow(
+    providerId: string,
+    provider: ProviderConfig,
+    modelId: string,
+    model: CatalogModel | ConfiguredModel,
+): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'settings-ai-model';
+    row.dataset.aiModelId = modelId;
+    const text = document.createElement('div');
+    text.className = 'settings-ai-model__text';
+    const name = document.createElement('strong');
+    name.textContent = model.name || modelId;
+    const id = document.createElement('span');
+    id.textContent = modelId;
+    text.append(name, id);
+    const badges = document.createElement('div');
+    badges.className = 'settings-ai-model__badges';
+    for (const badgeText of modelBadges(provider.custom ? undefined : model as CatalogModel)) {
+        const badge = document.createElement('span');
+        badge.textContent = badgeText;
+        badges.appendChild(badge);
+    }
+    const toggle = makeToggle(
+        `ai-model-toggle-${providerId}-${modelId}`,
+        provider.whitelist?.includes(modelId) === true,
+        'Verwenden',
+        (checked) => toggleModel(providerId, modelId, checked),
+    );
+
+    const isWhitelisted = provider.whitelist?.includes(modelId) === true;
+    if (isWhitelisted) {
+        const actions = document.createElement('div');
+        actions.className = 'settings-ai-model__actions';
+        const testBtn = button('Test', 'settings-ai-button settings-ai-button--small');
+        testBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            openChatTest(providerId, modelId);
+        });
+        actions.append(testBtn, toggle);
+        row.append(text, badges, actions);
+    } else {
+        row.append(text, badges, toggle);
+    }
+    return row;
+}
+
+function renderDefaultModels(): void {
+    const element = select('ai-default-model');
+    if (!element || !aiConfig) return;
+    populateModelPicker(element, aiConfig, catalogResult || { catalog: {} }, {
+        includeEmptyOption: true,
+        emptyOptionLabel: '(keins)',
+        separator: ' — ',
+    });
+}
+
+function renderModels(): void {
+    const list = el('ai-model-list');
+    if (!list || !aiConfig || !catalogResult) return;
+    list.textContent = '';
+    renderDefaultModels();
+    const term = (input('ai-model-search')?.value || '').trim().toLocaleLowerCase('de');
+    const providers = Object.entries(aiConfig.provider)
+        .filter(([, provider]) => provider.enabled)
+        .sort(([idA, a], [idB, b]) =>
+            providerName(idA, catalogResult!.catalog[idA], a).localeCompare(
+                providerName(idB, catalogResult!.catalog[idB], b),
+                'de',
+            ));
+    if (providers.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'settings-ai-empty';
+        empty.textContent = 'Aktiviere zuerst Anbieter im Tab KI-Anbieter.';
+        list.appendChild(empty);
+        return;
+    }
+
+    let rendered = 0;
+    for (const [providerId, provider] of providers) {
+        const name = providerName(
+            providerId,
+            catalogResult.catalog[providerId],
+            provider,
+        );
+        const providerMatches = `${name} ${providerId}`.toLocaleLowerCase('de').includes(term);
+        const models = configuredModels(providerId, provider)
+            .filter(([modelId, model]) =>
+                !term || providerMatches ||
+                `${model.name || ''} ${modelId}`.toLocaleLowerCase('de').includes(term));
+        if (term && !providerMatches && models.length === 0) continue;
+
+        const group = document.createElement('section');
+        group.className = 'settings-ai-model-group';
+        group.dataset.aiModelProvider = providerId;
+        const header = document.createElement('div');
+        header.className = 'settings-ai-model-group__header';
+        const title = document.createElement('h3');
+        title.textContent = name;
+        header.appendChild(title);
+        if (provider.custom) {
+            const fetch = button('Modelle abrufen');
+            fetch.id = `ai-models-fetch-${providerId}`;
+            fetch.dataset.aiModelsFetch = providerId;
+            fetch.addEventListener('click', () => fetchCustomModels(providerId, fetch));
+            header.appendChild(fetch);
+        }
+        group.appendChild(header);
+        const error = document.createElement('p');
+        error.id = `ai-models-fetch-error-${providerId}`;
+        error.className = 'settings-ai-error';
+        error.hidden = true;
+        group.appendChild(error);
+        if (models.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'settings-hint';
+            empty.textContent = provider.custom
+                ? 'Noch keine Modelle. Rufe die Modellliste vom Anbieter ab.'
+                : 'Keine passenden Modelle.';
+            group.appendChild(empty);
+        } else {
+            for (const [modelId, model] of models) {
+                group.appendChild(modelRow(providerId, provider, modelId, model));
+            }
+        }
+        list.appendChild(group);
+        rendered += 1;
+    }
+    if (rendered === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'settings-ai-empty';
+        empty.textContent = 'Keine passenden Modelle.';
+        list.appendChild(empty);
+    }
+}
+
+async function fetchCustomModels(
+    providerId: string,
+    fetchButton: HTMLButtonElement,
+): Promise<void> {
+    const errorId = `ai-models-fetch-error-${providerId}`;
+    setError(errorId, null);
+    fetchButton.disabled = true;
+    fetchButton.textContent = 'Wird abgerufen…';
+    const result = await invokeUi<AiConfig>(
+        'ai_custom_models_fetch',
+        { providerId },
+        'Modelle des Custom-Providers konnten nicht abgerufen werden',
+    );
+    if (result.error) {
+        fetchButton.disabled = false;
+        fetchButton.textContent = 'Modelle abrufen';
+        setError(errorId, result.error);
+        return;
+    }
+    aiConfig = result.value!;
+    renderModels();
+}
+
+function formatCatalogDate(updatedAt: string): string {
+    let date: Date;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(updatedAt)) {
+        const [year, month, day] = updatedAt.split('-').map(Number);
+        date = new Date(year, month - 1, day);
+    } else {
+        date = new Date(Number(updatedAt) * 1000);
+    }
+    return Number.isNaN(date.getTime())
+        ? updatedAt
+        : new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium' }).format(date);
+}
+
+function renderCatalogUpdated(): void {
+    const element = el('ai-catalog-updated');
+    if (!element || !catalogResult) return;
+    const source = catalogResult.source === 'cache' ? 'Cache' : 'Snapshot';
+    element.textContent = `Katalogstand: ${formatCatalogDate(catalogResult.updatedAt)} (${source})`;
+}
+
+async function refreshCatalog(): Promise<void> {
+    const refresh = el('ai-catalog-refresh') as HTMLButtonElement | null;
+    if (!refresh) return;
+    refresh.disabled = true;
+    refresh.textContent = 'Wird aktualisiert…';
+    setError('ai-models-error', null);
+    const result = await invokeUi<CatalogResult>(
+        'ai_catalog_refresh',
+        undefined,
+        'KI-Katalog konnte nicht aktualisiert werden',
+    );
+    refresh.disabled = false;
+    refresh.textContent = 'Anbieter-/Modellkatalog aktualisieren';
+    if (result.error) {
+        setError('ai-models-error', result.error);
+        return;
+    }
+    catalogResult = result.value!;
+    renderCatalogUpdated();
+    renderProviders();
+    renderModels();
+}
+
+async function setDefaultModel(value: string): Promise<void> {
+    let providerId: string | null = null;
+    let modelId: string | null = null;
+    if (value) {
+        [providerId, modelId] = JSON.parse(value) as [string, string];
+    }
+    const result = await invokeUi<AiConfig>(
+        'ai_default_model_set',
+        { providerId, modelId },
+        'Default-Modell konnte nicht gespeichert werden',
+    );
+    if (result.error) {
+        setError('ai-models-error', result.error);
+        renderDefaultModels();
+        return;
+    }
+    aiConfig = result.value!;
+    setError('ai-models-error', null);
+    renderDefaultModels();
+}
+
+async function loadAiData(): Promise<void> {
+    if (loadPromise) return loadPromise;
+    const providerList = el('ai-provider-list');
+    const modelList = el('ai-model-list');
+    if (providerList) providerList.textContent = 'Wird geladen…';
+    if (modelList) modelList.textContent = 'Wird geladen…';
+    loadPromise = Promise.all([
+        invokeUi<CatalogResult>('ai_catalog_get', undefined, 'KI-Katalog laden'),
+        invokeUi<AiConfig>('ai_config_get', undefined, 'KI-Konfiguration laden'),
+        invokeUi<Record<string, boolean>>(
+            'ai_auth_status',
+            undefined,
+            'KI-Schlüsselstatus laden',
+        ),
+    ]).then(([catalog, config, status]) => {
+        if (catalog.error || config.error || status.error || !catalog.value || !config.value || !status.value) {
+            setError('ai-providers-error', 'KI-Einstellungen konnten nicht geladen werden.');
+            setError('ai-models-error', 'KI-Einstellungen konnten nicht geladen werden.');
+            return;
+        }
+        catalogResult = catalog.value!;
+        aiConfig = config.value!;
+        authStatus = status.value!;
+        setError('ai-providers-error', null);
+        setError('ai-models-error', null);
+        renderCatalogUpdated();
+        renderProviders();
+        renderModels();
+        updateStatusModel();
+    }).finally(() => {
+        loadPromise = null;
+    });
+    return loadPromise;
+}
+
+export function initSettingsAi(): void {
+    if (!el('settings-panel-ki-anbieter') && !el('settings-panel-ki-modelle')) return;
+    catalogResult = null;
+    aiConfig = null;
+    authStatus = {};
+    loadPromise = null;
+    el('settings-tab-ki-anbieter')?.addEventListener('click', () => loadAiData());
+    el('settings-tab-ki-modelle')?.addEventListener('click', () => loadAiData());
+    el('ai-custom-add')?.addEventListener('click', () => openCustomDialog());
+    el('ai-custom-cancel')?.addEventListener('click', closeCustomDialog);
+    const form = el('ai-custom-form');
+    if (form) form.addEventListener('submit', (e) => { void saveCustomProvider(e as Event); });
+    const dlg = el('ai-custom-dialog');
+    if (dlg) dlg.addEventListener('keydown', (event) => {
+        const ke = event as KeyboardEvent;
+        if (ke.key !== 'Escape') return;
+        ke.preventDefault();
+        ke.stopPropagation();
+        closeCustomDialog();
+    });
+    input('ai-provider-search')?.addEventListener('input', renderProviders);
+    input('ai-model-search')?.addEventListener('input', renderModels);
+    el('ai-catalog-refresh')?.addEventListener('click', () => void refreshCatalog());
+    const defSel = select('ai-default-model');
+    if (defSel) defSel.addEventListener('change', (event) => {
+        setDefaultModel((event.currentTarget as HTMLSelectElement).value);
+    });
+}
+
+// --- Model picker (ported from folio ai-model-picker.ts) ---
+export type CatalogModelPicker = { id: string; name?: string };
+export type CatalogProviderPicker = {
+    id: string;
+    name?: string;
+    models?: Record<string, CatalogModelPicker>;
+};
+export type CatalogResultPicker = { catalog: Record<string, CatalogProviderPicker> };
+
+export function populateModelPicker(
+    selectElement: HTMLSelectElement,
+    config: AiConfig,
+    catalog: CatalogResultPicker,
+    options: {
+        includeEmptyOption?: boolean;
+        emptyOptionLabel?: string;
+        separator?: string;
+    } = {}
+): void {
+    const includeEmptyOption = options.includeEmptyOption ?? false;
+    const emptyOptionLabel = options.emptyOptionLabel ?? '(keins)';
+    const separator = options.separator ?? ' · ';
+
+    selectElement.textContent = '';
+
+    if (includeEmptyOption) {
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = emptyOptionLabel;
+        selectElement.appendChild(empty);
+    }
+
+    const choices: Array<{ value: string; label: string }> = [];
+    for (const [providerId, provider] of Object.entries(config.provider)) {
+        if (!provider.enabled) continue;
+
+        const pName = provider.name || catalog.catalog[providerId]?.name || providerId;
+
+        for (const modelId of new Set(provider.whitelist || [])) {
+            const mName = provider.custom
+                ? provider.models?.[modelId]?.name || modelId
+                : catalog.catalog[providerId]?.models?.[modelId]?.name || modelId;
+
+            choices.push({
+                value: JSON.stringify([providerId, modelId]),
+                label: `${pName}${separator}${mName}`,
+            });
+        }
+    }
+
+    choices.sort((a, b) => a.label.localeCompare(b.label, 'de'));
+
+    for (const choice of choices) {
+        const option = document.createElement('option');
+        option.value = choice.value;
+        option.textContent = choice.label;
+        selectElement.appendChild(option);
+    }
+
+    const preferred = config.defaultModel
+        ? JSON.stringify([config.defaultModel.provider, config.defaultModel.model])
+        : '';
+
+    const hasPreferred = choices.some((choice) => choice.value === preferred);
+    if (hasPreferred) {
+        selectElement.value = preferred;
+    } else {
+        selectElement.value = includeEmptyOption ? '' : (choices[0]?.value || '');
+    }
+}
+
+// --- Glue for youtube-summarizer: open, apply, chat test (kept as extension) ---
+
+function activateSettingsTab(slug: string) {
+  const tabs = document.querySelectorAll<HTMLButtonElement>('[id^="settings-tab-"]');
+  tabs.forEach((t) => {
+    const active = t.id === `settings-tab-${slug}`;
+    t.setAttribute("aria-selected", active ? "true" : "false");
+    t.classList.toggle("settings-dialog__tab--active", active);
+    t.tabIndex = active ? 0 : -1;
   });
-  $("#providerSettingsBody").addEventListener("input", (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLInputElement)) return;
-    if (target.id === "globalModelSearch") renderSettingsModelList();
+  document.querySelectorAll<HTMLElement>('[role="tabpanel"][data-settings-tab]').forEach((p) => {
+    p.hidden = p.dataset.settingsTab !== slug;
   });
-  $("#providerSettingsBody").addEventListener("change", (event) => {
-    const target = event.target;
-    if (target instanceof HTMLSelectElement && target.id === "configAccountTier") {
-      void persistVisibleProviderForm(true)
-        .then(() => {
-          setStatusFn("Konfiguration gespeichert");
-          renderSettings();
-        })
-        .catch((err) => setStatusFn(errorMessage(err)));
-      return;
-    }
-    if (!(target instanceof HTMLInputElement)) return;
-    if (target.id === "freeModelsOnly") {
-      showOnlyFreeModels = target.checked;
-      localStorage.setItem(FREE_MODELS_ONLY_KEY, String(showOnlyFreeModels));
-      renderSettingsModelList();
-      return;
-    }
-    if (
-      target.id === "configApiKey" ||
-      target.id === "configEndpoint" ||
-      target.id === "configProviderName" ||
-      target.id === "configApiKeyRequired"
-    ) {
-      void persistVisibleProviderForm(true)
-        .then(() => setStatusFn("Konfiguration gespeichert"))
-        .catch((err) => setStatusFn(errorMessage(err)));
-    }
-  });
-  $("#chatTestSend").addEventListener("click", () => void sendChatTest());
-  $("#chatTestClose").addEventListener("click", () => hideModal("#chatTestModal"));
 }
 
 async function openSettings() {
   try {
-    const [config, providers] = await Promise.all([
-      invoke<AiConfig>("get_config"),
-      invoke<AiProviderInfo[]>("get_ai_providers"),
-    ]);
-    aiProviders = providers;
-    applyConfig(config);
-    selectedSettingsProviderId = config.provider;
-    renderSettings();
     showModal("#settingsModal");
-    const active = getProviderConfig(config.provider);
-    if (!active?.models.length) {
-      void refreshModelsForProvider(config.provider, true);
-    }
+    activateSettingsTab("ki-anbieter");
+    await loadAiData();
   } catch (error) {
     setStatusFn(errorMessage(error));
   }
@@ -229,602 +956,65 @@ async function openSettings() {
 
 export function applyConfig(config: AiConfig) {
   aiConfig = config;
-  const provider = getProviderInfo(config.provider);
-  if (statusModelEl) {
-    statusModelEl.textContent = `${provider?.name ?? config.provider} / ${config.model || "kein Modell"}`;
-  }
-  if (!$("#settingsModal").hidden) {
-    renderSettings();
-  }
-}
-
-function renderSettings() {
-  if (!aiConfig) return;
-  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
-    button.classList.toggle("active", button.dataset.settingsSection === settingsSection);
-  });
-  $("#settingsSelectedModel").innerHTML = renderSidebarSelectedModel();
-  $("#providerSettingsList").innerHTML = renderProviderNavigation(selectedSettingsProviderId);
-
-  if (settingsSection === "models") {
-    if (document.querySelector("#globalModelSearch")) {
-      renderSettingsModelList();
-    } else {
-      renderModelSettings();
-    }
-    return;
-  }
-
-  const selected = getProviderConfig(selectedSettingsProviderId) ?? getProviderConfig(aiConfig.provider);
-  if (!selected) return;
-  const info = getProviderInfo(selected.id);
-  const apiKeyVisible = revealedApiKeys.has(selected.id);
-  const apiKeyRequired = providerRequiresApiKey(selected);
-
-  $("#providerSettingsBody").innerHTML = `
-    <div class="settings-fixed-panel">
-      <div class="settings-provider-head">
-        <div>
-          <h2>${escapeHtml(providerDisplayName(selected))}</h2>
-          <p>${escapeHtml(info?.description ?? "OpenAI-compatible custom provider.")}</p>
-        </div>
-        <span class="provider-head-actions">
-          ${info?.homepage_url && info.recommended ? `<a class="provider-home-link" href="${escapeHtml(info.homepage_url)}">Provider website</a>` : ""}
-          ${info?.recommended ? '<span class="provider-badge">Recommended</span>' : ""}
-        </span>
-      </div>
-      <label class="field-row" ${isCustomProvider(selected.id) ? "" : "hidden"}><span class="field-label">Name</span>
-        <input id="configProviderName" type="text" value="${escapeHtml(providerDisplayName(selected))}" placeholder="Custom provider name" />
-      </label>
-      <label class="field-row toggle-row provider-api-key-required" ${isUserManagedProvider(selected.id) ? "" : "hidden"}>
-        <span class="field-label">API key required</span>
-        <span class="field-control"><input id="configApiKeyRequired" type="checkbox" ${apiKeyRequired ? "checked" : ""} /></span>
-      </label>
-      <label class="field-row"><span class="field-label">API key</span>
-        <span class="secret-input-row">
-          <input id="configApiKey" type="${apiKeyVisible ? "text" : "password"}" value="${escapeHtml(selected.api_key)}" placeholder="${apiKeyRequired ? "Required" : "Optional"}" />
-          <button id="toggleApiKeyVisibility" class="icon-action-btn" type="button" title="${apiKeyVisible ? "Hide API key" : "Show API key"}" aria-label="${apiKeyVisible ? "Hide API key" : "Show API key"}">${apiKeyVisible ? "🙈" : "👁"}</button>
-        </span>
-      </label>
-      <input id="configModel" type="hidden" value="${escapeHtml(selected.model)}" />
-      <label class="field-row" ${info?.endpoint_editable || isCustomProvider(selected.id) ? "" : "hidden"}><span class="field-label">Chat endpoint</span>
-        <input id="configEndpoint" type="text" value="${escapeHtml(selected.endpoint_override ?? "")}" placeholder="${escapeHtml(info?.default_endpoint ?? "https://example.com/v1/chat/completions")}" />
-      </label>
-      ${renderAccountTierField(selected)}
-      <div class="provider-actions">
-        <button id="settingsRefreshModelsBtn" type="button">Refresh models</button>
-        ${selected.id === "ollama_cloud" && providerAccountTier(selected) === "free" ? '<button id="settingsReprobeBtn" type="button" title="Re-run availability probe for all models">Re-probe availability</button>' : ""}
-        <span>${renderModelRefreshState(selected)}</span>
-      </div>
-      ${selected.last_error ? `<p class="settings-error">${escapeHtml(selected.last_error)}</p>` : ""}
-    </div>
-    <div class="settings-model-preview settings-scroll-list">
-      ${renderModelPreview(selected)}
-    </div>
-  `;
-}
-
-function renderProviderNavigation(selectedId: string): string {
-  const recommended = aiProviders.filter((provider) => provider.recommended);
-  const customAndLocal = (aiConfig?.providers ?? []).filter((provider) => {
-    const info = getProviderInfo(provider.id);
-    return isCustomProvider(provider.id) || info?.id === "ollama" || !info;
-  });
-  return `
-    <div class="provider-section-title">Recommended</div>
-    ${recommended.map((provider) => renderProviderNavItem(provider.id, selectedId)).join("")}
-    <div class="provider-section-divider"></div>
-    <div class="provider-section-title">Custom / local</div>
-    ${customAndLocal.map((provider) => renderProviderNavItem(provider.id, selectedId)).join("")}
-    <button class="add-provider-card" data-add-provider="custom" type="button">
-      <span>+</span>
-      <strong>Add custom provider</strong>
-    </button>
-  `;
-}
-
-function renderProviderNavItem(providerId: string, selectedId: string): string {
-  const config = getProviderConfig(providerId);
-  const info = getProviderInfo(providerId);
-  const active = selectedId === providerId ? " active" : "";
-  const configured = config ? isProviderConfigured(config) : false;
-  const enabled = !!config?.enabled && configured;
-  const title = configured ? "Enable / disable provider" : "Configure provider first";
-  return `
-    <div class="provider-nav-row${active}">
-      <button class="provider-nav-item" data-provider-id="${escapeHtml(providerId)}">
-        <span class="provider-name-row">
-          <span class="provider-status-dot ${providerStatusClass(config)}" title="${escapeHtml(providerStatusLabel(config))}"></span>
-          <span class="provider-name">${escapeHtml(config ? providerDisplayName(config) : info?.name ?? providerId)}</span>
-        </span>
-        <span class="provider-meta">${escapeHtml(info?.badge ?? "Custom")}${!enabled ? " · disabled" : ""}${configured ? " · configured" : ""}</span>
-      </button>
-      ${config ? `<label class="provider-toggle nav-provider-toggle" title="${escapeHtml(title)}">
-        <input type="checkbox" data-toggle-provider-id="${escapeHtml(providerId)}" ${enabled ? "checked" : ""} ${configured ? "" : "disabled"} />
-        <span class="provider-toggle-track"><span class="provider-toggle-thumb"></span></span>
-      </label>` : ""}
-      ${isUserManagedProvider(providerId) ? `<button class="delete-icon-btn" data-delete-provider-id="${escapeHtml(providerId)}" title="Delete provider" aria-label="Delete provider">🗑</button>` : ""}
-    </div>
-  `;
-}
-
-function providerStatusClass(provider?: AiProviderConfig): string {
-  if (!provider) return "unconfigured";
-  if (provider.last_error) return "error";
-  if (!isProviderConfigured(provider)) return "unconfigured";
-  if (!provider.enabled) return "disabled";
-  return "ready";
-}
-
-function providerStatusLabel(provider?: AiProviderConfig): string {
-  if (!provider) return "Not configured";
-  if (provider.last_error) return "Last check failed";
-  if (!isProviderConfigured(provider)) return "Not configured";
-  if (!provider.enabled) return "Configured but disabled";
-  return "Ready";
-}
-
-async function addCustomProvider() {
-  const config = await invoke<AiConfig>("add_custom_provider", { localOllama: false });
-  applyConfig(config);
-  const customProviders = config.providers.filter((provider) => isCustomProvider(provider.id));
-  selectedSettingsProviderId = customProviders.at(-1)?.id ?? selectedSettingsProviderId;
-  settingsSection = "providers";
-  renderSettings();
-}
-
-async function setProviderEnabled(providerId: string, enabled: boolean) {
-  const provider = getProviderConfig(providerId);
-  if (!provider || !isProviderConfigured(provider)) return;
-  const config = await invoke<AiConfig>("save_provider_config", {
-    providerId,
-    name: provider.name ?? null,
-    enabled,
-    apiKeyRequired: provider.api_key_required ?? false,
-    apiKey: provider.api_key,
-    model: provider.model,
-    endpointOverride: provider.endpoint_override ?? "",
-    activate: false,
-  });
-  applyConfig(config);
-}
-
-async function deleteCustomProvider(providerId: string) {
-  if (!(await confirmDialog("Diesen Custom-Provider wirklich löschen?", { title: "Provider löschen", okLabel: "Löschen" }))) return;
-  const config = await invoke<AiConfig>("delete_custom_provider", { providerId });
-  applyConfig(config);
-  selectedSettingsProviderId = config.provider;
-  settingsSection = "providers";
-  renderSettings();
-  setStatusFn("Provider deleted");
-}
-
-function selectSettingsProvider(providerId: string) {
-  void persistVisibleProviderForm();
-  settingsSection = "providers";
-  selectedSettingsProviderId = providerId;
-  renderSettings();
-}
-
-async function persistVisibleProviderForm(reportErrors = false) {
-  if (!aiConfig || $("#settingsModal").hidden || !document.querySelector("#configModel")) return;
-  const apiKeyInput = document.querySelector<HTMLInputElement>("#configApiKey");
-  const modelInput = document.querySelector<HTMLInputElement>("#configModel");
-  const endpointInput = document.querySelector<HTMLInputElement>("#configEndpoint");
-  const apiKeyRequiredInput = document.querySelector<HTMLInputElement>("#configApiKeyRequired");
-  if (!apiKeyInput || !modelInput) return;
-  const currentEnabled = getProviderConfig(selectedSettingsProviderId)?.enabled ?? true;
-  const currentApiKeyRequired = isUserManagedProvider(selectedSettingsProviderId)
-    ? (apiKeyRequiredInput?.checked ?? false)
-    : providerRequiresApiKey(getProviderConfig(selectedSettingsProviderId));
-
-  const tierSelect = document.querySelector<HTMLSelectElement>("#configAccountTier");
-  const config = await invoke<AiConfig>("save_provider_config", {
-    providerId: selectedSettingsProviderId,
-    name: document.querySelector<HTMLInputElement>("#configProviderName")?.value ?? null,
-    enabled: currentEnabled,
-    apiKeyRequired: currentApiKeyRequired,
-    apiKey: apiKeyInput.value,
-    model: modelInput.value,
-    endpointOverride: endpointInput?.value ?? "",
-    activate: false,
-    accountTier: tierSelect?.value ?? null,
-  }).catch((error) => {
-    // Keep navigation responsive; explicit save still reports errors.
-    if (reportErrors) throw error;
-    return null;
-  });
-  if (config) applyConfig(config);
-}
-
-export async function refreshModelsForProvider(providerId: string, silent = false, forceReprobe = false) {
-  try {
-    if (!silent) setStatusFn(forceReprobe ? "Re-probing model availability..." : "Loading models...");
-    if (!$("#settingsModal").hidden && document.querySelector("#configModel") && providerId === selectedSettingsProviderId) {
-      await persistVisibleProviderForm();
-    }
-    const config = await invoke<AiConfig>("refresh_provider_models", { providerId, forceReprobe });
-    applyConfig(config);
-    if (settingsSection === "models") {
-      renderSettingsModelList();
-    }
-    if (!silent) setStatusFn(forceReprobe ? "Availability re-probed" : "Models refreshed");
-  } catch (error) {
-    if (!silent) setStatusFn(errorMessage(error));
+  updateStatusModel();
+  const modal = document.getElementById("settingsModal");
+  if (modal && !modal.hidden) {
+    renderProviders();
+    renderModels();
   }
 }
 
-function toggleApiKeyVisibility(providerId: string) {
-  if (revealedApiKeys.has(providerId)) {
-    revealedApiKeys.delete(providerId);
+function updateStatusModel() {
+  if (!statusModelEl || !aiConfig) return;
+  const dm = aiConfig.defaultModel;
+  if (dm) {
+    statusModelEl.textContent = `${dm.provider} / ${dm.model}`;
   } else {
-    revealedApiKeys.add(providerId);
+    statusModelEl.textContent = "Kein Modell gewählt";
   }
-  renderSettings();
-  queueMicrotask(() => document.querySelector<HTMLInputElement>("#configApiKey")?.focus());
 }
 
-async function refreshAllModels() {
-  if (!aiConfig) return;
-  setStatusFn("Refreshing models...");
-  for (const provider of aiConfig.providers) {
-    const info = getProviderInfo(provider.id);
-    if (info?.supports_model_refresh || isCustomProvider(provider.id)) {
-      await refreshModelsForProvider(provider.id, true);
-    }
-  }
-  renderSettings();
-  setStatusFn("Models refreshed");
-}
-
-function renderModelSettings() {
-  if (!aiConfig) return;
-  $("#providerSettingsBody").innerHTML = `
-    <div class="settings-fixed-panel">
-      <div class="settings-provider-head">
-        <div>
-          <h2>All Models</h2>
-          <p>Search all loaded models from enabled providers and choose the model used for summaries.</p>
-        </div>
-        <button id="refreshAllModelsBtn" type="button">Refresh all</button>
-      </div>
-      <div class="model-toolbar">
-        <input id="globalModelSearch" type="text" placeholder="Search models" />
-        <label class="toggle-row">
-          <input id="freeModelsOnly" type="checkbox" ${showOnlyFreeModels ? "checked" : ""} />
-          Free only
-        </label>
-      </div>
-    </div>
-    <div class="settings-model-preview settings-scroll-list">
-      <div id="globalModelList"></div>
-    </div>
-  `;
-  renderSettingsModelList();
-}
-
-function renderSidebarSelectedModel(): string {
-  if (!aiConfig?.model) {
-    return `
-      <div class="sidebar-selected-model">
-        <span class="sidebar-label">Selected for summaries</span>
-        <strong>No model selected</strong>
-      </div>
-    `;
-  }
-  const config = aiConfig;
-  const provider = getProviderConfig(config.provider);
-  const model = provider?.models.find((item) => item.id === config.model);
-  return `
-    <div class="sidebar-selected-model">
-      <span class="sidebar-label">Selected for summaries</span>
-      <strong>${escapeHtml(model?.name ?? config.model)}</strong>
-      <small>${escapeHtml(provider ? providerDisplayName(provider) : config.provider)}</small>
-      <span class="model-tags">${model && provider ? renderModelTagsForEntry({ provider, providerInfo: getProviderInfo(provider.id), model }) : ""}</span>
-    </div>
-  `;
-}
-
-function openChatTestDialog(providerId: string, modelId: string) {
-  chatTestTarget = { providerId, modelId };
-  chatTestMessages = [];
-  const provider = getProviderConfig(providerId);
-  const model = provider?.models.find((item) => item.id === modelId);
-  $("#chatTestTitle").textContent = `Test ${model?.name ?? modelId}`;
-  $("#chatTestMeta").textContent = provider ? `${providerDisplayName(provider)} / ${modelId}` : modelId;
-  const error = $("#chatTestError");
-  error.hidden = true;
-  error.textContent = "";
-  renderChatTestMessages();
+async function openChatTest(pid: string, mid: string) {
+  const modal = document.getElementById("chatTestModal") as HTMLDivElement | null;
+  if (!modal) { setStatusFn("Chat-Test Dialog nicht vorhanden"); return; }
+  const title = document.getElementById("chatTestTitle");
+  if (title) title.textContent = `Test ${mid}`;
+  const meta = document.getElementById("chatTestMeta");
+  if (meta) meta.textContent = `${pid} / ${mid}`;
   showModal("#chatTestModal");
-  queueMicrotask(() => {
-    const input = $<HTMLTextAreaElement>("#chatTestMessage");
-    input.value = "Hi";
-    input.focus();
-    input.select();
-  });
-}
-
-async function sendChatTest() {
-  if (!chatTestTarget) return;
-  const error = $("#chatTestError");
-  const sendButton = $<HTMLButtonElement>("#chatTestSend");
-  const input = $<HTMLTextAreaElement>("#chatTestMessage");
-  const message = input.value.trim();
-  if (!message) return;
-  chatTestMessages.push({ role: "user", content: message });
-  input.value = "";
-  error.hidden = true;
-  error.textContent = "";
-  renderChatTestMessages(true);
-  sendButton.disabled = true;
-  try {
-    if (!$("#settingsModal").hidden && document.querySelector("#configModel") && chatTestTarget.providerId === selectedSettingsProviderId) {
-      await persistVisibleProviderForm(true);
+  const send = document.getElementById("chatTestSend");
+  const close = document.getElementById("chatTestClose");
+  const input = document.getElementById("chatTestMessage") as HTMLTextAreaElement | null;
+  const list = document.getElementById("chatTestMessages");
+  const errEl = document.getElementById("chatTestError") as HTMLElement | null;
+  if (!send || !input || !list) return;
+  let msgs: any[] = [];
+  const onSend = async () => {
+    const m = input.value.trim(); if (!m) return;
+    msgs.push({role:"user", content:m}); input.value="";
+    renderChat(list as HTMLElement, msgs, true);
+    if (errEl) { errEl.textContent = ''; errEl.hidden = true; }
+    try {
+      const resp = await invoke<string>("ai_model_chat_test", { providerId: pid, modelId: mid, messages: msgs });
+      msgs.push({role:"assistant", content: resp});
+      renderChat(list as HTMLElement, msgs);
+    } catch (e) {
+      if (errEl) { errEl.textContent = errorMessage(e); errEl.hidden = false; }
     }
-    const response = await invoke<string>("test_provider_model_chat", {
-      providerId: chatTestTarget.providerId,
-      modelId: chatTestTarget.modelId,
-      messages: chatTestMessages,
-    });
-    chatTestMessages.push({ role: "assistant", content: response });
-    renderChatTestMessages();
-    setStatusFn("Model chat test succeeded");
-  } catch (error) {
-    $("#chatTestError").hidden = false;
-    $("#chatTestError").textContent = errorMessage(error);
-    setStatusFn(errorMessage(error));
-  } finally {
-    sendButton.disabled = false;
-    input.focus();
-  }
+  };
+  send.onclick = onSend;
+  if (close) close.onclick = () => {
+    hideModal("#chatTestModal");
+    if (errEl) errEl.hidden = true;
+  };
+  input.value = "Hi";
+  input.focus();
 }
 
-function renderChatTestMessages(loading = false) {
-  const list = $("#chatTestMessages");
-  const messages = chatTestMessages.length
-    ? chatTestMessages
-        .map((message) => `
-          <div class="chat-message ${message.role}">
-            <span>${message.role === "user" ? "You" : "Model"}</span>
-            <p>${escapeHtml(message.content)}</p>
-          </div>
-        `)
-        .join("")
-    : '<p class="empty">Send a short prompt to test this model.</p>';
-  list.innerHTML = loading
-    ? `${messages}<div class="chat-message assistant"><span>Model</span><p>Thinking...</p></div>`
-    : messages;
+function renderChat(list: HTMLElement, msgs: any[], loading=false) {
+  list.innerHTML = msgs.map(m => `<div class="chat-message ${m.role}"><span>${m.role}</span><p>${escapeHtml(m.content)}</p></div>`).join("") + (loading ? `<div class="chat-message assistant"><span>Model</span><p>...</p></div>` : "");
   list.scrollTop = list.scrollHeight;
 }
 
-function renderSettingsModelList() {
-  const list = document.querySelector<HTMLDivElement>("#globalModelList");
-  if (!list) return;
-  const query = document.querySelector<HTMLInputElement>("#globalModelSearch")?.value.trim().toLowerCase() ?? "";
-  const entries = getAllModelEntries()
-    .filter((entry) => {
-      if (showOnlyFreeModels && !isFreeModelEntry(entry)) return false;
-      const haystack = `${entry.model.id} ${entry.model.name} ${normalizeModelTags(entry.model.tags).join(" ")} ${providerDisplayName(entry.provider)}`.toLowerCase();
-      return !query || haystack.includes(query);
-    })
-    .sort((a, b) => {
-      const providerCompare = providerDisplayName(a.provider).localeCompare(providerDisplayName(b.provider));
-      return providerCompare || a.model.name.localeCompare(b.model.name);
-    });
-
-  list.innerHTML = entries.length
-    ? entries.map(renderGlobalModelItem).join("")
-    : '<p class="empty">No models found. Refresh providers first or change the filter.</p>';
-}
-
-function renderGlobalModelItem(entry: ModelEntry): string {
-  const active = aiConfig?.provider === entry.provider.id && aiConfig.model === entry.model.id ? " active" : "";
-  return `
-    <div class="settings-model-row${active}">
-      <span class="settings-model-main">
-        <strong>${escapeHtml(entry.model.name)}</strong>
-        <small>${escapeHtml(entry.model.id)}</small>
-      </span>
-      <span class="settings-model-provider">${escapeHtml(providerDisplayName(entry.provider))}</span>
-      <span class="model-tags">${renderModelTagsForEntry(entry)}</span>
-      <span class="settings-model-actions">
-        <button type="button" data-model-provider-id="${escapeHtml(entry.provider.id)}" data-model-id="${escapeHtml(entry.model.id)}" ${active ? "disabled" : ""}>Use</button>
-        <button type="button" data-test-chat-provider-id="${escapeHtml(entry.provider.id)}" data-test-chat-model-id="${escapeHtml(entry.model.id)}">Test chat</button>
-      </span>
-    </div>
-  `;
-}
-
-async function selectGlobalModel(providerId: string, modelId: string) {
-  const provider = getProviderConfig(providerId);
-  if (!provider) return;
-  const config = await invoke<AiConfig>("save_provider_config", {
-    providerId,
-    name: provider.name ?? null,
-    enabled: true,
-    apiKeyRequired: provider.api_key_required ?? false,
-    apiKey: provider.api_key,
-    model: modelId,
-    endpointOverride: provider.endpoint_override ?? "",
-    activate: true,
-  });
-  aiConfig = config;
-  const providerInfo = getProviderInfo(config.provider);
-  if (statusModelEl) {
-    statusModelEl.textContent = `${providerInfo?.name ?? config.provider} / ${config.model || "kein Modell"}`;
-  }
-  if (!$("#settingsModal").hidden) {
-    $("#settingsSelectedModel").innerHTML = renderSidebarSelectedModel();
-    $("#providerSettingsList").innerHTML = renderProviderNavigation(selectedSettingsProviderId);
-    updateActiveModelButtons(providerId, modelId);
-  }
-  setStatusFn(`Model selected: ${modelId}`);
-}
-
-function updateActiveModelButtons(providerId: string, modelId: string) {
-  document
-    .querySelectorAll<HTMLButtonElement>("#providerSettingsBody button[data-model-id][data-model-provider-id]")
-    .forEach((button) => {
-      const isActive =
-        button.dataset.modelProviderId === providerId && button.dataset.modelId === modelId;
-      button.disabled = isActive;
-      const row = button.closest<HTMLElement>(".settings-model-row");
-      if (row) row.classList.toggle("active", isActive);
-    });
-}
-
-function getAllModelEntries(): ModelEntry[] {
-  if (!aiConfig) return [];
-  return aiConfig.providers.flatMap((provider) =>
-    provider.enabled && isProviderConfigured(provider)
-      ? provider.models.map((model) => ({
-          provider,
-          providerInfo: getProviderInfo(provider.id),
-          model,
-        }))
-      : [],
-  );
-}
-
-function renderModelPreview(provider: AiProviderConfig): string {
-  if (!provider.models.length) {
-    return '<p class="empty">No models loaded yet.</p>';
-  }
-  return provider.models
-    .map((model) => {
-      const active = aiConfig?.provider === provider.id && aiConfig.model === model.id ? " active" : "";
-      return `
-        <div class="settings-model-row${active}">
-          <span class="settings-model-main">
-            <strong>${escapeHtml(model.name)}</strong>
-            <small>${escapeHtml(model.id)}</small>
-          </span>
-          <span class="model-tags">${renderModelTags(model, provider)}</span>
-          <span class="settings-model-actions">
-            <button type="button" data-model-provider-id="${escapeHtml(provider.id)}" data-model-id="${escapeHtml(model.id)}" ${active ? "disabled" : ""}>Use</button>
-            <button type="button" data-test-chat-provider-id="${escapeHtml(provider.id)}" data-test-chat-model-id="${escapeHtml(model.id)}">Test chat</button>
-          </span>
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function renderModelTags(model: AiModel, provider?: AiProviderConfig): string {
-  const tags = modelDisplayTags(model, provider);
-  return normalizeModelTags(tags).map((tag) => `<span class="model-tag">${escapeHtml(tag)}</span>`).join("");
-}
-
-function renderModelTagsForEntry(entry: ModelEntry): string {
-  const tags = modelDisplayTags(entry.model, entry.provider);
-  return normalizeModelTags(tags).map((tag) => `<span class="model-tag">${escapeHtml(tag)}</span>`).join("");
-}
-
-function isFreeModelEntry(entry: ModelEntry): boolean {
-  if (suppressAvailabilityTags(entry.provider)) return false;
-  return entry.model.free;
-}
-
-function suppressAvailabilityTags(provider: AiProviderConfig): boolean {
-  return provider.id === "ollama_cloud" && providerAccountTier(provider) !== "free";
-}
-
-function providerAccountTier(provider: AiProviderConfig): AccountTier {
-  return (provider.account_tier as AccountTier | null | undefined) ?? "free";
-}
-
-function modelDisplayTags(model: AiModel, provider?: AiProviderConfig): string[] {
-  const tags = [...model.tags];
-  const suppress = provider ? suppressAvailabilityTags(provider) : false;
-  if (suppress) {
-    return tags.filter((tag) => tag !== "Free" && tag !== "Subscription required" && tag !== "Probe unknown");
-  }
-  if (model.free && !tags.includes("Free")) tags.unshift("Free");
-  if (model.availability === "subscription_required" && !tags.includes("Subscription required")) {
-    tags.push("Subscription required");
-  }
-  if (model.availability === "unknown" && !tags.includes("Probe unknown")) {
-    tags.push("Probe unknown");
-  }
-  return tags;
-}
-
-function renderAccountTierField(provider: AiProviderConfig): string {
-  if (provider.id !== "ollama_cloud") return "";
-  const tier = providerAccountTier(provider);
-  const option = (value: AccountTier, label: string) =>
-    `<option value="${value}" ${tier === value ? "selected" : ""}>${label}</option>`;
-  return `
-    <label class="field-row"><span class="field-label">Plan</span>
-      <select id="configAccountTier">
-        ${option("free", "Free")}
-        ${option("pro", "Pro")}
-        ${option("max", "Max")}
-      </select>
-    </label>
-  `;
-}
-
-function renderModelRefreshState(provider: AiProviderConfig): string {
-  if (!provider.models_updated_at) return "Not refreshed yet";
-  const absolute = new Date(provider.models_updated_at).toLocaleString();
-  return `<span title="${escapeHtml(absolute)}">Refreshed ${escapeHtml(formatRelativeTime(provider.models_updated_at))}</span>`;
-}
-
-const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-
-function formatRelativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return iso;
-  const diffSeconds = Math.round((then - Date.now()) / 1000);
-  const abs = Math.abs(diffSeconds);
-  if (abs < 60) return relativeTimeFormatter.format(diffSeconds, "second");
-  if (abs < 3600) return relativeTimeFormatter.format(Math.round(diffSeconds / 60), "minute");
-  if (abs < 86_400) return relativeTimeFormatter.format(Math.round(diffSeconds / 3600), "hour");
-  if (abs < 7 * 86_400) return relativeTimeFormatter.format(Math.round(diffSeconds / 86_400), "day");
-  return new Date(iso).toLocaleDateString();
-}
-
-function normalizeModelTags(tags: string[]): string[] {
-  const tagNames: Record<string, string> = {
-    Kostenlos: "Free",
-    Schnell: "Fast",
-    Lokal: "Local",
-    "Günstig": "Low cost",
-  };
-  return [...new Set(tags.map((tag) => tagNames[tag] ?? tag).filter((tag) => !["Low cost", "Fast"].includes(tag)))];
-}
-
-function getProviderConfig(providerId: string): AiProviderConfig | undefined {
-  return aiConfig?.providers.find((provider) => provider.id === providerId);
-}
-
-function getProviderInfo(providerId: string): AiProviderInfo | undefined {
-  return aiProviders.find((provider) => provider.id === providerId);
-}
-
-function isCustomProvider(providerId: string): boolean {
-  return providerId === "custom" || providerId.startsWith("custom_");
-}
-
-function isUserManagedProvider(providerId: string): boolean {
-  return providerId === "ollama" || isCustomProvider(providerId);
-}
-
-function isProviderConfigured(provider: AiProviderConfig): boolean {
-  if (providerRequiresApiKey(provider) && !provider.api_key.trim()) return false;
-  if (isUserManagedProvider(provider.id) && !provider.endpoint_override?.trim()) return false;
-  if (!provider.models.length) return false;
-  return true;
-}
-
-function providerRequiresApiKey(provider?: AiProviderConfig): boolean {
-  if (!provider) return false;
-  const info = getProviderInfo(provider.id);
-  return info?.requires_api_key ?? !!provider.api_key_required;
-}
-
-function providerDisplayName(provider: AiProviderConfig): string {
-  return provider.name || getProviderInfo(provider.id)?.name || provider.id;
-}
+// expose for main
+export { updateStatusModel };

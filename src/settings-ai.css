@@ -1,0 +1,490 @@
+/* KI-Settings (Tabs "KI-Anbieter" / "KI-Modelle") — Struktur wie folio,
+   Optik in der Designsprache dieser App (Palette/Radius aus styles.css). */
+
+/* --- Tab-Layout im Settings-Modal --- */
+
+.settings-dialog__panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-dialog__tabs {
+  width: 160px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 8px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.settings-dialog__tab {
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-dialog__tab:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.settings-dialog__tab--active,
+.settings-dialog__tab--active:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.settings-dialog__tabpanel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px 20px;
+  overflow-y: auto;
+  position: relative;
+}
+
+/* Author-Styles dürfen das hidden-Attribut nicht aushebeln */
+.settings-dialog__tabpanel[hidden] {
+  display: none;
+}
+
+/* --- Abschnitte, Hinweise, Eingaben --- */
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-section__title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.settings-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.settings-hint code {
+  background: var(--panel-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-row label {
+  font-size: 13px;
+}
+
+.settings-input {
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.settings-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.settings-ai-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-ai-toolbar .settings-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-ai-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-ai-heading .settings-section__title {
+  flex: 1 1 auto;
+}
+
+/* --- Buttons (Sekundär-Stil der App) --- */
+
+.settings-ai-button,
+.settings-ai-dialog__actions button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.settings-ai-button:hover,
+.settings-ai-dialog__actions button:hover {
+  border-color: var(--accent);
+}
+
+.settings-ai-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.settings-ai-button--small {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+
+/* --- Anbieter-Karten --- */
+
+.settings-ai-list,
+.settings-ai-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-ai-card,
+.settings-ai-model-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 12px 14px;
+}
+
+.settings-ai-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-ai-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-ai-card__header > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-ai-card__header strong {
+  font-size: 13.5px;
+}
+
+.settings-ai-card__id,
+.settings-ai-card__details,
+.settings-ai-model__text span {
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.settings-ai-card__details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.settings-ai-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+/* --- Schalter --- */
+
+.settings-ai-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.settings-ai-switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.settings-ai-switch__track {
+  display: inline-block;
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-ai-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.settings-ai-switch input:checked + .settings-ai-switch__track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings-ai-switch input:checked + .settings-ai-switch__track .settings-ai-switch__thumb {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+.settings-ai-switch input:focus-visible + .settings-ai-switch__track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- Schlüssel-Zeile --- */
+
+.settings-ai-auth {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-ai-auth__status {
+  min-width: 140px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-ai-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.settings-ai-status-dot--stored {
+  background: #4fbf7c;
+}
+
+.settings-ai-auth__editor {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-ai-auth__editor[hidden] {
+  display: none;
+}
+
+.settings-ai-auth__editor .settings-input {
+  min-width: 160px;
+  flex: 1 1 auto;
+}
+
+.settings-ai-error {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* --- Custom-Provider-Dialog (Overlay im Panel) --- */
+
+.settings-ai-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(6, 9, 14, 0.55);
+}
+
+.settings-ai-overlay[hidden] {
+  display: none;
+}
+
+.settings-ai-dialog {
+  width: min(460px, 100%);
+  max-height: 100%;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+  padding: 20px;
+}
+
+.settings-ai-dialog h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.settings-ai-dialog > label {
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.settings-ai-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settings-ai-dialog__actions .primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.settings-ai-dialog__actions .primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+/* --- Modelle-Panel --- */
+
+.settings-ai-model-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-ai-model-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-ai-model-group__header h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.settings-ai-model {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(120px, auto) auto;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding: 8px 0 2px;
+}
+
+.settings-ai-model__text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-ai-model__text strong {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.settings-ai-model__badges {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.settings-ai-model__badges span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--panel-2);
+  padding: 2px 8px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.settings-ai-model__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-ai-empty {
+  margin: 12px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .settings-dialog__tabs {
+    width: 126px;
+  }
+
+  .settings-ai-model {
+    grid-template-columns: minmax(120px, 1fr) auto;
+  }
+
+  .settings-ai-model__badges {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+  }
+}

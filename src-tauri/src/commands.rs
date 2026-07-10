@@ -1,156 +1,592 @@
 use reqwest::Client;
+use std::collections::BTreeMap;
 use tauri::State;
 
-use crate::ai_config::{self, AiChatMessage, AiConfig, AiProviderInfo};
+use crate::ai::auth::AuthStore;
+use crate::ai::catalog::{self as ai_catalog, CatalogResult};
+use crate::ai::client::{self as ai_client, ChatMessage};
+use crate::ai::config::{AiConfigError, AiConfigService};
+use crate::ai::types::{AiConfig, AiModelRef, AuthStatus, Catalog, CustomProviderDefinition};
 use crate::models::{Collection, NewVideo, Video};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::youtube;
 
+// ============================================================================
+// New AI commands (ported from folio per spec-ai-port.md)
+// ============================================================================
+
 #[tauri::command]
-pub fn get_config(paths: State<'_, AppPaths>) -> AppResult<AiConfig> {
-    ai_config::get_ai_config(&paths)
+pub async fn ai_catalog_get(paths: State<'_, AppPaths>) -> Result<CatalogResult, String> {
+    Ok(ai_catalog::load(&paths))
 }
 
 #[tauri::command]
-pub fn get_ai_providers() -> Vec<AiProviderInfo> {
-    ai_config::provider_catalog()
-}
-
-#[tauri::command]
-pub fn save_config(
+pub async fn ai_catalog_refresh(
     paths: State<'_, AppPaths>,
-    provider: String,
-    api_key: String,
-    model: String,
-    endpoint_override: Option<String>,
-) -> AppResult<AiConfig> {
-    let endpoint_override = endpoint_override.and_then(|value| {
-        let trimmed = value.trim().to_string();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
+    http: State<'_, reqwest::Client>,
+) -> Result<CatalogResult, String> {
+    let result = ai_catalog::refresh(&http, &paths)
+        .await
+        .map_err(|e| e.to_string())?;
+    eprintln!(
+        "AI catalog refreshed: providers={}, updated_at={}",
+        result.catalog.len(),
+        result.updated_at
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn ai_config_get(
+    _paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+) -> Result<AiConfig, String> {
+    let guard = cfg
+        .lock()
+        .map_err(|_| "AI config lock poisoned".to_string())?;
+    Ok(guard.data())
+}
+
+#[tauri::command]
+pub async fn ai_provider_enable(
+    provider_id: String,
+    enabled: bool,
+    _paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+) -> Result<AiConfig, String> {
+    let result = mutate_ai_config_state(&cfg, |service| {
+        service.provider_enable(provider_id.clone(), enabled)
+    })?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn ai_model_toggle(
+    provider_id: String,
+    model_id: String,
+    on: bool,
+    _paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+) -> Result<AiConfig, String> {
+    let result = mutate_ai_config_state(&cfg, |service| {
+        service.model_toggle(provider_id.clone(), model_id.clone(), on)
+    })?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn ai_custom_upsert(
+    definition: CustomProviderDefinition,
+    _paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+) -> Result<AiConfig, String> {
+    let result = mutate_ai_config_state(&cfg, |service| service.custom_upsert(definition))?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn ai_custom_delete(
+    id: String,
+    _paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+) -> Result<AiConfig, String> {
+    let result = mutate_ai_config_state(&cfg, |service| service.custom_delete(&id))?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn ai_custom_models_fetch(
+    provider_id: String,
+    _paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+    auth: State<'_, std::sync::Mutex<AuthStore>>,
+    http: State<'_, reqwest::Client>,
+) -> Result<AiConfig, String> {
+    let (base_url, key) = {
+        let config = ai_config_data_from_state(&cfg)?;
+        let provider = config
+            .provider
+            .get(&provider_id)
+            .ok_or_else(|| format!("Custom-Provider '{provider_id}' wurde nicht gefunden"))?;
+        if !provider.custom {
+            return Err(format!("Provider '{provider_id}' ist kein Custom-Provider"));
         }
-    });
+        let base_url = provider
+            .options
+            .as_ref()
+            .map(|o| o.base_url.clone())
+            .filter(|u| !u.trim().is_empty())
+            .ok_or_else(|| format!("Custom-Provider '{provider_id}' hat keine Basis-URL"))?;
+        let key = lock_ai_auth_from_state(&auth)?.get_key(&provider_id);
+        (base_url, key)
+    };
 
-    ai_config::update_ai_config(
-        &paths,
-        AiConfig {
-            provider,
-            api_key,
-            model,
-            endpoint_override,
-            providers: Vec::new(),
-        },
-    )
+    let url = custom_models_url(&base_url)?;
+    let mut request = http.get(url).timeout(std::time::Duration::from_secs(15));
+    if let Some(k) = key.as_deref() {
+        request = request.bearer_auth(k);
+    }
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| format!("Modelle von '{provider_id}' nicht abrufbar: {e}"))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Antwort lesen fehlgeschlagen: {e}"))?;
+    if !status.is_success() {
+        return Err(http_error(&provider_id, status, &body, key.as_deref()));
+    }
+    let model_ids = parse_custom_models(&body)
+        .map_err(|e| format!("Ungültige Modellliste von '{provider_id}': {e}"))?;
+
+    let result =
+        mutate_ai_config_state(&cfg, |s| s.custom_models_replace(&provider_id, model_ids))?;
+    Ok(result)
 }
 
 #[tauri::command]
-pub fn save_provider_config(
-    paths: State<'_, AppPaths>,
+pub async fn ai_default_model_set(
+    provider_id: Option<String>,
+    model_id: Option<String>,
+    _paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+) -> Result<AiConfig, String> {
+    let result = mutate_ai_config_state(&cfg, |service| {
+        service.default_model_set(provider_id, model_id)
+    })?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn ai_auth_set(
     provider_id: String,
-    name: Option<String>,
-    enabled: Option<bool>,
-    api_key_required: Option<bool>,
-    api_key: String,
-    model: String,
-    endpoint_override: Option<String>,
-    activate: Option<bool>,
-    account_tier: Option<String>,
-) -> AppResult<AiConfig> {
-    ai_config::update_provider_config(
-        &paths,
-        provider_id,
-        name,
-        enabled.unwrap_or(true),
-        api_key_required,
-        api_key,
-        model,
-        endpoint_override,
-        activate.unwrap_or(false),
-        account_tier,
-    )
+    key: String,
+    _paths: State<'_, AppPaths>,
+    auth: State<'_, std::sync::Mutex<AuthStore>>,
+) -> Result<AuthStatus, String> {
+    let mut guard = lock_ai_auth_from_state(&auth)?;
+    guard
+        .set(provider_id.clone(), key)
+        .map_err(|e| e.to_string())?;
+    let status = guard.status();
+    drop(guard);
+    // IMPORTANT: never log key
+    eprintln!("AI auth set for provider (no key in log)");
+    Ok(status)
 }
 
 #[tauri::command]
-pub fn add_custom_provider(
-    paths: State<'_, AppPaths>,
-    local_ollama: Option<bool>,
-) -> AppResult<AiConfig> {
-    ai_config::add_custom_provider(&paths, local_ollama.unwrap_or(false))
-}
-
-#[tauri::command]
-pub fn delete_custom_provider(
-    paths: State<'_, AppPaths>,
+pub async fn ai_auth_remove(
     provider_id: String,
-) -> AppResult<AiConfig> {
-    ai_config::delete_custom_provider(&paths, &provider_id)
+    _paths: State<'_, AppPaths>,
+    auth: State<'_, std::sync::Mutex<AuthStore>>,
+) -> Result<AuthStatus, String> {
+    let mut guard = lock_ai_auth_from_state(&auth)?;
+    guard.remove(&provider_id).map_err(|e| e.to_string())?;
+    let status = guard.status();
+    drop(guard);
+    eprintln!("AI auth removed for provider (no key)");
+    Ok(status)
 }
 
 #[tauri::command]
-pub async fn refresh_provider_models(
-    paths: State<'_, AppPaths>,
-    provider_id: String,
-    force_reprobe: Option<bool>,
-) -> AppResult<AiConfig> {
-    let config = ai_config::get_ai_config(&paths)?;
-    let provider = ai_config::provider_config(&config, &provider_id)
-        .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
-    let mut request_config = config.clone();
-    request_config.provider = provider.id.clone();
-    request_config.api_key = provider.api_key.clone();
-    request_config.model = provider.model.clone();
-    request_config.endpoint_override = provider.endpoint_override.clone();
-    let existing_models = provider.models.clone();
-    let account_tier = provider
-        .account_tier
-        .clone()
-        .unwrap_or_else(|| "free".to_string());
+pub async fn ai_auth_status(
+    _paths: State<'_, AppPaths>,
+    auth: State<'_, std::sync::Mutex<AuthStore>>,
+) -> Result<AuthStatus, String> {
+    Ok(lock_ai_auth_from_state(&auth)?.status())
+}
 
-    let client = http_client()?;
-    match ai_config::fetch_models(
-        &client,
-        &request_config,
+#[tauri::command]
+pub async fn ai_model_chat_test(
+    paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+    auth: State<'_, std::sync::Mutex<AuthStore>>,
+    http: State<'_, reqwest::Client>,
+    provider_id: String,
+    model_id: String,
+    messages: Vec<ChatMessage>, // {role, content} from frontend
+) -> AppResult<String> {
+    let config = ai_config_data_from_state(&cfg)?;
+    let provider_cfg = config
+        .provider
+        .get(&provider_id)
+        .ok_or_else(|| "KI-Provider nicht gefunden".to_string())?;
+    if !provider_cfg.enabled {
+        return Err("KI-Provider ist nicht aktiviert".to_string());
+    }
+    if !provider_cfg.whitelist.iter().any(|m| m == &model_id) {
+        return Err("Modell nicht in Whitelist".to_string());
+    }
+    let base_url = provider_base_url(
+        &config,
+        &ai_catalog::load(paths.inner()).catalog,
         &provider_id,
-        &existing_models,
-        &account_tier,
-        force_reprobe.unwrap_or(false),
+    )?;
+    let key = lock_ai_auth_from_state(&auth)?.get_key(&provider_id);
+
+    ai_client::chat_stream(
+        &http,
+        &base_url,
+        key.as_deref(),
+        &model_id,
+        &messages,
+        |_| {},
     )
     .await
-    {
-        Ok(models) => ai_config::update_provider_models(
-            &paths,
-            &provider_id,
-            models,
-            chrono::Utc::now().to_rfc3339(),
-            None,
-        ),
-        Err(error) => {
-            let _ = ai_config::set_provider_error(&paths, &provider_id, error.clone());
-            Err(error)
-        }
+    .map_err(|e| e.to_string())
+}
+
+// Internal helpers for new commands (no keys in results)
+
+// use managed state via mutate_ai_config_state / from_state (F11)
+
+fn ai_config_data_from_state(cfg: &std::sync::Mutex<AiConfigService>) -> Result<AiConfig, String> {
+    let guard = cfg
+        .lock()
+        .map_err(|_| "AI config lock poisoned".to_string())?;
+    Ok(guard.data())
+}
+
+fn mutate_ai_config_state(
+    cfg: &std::sync::Mutex<AiConfigService>,
+    mutation: impl FnOnce(&mut AiConfigService) -> Result<(), AiConfigError>,
+) -> Result<AiConfig, String> {
+    let mut service = cfg
+        .lock()
+        .map_err(|_| "AI config lock poisoned".to_string())?;
+    mutation(&mut service).map_err(|e| e.to_string())?;
+    Ok(service.data())
+}
+
+fn lock_ai_auth_from_state(
+    auth: &std::sync::Mutex<AuthStore>,
+) -> Result<std::sync::MutexGuard<'_, AuthStore>, String> {
+    auth.lock().map_err(|_| "AI auth lock poisoned".to_string())
+}
+
+fn provider_base_url(
+    config: &AiConfig,
+    catalog: &Catalog,
+    provider_id: &str,
+) -> Result<String, String> {
+    let configured = config.provider.get(provider_id);
+    let endpoint = if configured.is_some_and(|p| p.custom) {
+        configured
+            .and_then(|p| p.options.as_ref())
+            .map(|o| o.base_url.trim())
+            .filter(|u| !u.is_empty())
+    } else {
+        catalog
+            .get(provider_id)
+            .and_then(|p| p.api.as_deref())
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+    };
+    endpoint
+        .map(str::to_string)
+        .ok_or_else(|| format!("Provider '{provider_id}' hat keinen bekannten Endpoint."))
+}
+
+fn custom_models_url(base_url: &str) -> Result<reqwest::Url, String> {
+    let mut url =
+        reqwest::Url::parse(base_url.trim()).map_err(|e| format!("Ungültige baseURL: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("baseURL muss HTTP(S) sein".to_string());
+    }
+    // Tolerate baseURLs that include the full chat path (e.g. migrated endpoint overrides)
+    let p = url
+        .path()
+        .trim_end_matches('/')
+        .trim_end_matches("/chat/completions")
+        .to_string();
+    if !p.ends_with("/models") {
+        url.set_path(&format!("{p}/models"));
+    } else {
+        url.set_path(&p);
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn parse_custom_models(body: &str) -> Result<Vec<String>, serde_json::Error> {
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        data: Vec<IdItem>,
+    }
+    #[derive(serde::Deserialize)]
+    struct IdItem {
+        id: String,
+    }
+    let r: Resp = serde_json::from_str(body)?;
+    Ok(r.data
+        .into_iter()
+        .map(|i| i.id.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+fn http_error(
+    provider_id: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+    api_key: Option<&str>,
+) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let redacted = match api_key.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(k) => compact.replace(k, "[REDACTED]"),
+        None => compact,
+    };
+    let msg = redacted.chars().take(300).collect::<String>();
+    if msg.is_empty() {
+        format!("Provider '{provider_id}' antwortete mit HTTP-Status {status}")
+    } else {
+        format!("Provider '{provider_id}' antwortete mit HTTP-Status {status}: {msg}")
     }
 }
 
-#[tauri::command]
-pub async fn test_provider_model_chat(
-    paths: State<'_, AppPaths>,
-    provider_id: String,
-    model_id: String,
-    messages: Vec<AiChatMessage>,
-) -> AppResult<String> {
-    let config = ai_config::get_ai_config(&paths)?;
-    let provider = ai_config::provider_config(&config, &provider_id)
-        .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
-    let mut request_config = config.clone();
-    request_config.provider = provider.id.clone();
-    request_config.api_key = provider.api_key.clone();
-    request_config.model = model_id;
-    request_config.endpoint_override = provider.endpoint_override.clone();
+// Migration from old config.json (best effort, once)
+// Order: keys first (with error handling), THEN atomic ai.json write (done marker).
+// Customs: any id not in the 4 known hosted ones (incl. "ollama") treated as custom.
+pub(crate) fn ensure_migrated(paths: &AppPaths) {
+    let ai_path = storage::ai_json_path(paths);
+    if ai_path.exists() {
+        return; // already migrated or fresh
+    }
+    // try read old config.json for ai block (raw, no type)
+    let old_cfg_text = match std::fs::read_to_string(&paths.config_path) {
+        Ok(t) => t,
+        Err(_) => {
+            // even no config, write marker
+            let _ = crate::ai::config::save_json_atomic(
+                &ai_path,
+                &crate::ai::types::AiConfig::default(),
+            );
+            return;
+        }
+    };
+    let old: serde_json::Value = match serde_json::from_str(&old_cfg_text) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = crate::ai::config::save_json_atomic(
+                &ai_path,
+                &crate::ai::types::AiConfig::default(),
+            );
+            return;
+        }
+    };
+    let old_ai = match old.get("ai") {
+        Some(a) if a.is_object() => a,
+        _ => {
+            let _ = crate::ai::config::save_json_atomic(
+                &ai_path,
+                &crate::ai::types::AiConfig::default(),
+            );
+            return;
+        }
+    };
 
-    let client = http_client()?;
-    ai_config::test_chat(&client, &request_config, &messages).await
+    let known_hosted: [&str; 4] = ["ollama_cloud", "openrouter", "opencode_zen", "opencode_go"];
+    let is_hosted = |id: &str| known_hosted.contains(&id);
+
+    // Build minimal old shape
+    let old_provider = old_ai
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let old_model = old_ai
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let old_key = old_ai
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let old_endpoint = old_ai
+        .get("endpoint_override")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let mut providers_map: BTreeMap<String, crate::ai::types::AiProviderConfig> = BTreeMap::new();
+    let mut default_model: Option<AiModelRef> = None;
+    let mut migrated_ids: Vec<String> = vec![];
+
+    let catalog = ai_catalog::load(paths).catalog;
+
+    // active provider -> provider entry (custom or mapped), even without key
+    if !old_provider.is_empty() {
+        let is_custom = !is_hosted(&old_provider);
+        let mapped = if is_custom {
+            old_provider.clone()
+        } else {
+            map_old_provider_id(&old_provider).unwrap_or_else(|| old_provider.clone())
+        };
+        if catalog.contains_key(&mapped) || is_custom {
+            let mut pcfg = crate::ai::types::AiProviderConfig {
+                enabled: true,
+                custom: is_custom,
+                ..Default::default()
+            };
+            if is_custom {
+                if let Some(ep) = old_endpoint.clone().filter(|e| !e.trim().is_empty()) {
+                    pcfg.options = Some(crate::ai::types::AiProviderOptions {
+                        base_url: strip_chat_suffix(&ep),
+                    });
+                }
+            }
+            if !old_model.is_empty() {
+                pcfg.whitelist = vec![old_model.clone()];
+                default_model = Some(AiModelRef {
+                    provider: mapped.clone(),
+                    model: old_model.clone(),
+                });
+            }
+            providers_map.insert(mapped.clone(), pcfg);
+            migrated_ids.push(mapped.clone());
+        }
+    }
+
+    // other providers from list: add entry regardless of key (b), custom if not hosted
+    if let Some(provs) = old_ai.get("providers").and_then(|v| v.as_array()) {
+        for prov in provs {
+            let pid = prov
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if pid.is_empty() {
+                continue;
+            }
+            let is_custom = !is_hosted(&pid);
+            let mapped = if is_custom {
+                pid.clone()
+            } else {
+                map_old_provider_id(&pid).unwrap_or_else(|| pid.clone())
+            };
+            if catalog.contains_key(&mapped) || is_custom {
+                let entry = providers_map.entry(mapped.clone()).or_insert_with(|| {
+                    crate::ai::types::AiProviderConfig {
+                        enabled: true,
+                        custom: is_custom,
+                        ..Default::default()
+                    }
+                });
+                entry.enabled = true;
+                if is_custom {
+                    if let Some(ep) = prov
+                        .get("endpoint_override")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                    {
+                        entry.options = Some(crate::ai::types::AiProviderOptions {
+                            base_url: strip_chat_suffix(ep),
+                        });
+                    }
+                }
+                if !migrated_ids.contains(&mapped) {
+                    migrated_ids.push(mapped);
+                }
+            }
+            // keys handled separately below
+        }
+    }
+
+    // FIRST: migrate keys (a) - proper error handling, never swallow silently for keys
+    let mut auth_store = AuthStore::load(paths);
+    if !old_key.trim().is_empty() {
+        if let Some(m) = (if is_hosted(&old_provider) {
+            map_old_provider_id(&old_provider)
+        } else {
+            None
+        })
+        .or_else(|| {
+            if !is_hosted(&old_provider) {
+                Some(old_provider.clone())
+            } else {
+                None
+            }
+        }) {
+            if let Err(e) = auth_store.set(m.clone(), old_key.clone()) {
+                eprintln!(
+                    "AI migration: auth key set error for provider (id redacted): {}",
+                    e
+                );
+            }
+        }
+    }
+    if let Some(provs) = old_ai.get("providers").and_then(|v| v.as_array()) {
+        for prov in provs {
+            let pid = prov
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let pkey = prov
+                .get("api_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if pkey.trim().is_empty() {
+                continue;
+            }
+            let target = if is_hosted(&pid) {
+                map_old_provider_id(&pid).unwrap_or(pid.clone())
+            } else {
+                pid.clone()
+            };
+            if let Err(e) = auth_store.set(target, pkey) {
+                eprintln!(
+                    "AI migration: auth key set error for listed provider (id redacted): {}",
+                    e
+                );
+            }
+        }
+    }
+
+    // if nothing at all, still write marker (d)
+    if providers_map.is_empty() && old_key.trim().is_empty() {
+        let _ =
+            crate::ai::config::save_json_atomic(&ai_path, &crate::ai::types::AiConfig::default());
+        return;
+    }
+
+    let new_ai = crate::ai::types::AiConfig {
+        provider: providers_map,
+        default_model,
+        translate: Default::default(),
+    };
+
+    // THEN atomic ai.json (a, d) -- this marks done
+    if let Err(e) = crate::ai::config::save_json_atomic(&ai_path, &new_ai) {
+        eprintln!("AI migration: failed to write ai.json marker: {}", e);
+    }
+
+    eprintln!("AI migration completed for providers: {:?}", migrated_ids);
+}
+
+fn map_old_provider_id(old: &str) -> Option<String> {
+    match old {
+        "opencode_zen" => Some("opencode".into()),
+        "opencode_go" => Some("opencode-go".into()),
+        "ollama_cloud" => Some("ollama-cloud".into()),
+        "openrouter" => Some("openrouter".into()),
+        _ => None,
+    }
+}
+
+// Old endpoint overrides stored the full chat URL; the new baseURL schema expects the API root.
+fn strip_chat_suffix(endpoint: &str) -> String {
+    endpoint
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/chat/completions")
+        .to_string()
 }
 
 #[tauri::command]
@@ -248,12 +684,14 @@ pub async fn summarize_video(
     paths: State<'_, AppPaths>,
     id: i64,
     system_prompt: String,
+    http: State<'_, reqwest::Client>,
 ) -> AppResult<Video> {
-    summarize_video_impl(&paths, id, system_prompt).await
+    summarize_video_impl(&paths, &http, id, system_prompt).await
 }
 
 pub async fn summarize_video_impl(
     paths: &AppPaths,
+    http: &reqwest::Client,
     id: i64,
     system_prompt: String,
 ) -> AppResult<Video> {
@@ -268,40 +706,112 @@ pub async fn summarize_video_impl(
         .chapters
         .as_ref()
         .and_then(|chapters| serde_json::to_string(chapters).ok());
-    let ai_config = ai_config::get_ai_config(paths)?;
-    let client = http_client()?;
-    let prompt = system_prompt.trim();
-    let summary = ai_config::summarize(
-        &client,
-        &ai_config,
-        &transcript_text,
-        chapters_json.as_deref(),
-        if prompt.is_empty() {
-            None
-        } else {
-            Some(prompt)
-        },
-        Some(video.title.as_str()),
-        video.published_at.as_deref(),
-    )
-    .await?;
 
-    let provider_label = ai_config::provider_config(&ai_config, &ai_config.provider)
+    let ai = AiConfigService::load(paths).data();
+    let default = match &ai.default_model {
+        Some(dm) => dm,
+        None => {
+            return Err(
+                "Kein defaultModel gesetzt - bitte in Einstellungen KI-Modell auswählen"
+                    .to_string(),
+            )
+        }
+    };
+    // resolve
+    let catalog = ai_catalog::load(paths).catalog;
+    let base_url = provider_base_url(&ai, &catalog, &default.provider)?;
+    let key = AuthStore::load(paths).get_key(&default.provider);
+
+    // build prompt (unchanged logic from old DEFAULT + user)
+    let prompt = system_prompt.trim();
+    let sys = if prompt.is_empty() {
+        DEFAULT_SYSTEM_PROMPT.to_string()
+    } else {
+        prompt.to_string()
+    };
+
+    let mut user_content =
+        String::from("Please summarize the following YouTube video transcript.\n");
+    if !video.title.trim().is_empty() {
+        user_content.push_str(&format!("\nVideo title: {}", video.title));
+    }
+    if let Some(published) = video
+        .published_at
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        user_content.push_str(&format!("\nPublished on: {}", published));
+    }
+    user_content.push_str("\n\nTranscript:\n");
+    user_content.push_str(&transcript_text);
+    if let Some(ch) = chapters_json.as_deref().filter(|v| !v.trim().is_empty()) {
+        user_content.push_str("\n\nAvailable chapter markers as JSON:\n");
+        user_content.push_str(ch);
+    }
+
+    let messages = vec![ChatMessage::system(sys), ChatMessage::user(user_content)];
+
+    let raw = ai_client::chat_stream(
+        http,
+        &base_url,
+        key.as_deref(),
+        &default.model,
+        &messages,
+        |_| {},
+    )
+    .await
+    .map_err(|e| format!("KI-Anfrage fehlgeschlagen: {}", e))?;
+
+    let summary = strip_wrapping_code_fence(&raw);
+
+    let provider_label = ai
+        .provider
+        .get(&default.provider)
         .and_then(|p| p.name.clone())
-        .or_else(|| {
-            ai_config::provider_catalog()
-                .into_iter()
-                .find(|info| info.id == ai_config.provider)
-                .map(|info| info.name)
-        })
-        .unwrap_or_else(|| ai_config.provider.clone());
+        .or_else(|| catalog.get(&default.provider).and_then(|p| p.name.clone()))
+        .unwrap_or_else(|| default.provider.clone());
+
     storage::update_summary(
         paths,
         id,
         &summary,
         Some(&provider_label),
-        Some(&ai_config.model),
+        Some(&default.model),
     )
+}
+
+// Unchanged summary prompt + parse/strip (moved here to keep behavior + tests intact)
+const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a helpful assistant that summarizes YouTube video transcripts.
+Provide a clear, structured summary in the same language as the transcript.
+Include:
+- A short overview (1-2 sentences)
+- Key points as bullet points
+- Main conclusions or takeaways
+
+Format your response as Markdown."#;
+
+fn strip_wrapping_code_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    // keep the regex from old (regex crate is dep)
+    let re = match regex::Regex::new(r"(?s)^```([^\n]*)\n(.*?)\n?```$") {
+        Ok(r) => r,
+        Err(_) => return trimmed.to_string(),
+    };
+    let Some(caps) = re.captures(trimmed) else {
+        return trimmed.to_string();
+    };
+    let info = caps[1].trim().to_lowercase();
+    if !info.is_empty() && info != "markdown" && info != "md" {
+        return trimmed.to_string();
+    }
+    let inner = &caps[2];
+    if inner
+        .lines()
+        .any(|line| line.trim_start().starts_with("```"))
+    {
+        return trimmed.to_string();
+    }
+    inner.to_string()
 }
 
 #[tauri::command]
@@ -315,4 +825,45 @@ fn http_client() -> AppResult<Client> {
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|err| format!("HTTP-Client konnte nicht erstellt werden: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_wrapping_code_fence;
+
+    #[test]
+    fn strips_markdown_wrapping_fence() {
+        let input = "```markdown\n# Title\n\nBody **bold**.\n```";
+        assert_eq!(
+            strip_wrapping_code_fence(input),
+            "# Title\n\nBody **bold**."
+        );
+    }
+
+    #[test]
+    fn strips_bare_wrapping_fence() {
+        let input = "```\n# Title\n\nBody\n```";
+        assert_eq!(strip_wrapping_code_fence(input), "# Title\n\nBody");
+    }
+
+    #[test]
+    fn leaves_plain_markdown_untouched() {
+        let input = "# Title\n\nBody **bold**.";
+        assert_eq!(strip_wrapping_code_fence(input), input);
+    }
+
+    #[test]
+    fn keeps_embedded_code_block() {
+        // A summary wrapped in a fence but containing its own code block must
+        // not be unwrapped, otherwise the inner block would break.
+        let input = "```markdown\nHere is code:\n```python\nx = 1\n```\ndone\n```";
+        assert_eq!(strip_wrapping_code_fence(input), input);
+    }
+
+    #[test]
+    fn keeps_standalone_language_block() {
+        // A genuine, non-markdown single code block is not a wrapper.
+        let input = "```python\nprint(1)\n```";
+        assert_eq!(strip_wrapping_code_fence(input), input);
+    }
 }

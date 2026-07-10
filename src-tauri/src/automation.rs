@@ -7,7 +7,8 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::ai_config::{self, AiConfig};
+use crate::ai::catalog as ai_catalog;
+use crate::ai::config::AiConfigService;
 use crate::commands;
 use crate::storage::{self, AppPaths, AppResult};
 
@@ -121,19 +122,23 @@ fn route(
 ) -> AppResult<()> {
     match (method, path) {
         ("GET", "/api/health") => write_json(stream, 200, &json!({"status": "ok"})),
-        ("GET", "/api/config") => write_result(stream, ai_config::get_ai_config(paths)),
-        ("GET", "/api/providers") => write_json(stream, 200, &ai_config::provider_catalog()),
-        _ if method == "POST" && path.starts_with("/api/models/") => {
-            let provider_id = path
-                .strip_prefix("/api/models/")
-                .ok_or_else(|| "Ungültiger Pfad".to_string())?;
-            let runtime = tokio::runtime::Runtime::new()
-                .map_err(|err| format!("Runtime konnte nicht erstellt werden: {err}"))?;
-            write_result(
-                stream,
-                runtime.block_on(refresh_models_impl(paths, provider_id)),
-            )
+        // New: ai.json content (no keys ever) + catalog short list (id, name)
+        ("GET", "/api/config") => {
+            let cfg = AiConfigService::load(paths).data();
+            // ai.json has no keys (in auth.json)
+            write_json(stream, 200, &cfg)
         }
+        ("GET", "/api/providers") => {
+            let cat = ai_catalog::load(paths).catalog;
+            let short: Vec<_> = cat.iter().map(|(id, p)| json!({"id": id, "name": p.name.clone().unwrap_or_else(|| id.clone())})).collect();
+            write_json(stream, 200, &short)
+        }
+        // old /api/models/* removed per spec (use ai_custom_models_fetch via UI/automation if needed)
+        _ if method == "POST" && path.starts_with("/api/models/") => write_json(
+            stream,
+            404,
+            &json!({"error": "models refresh moved to ai_custom_models_fetch"}),
+        ),
         ("GET", "/api/videos") => write_result(stream, storage::get_videos(paths)),
         ("POST", "/api/add-video") => {
             let request = parse_body::<AddVideoRequest>(body)?;
@@ -172,10 +177,16 @@ fn route(
             let request = parse_body::<SummarizeRequest>(body)?;
             let runtime = tokio::runtime::Runtime::new()
                 .map_err(|err| format!("Runtime konnte nicht erstellt werden: {err}"))?;
+            let http = reqwest::Client::builder()
+                .user_agent("Mozilla/5.0 YouTubeSummarizer/0.1")
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .map_err(|err| format!("HTTP-Client konnte nicht erstellt werden: {err}"))?;
             write_result(
                 stream,
                 runtime.block_on(commands::summarize_video_impl(
                     paths,
+                    &http,
                     id,
                     request.system_prompt.unwrap_or_default(),
                 )),
@@ -185,42 +196,7 @@ fn route(
     }
 }
 
-async fn refresh_models_impl(paths: &AppPaths, provider_id: &str) -> AppResult<AiConfig> {
-    let config = ai_config::get_ai_config(paths)?;
-    let provider = ai_config::provider_config(&config, provider_id)
-        .ok_or_else(|| "KI-Anbieter nicht gefunden".to_string())?;
-    let mut request_config = config.clone();
-    request_config.provider = provider.id.clone();
-    request_config.api_key = provider.api_key.clone();
-    request_config.model = provider.model.clone();
-    request_config.endpoint_override = provider.endpoint_override.clone();
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 YouTubeSummarizer/0.1")
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|err| format!("HTTP-Client konnte nicht erstellt werden: {err}"))?;
-    let existing_models = provider.models.clone();
-    let account_tier = provider
-        .account_tier
-        .clone()
-        .unwrap_or_else(|| "free".to_string());
-    let models = ai_config::fetch_models(
-        &client,
-        &request_config,
-        provider_id,
-        &existing_models,
-        &account_tier,
-        false,
-    )
-    .await?;
-    ai_config::update_provider_models(
-        paths,
-        provider_id,
-        models,
-        chrono::Utc::now().to_rfc3339(),
-        None,
-    )
-}
+// refresh_models_impl removed (old /api/models/* disabled per spec; custom models via ai_custom_models_fetch)
 
 fn parse_body<T: for<'de> Deserialize<'de>>(body: &[u8]) -> AppResult<T> {
     serde_json::from_slice(body).map_err(|err| format!("Request-Body ist ungültig: {err}"))

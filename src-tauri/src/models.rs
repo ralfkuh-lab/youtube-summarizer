@@ -1,20 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ai_config::types::AiConfig;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppConfig {
-    pub ai: AiConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            ai: AiConfig::default(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chapter {
     pub time: String,

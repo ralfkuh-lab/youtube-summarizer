@@ -8,7 +8,8 @@ This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri a
 - `src/styles.css`: frontend styling.
 - `src-tauri/src/commands.rs`: Tauri command layer and shared command implementations.
 - `src-tauri/src/youtube.rs`: YouTube metadata, transcript and chapter fetching.
-- `src-tauri/src/ai_config/`: AI provider config, model refresh, chat test and summary request handling.
+- `src-tauri/src/ai/`: AI provider/model config (models.dev catalog, ai.json, auth.json) and the OpenAI-compatible chat client; ported from folio, see `docs/spec-ai-port.md`.
+- `src/ai-config.ts`: settings UI for the "KI-Anbieter" / "KI-Modelle" tabs.
 - `src-tauri/src/storage.rs`: config and SQLite persistence.
 - `src-tauri/src/automation.rs`: debug-only local automation API for functional tests.
 - `TODO.md`: current collaboration state, open tasks and session handoff notes.
@@ -41,6 +42,7 @@ cargo test fetches_transcript_from_innertube_caption_url -- --ignored
 - Do not commit API keys, local databases or generated build output.
 - Prefer existing patterns in the app over introducing new frameworks.
 - When changing transcript, AI or storage behavior, run `npm run build` and `cargo test`.
+- After finishing a feature, run `npm run tauri -- build` so the project-root symlinks (`youtube-summarizer-release`, `youtube-summarizer.deb`) point to current artifacts.
 - If testing the running app, use the dev-only automation API printed by `npm run tauri dev`.
 
 ## Current Architecture

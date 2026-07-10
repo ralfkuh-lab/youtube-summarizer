@@ -47,6 +47,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 - Replaced the Tauri app icon set with a generated video/transcript/sparkle icon that includes a light outer rim for dark taskbars.
 - Implemented local collections with create/rename/delete, multi-collection video assignment, collection counts and combined collection/search/status filtering in the sidebar.
 - Fixed summaries showing raw Markdown source: some models (e.g. deepseek-v4-flash via OpenCode Go) wrap their whole reply in a single ```markdown ... ``` fence, which marked renders as one `<pre><code>` block. Now stripped in `parse_summary_response` (backend, so the DB stays clean) with a defensive frontend strip in `markdownToHtml`; both only unwrap a fence that spans the entire text and contains no inner fence. Cleaned the one already-affected DB row.
+- Ported the AI provider/model configuration from folio 1:1 (spec: `docs/spec-ai-port.md`): models.dev catalog (embedded snapshot + `ai-catalog.json` cache, refresh only on user click), `ai.json` (enabled providers, per-provider model whitelist, custom providers, defaultModel), `auth.json` with 0600 perms for API keys (never in logs/automation/UI), OpenAI-compatible client with SSE streaming (60s chunk timeout) + JSON fallback. Settings modal rebuilt to folio's tab scheme ("KI-Anbieter" / "KI-Modelle") incl. custom-provider dialog, per-model whitelist toggles, default-model selection and the kept per-model chat test. One-time best-effort migration from the old `config.json` ai block (keys → auth.json, custom endpoints normalized, old selected pair → defaultModel); `config.json` stays untouched on disk. Old `src-tauri/src/ai_config/` module and hardcoded provider catalog removed; automation API returns ai.json (keyless) and catalog short list. Dropped deliberately: Ollama Cloud plan probing, "free only" filter, provider status dots (catalog metadata replaces them).
 - Verified:
   - `npm run build`
   - `cargo test`
@@ -71,7 +72,8 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 - Add Windows and macOS packaging notes once tested on those platforms.
 - Add release checklist once app behavior stabilizes.
 - Review whether automation API responses should return compact video objects to avoid huge payloads from thumbnails/transcripts.
-- Backlog: AI provider config reuse/refactor beyond this app. Current in-app separation is enough for now; only revisit the reusable backend crate/framework-agnostic component idea when there is a concrete second consumer. Details in [`docs/ai-config-refactor.md`](docs/ai-config-refactor.md).
+- Backlog: AI provider config reuse/refactor beyond this app. Resolved differently on 2026-07-09: instead of extracting a shared crate, folio's newer implementation was ported back into this app (see `docs/spec-ai-port.md`); `docs/ai-config-refactor.md` is historical context only.
+- Follow-ups from the folio AI port: optional UI streaming of summaries (client already streams via SSE), vitest/jsdom setup for the settings UI like folio, richer catalog metadata display (pricing links, context limits).
 
 ## Known Notes
 
@@ -82,6 +84,9 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-07-09
+- Settings UI rework after failed review: the first two AI-settings UI passes were rejected (free rebuild instead of folio parity, then cyclic CSS custom properties `--bg: var(--bg)` that invalidated the whole palette, panels visible despite `hidden`, duplicated rule blocks). Final state: single clean `src/settings-ai.css` in this app's design language, ~513 lines of dead legacy settings CSS purged from `styles.css`, provider sorting enabled → keyed/configured → rest (each group alphabetical, `providerRank` as in folio). Verified headless via vite + playwright-core + mocked `window.__TAURI_INTERNALS__` (screenshots + DOM order checks: sorting, single visible panel, search filter, default-model dropdown, badges, custom dialog).
+- folio AI port: `cargo test` (28 passed incl. moved fence-strip tests + new ai module tests), `cargo fmt --check`, `cargo build` with 0 warnings and `npm run build` all green. Live functional test via automation API against the running dev app: migration ran on the real config (6 providers incl. 2 custom, keys → auth.json 0600, defaultModel `opencode-go`/`deepseek-v4-flash`), `/api/config` exposes no keys, `POST /api/summarize/60` produced a real summary through the new SSE client with no wrapping fence. A `npm run tauri dev` instance may still be running from that test session.
 - Date: 2026-06-17
 - Markdown fence fix: `cargo test` (5 new `strip_wrapping_code_fence` unit tests plus existing suite) and `cargo fmt --check` passed; `npm run build` passed. Dev app (`npm run tauri dev`) was running during the change; existing DB row id=35 cleaned in place (backup at `videos.db.bak-20260617`). Reload/restart needed for the in-memory frontend list to pick up the cleaned row, though the frontend strip already renders it correctly via HMR.
 - Date: 2026-05-03
