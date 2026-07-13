@@ -4,7 +4,7 @@
   "description": "Default permissions for the main application window.",
   "windows": ["main"],
   "remote": {
-    "urls": ["http://localhost:14220/**"]
+    "urls": ["http://localhost:*/**"]
   },
   "permissions": ["core:default", "opener:default", "opener:allow-open-url"]
 }

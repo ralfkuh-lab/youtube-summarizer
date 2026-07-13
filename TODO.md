@@ -52,6 +52,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   - `cargo test`
   - `npm run tauri -- build`
   - Live automation flow for health, transcript loading, summarization and cleanup.
+- Fixed the installed Windows app showing `ERR_CONNECTION_REFUSED`: the hardcoded localhost port 14220 fell into a Hyper-V excluded port range (WinError 10013 on bind, the plugin's server thread panics silently). The app now picks a free port at runtime, creates the main window programmatically in `setup` with the dynamic URL, and the capability uses the port wildcard `http://localhost:*/**`. `app.windows` in `tauri.conf.json` is now empty.
 - Fixed metadata loading failing with `401 Unauthorized` for videos that have embedding disabled (`playableInEmbed: false`): YouTube's oembed endpoint returns 401 for such videos regardless of user-agent. `fetch_video_info` now reads the title from the watch HTML (`ytInitialPlayerResponse → videoDetails.title`) and the publish date from the same single fetch, keeping oembed only as a fallback. Added unit tests for title/publish-date extraction.
 
 ## Next TODOs
@@ -83,6 +84,8 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-07-13
+- Dynamic localhost port fix: `cargo check`, `cargo fmt` and `cargo test` (10 passed, 1 network test ignored) passed. NSIS build (`npm run tauri build -- --bundles nsis`) succeeded, silent install via `/S` succeeded, installed app verified: server listens on a dynamic port (e.g. 30058), `index.html` served with HTTP 200, no panic in stderr. Changes are uncommitted on branch `fix/dependency-security-bumps`; the installed app was left running.
 - Date: 2026-06-22
 - oembed 401 fix: `cargo test` passed (10 tests, incl. 3 new title/publish-date extraction tests; 1 network test ignored) and `npm run build` passed. Confirmed via curl that `JaP6hbmTJEc` (embedding disabled) returns oembed `401 Unauthorized` while its watch page still exposes `videoDetails.title`.
 - Date: 2026-06-17

@@ -14,12 +14,39 @@ use tauri::Manager;
 
 const LOCALHOST_PORT: u16 = 14220;
 
+/// Pick a free localhost port at runtime.
+///
+/// A fixed port is fragile: on some systems (e.g. Windows with Hyper-V) the
+/// desired port can fall into a reserved exclusion range and binding fails
+/// with a permission error. Binding to port 0 lets the OS hand us a free port.
+///
+/// We bind `"localhost"` (not `127.0.0.1`) so the probe uses the same address
+/// family that `tauri-plugin-localhost` later binds via `Server::http`.
+fn pick_localhost_port() -> u16 {
+    std::net::TcpListener::bind(("localhost", 0))
+        .and_then(|listener| listener.local_addr())
+        .map(|addr| addr.port())
+        .unwrap_or(LOCALHOST_PORT)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let port = pick_localhost_port();
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_localhost::Builder::new(LOCALHOST_PORT).build())
+        .plugin(tauri_plugin_localhost::Builder::new(port).build())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
+            let url = format!("http://localhost:{port}/index.html")
+                .parse()
+                .map_err(setup_error)?;
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
+                .title("YouTube Summarizer")
+                .inner_size(1200.0, 760.0)
+                .min_inner_size(900.0, 560.0)
+                .resizable(true)
+                .build()?;
+
             let app_dir = app.path().app_data_dir().map_err(setup_error)?;
             fs::create_dir_all(&app_dir).map_err(setup_error)?;
 

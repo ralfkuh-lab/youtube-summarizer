@@ -10,18 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "url": "http://localhost:14220/index.html",
-        "title": "YouTube Summarizer",
-        "width": 1200,
-        "height": 760,
-        "minWidth": 900,
-        "minHeight": 560,
-        "resizable": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
