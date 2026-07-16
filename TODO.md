@@ -84,6 +84,15 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   - Translation fallback via `tlang` for `isTranslatable` caption tracks.
   - Fallback chain over additional Innertube clients (WEB, TV_EMBEDDED) or yt-dlp
     when the ANDROID player response yields no usable captions.
+  - Surface transcript fetch failures transparently in the UI so users know what
+    is going on. Real-world case (2026-07-16): YouTube's bot check rejects known
+    VPN exit IPs (e.g. Mullvad) with `LOGIN_REQUIRED: Sign in to confirm you're
+    not a bot` — the backend now produces this honest error, but `add_video`
+    swallows it (soft `.ok()`) and the frontend shows a generic "no transcript
+    found" message. Ideas: propagate the transcript error message into the
+    add-video result/toast, show it on the video detail page, and add a hint
+    that a VPN may be the cause (workaround: run the app outside the tunnel,
+    e.g. via `mullvad-exclude`).
 - Add richer provider metadata such as pricing links, context limits and preferred summarization models.
 - Add Windows and macOS packaging notes once tested on those platforms.
 - Add release checklist once app behavior stabilizes.
