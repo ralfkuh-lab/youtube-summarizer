@@ -645,11 +645,21 @@ pub async fn add_video_impl(paths: &AppPaths, url: String) -> AppResult<Video> {
     }
 
     let client = http_client()?;
-    let info = youtube::fetch_video_info(&client, &video_id).await?;
+    // Fetch oembed (title) and the watch HTML in parallel; the watch HTML is
+    // loaded at most once and provides both publish date and chapters. A failed
+    // HTML fetch leaves both None without failing add_video (oembed stays hard).
+    let (info, html) = tokio::join!(
+        youtube::fetch_video_info(&client, &video_id),
+        youtube::fetch_watch_html(&client, &video_id),
+    );
+    let mut info = info?;
+    let html = html.ok();
+    info.published_at = html.as_deref().and_then(youtube::publish_date_from_html);
+
     let thumbnail_data = youtube::download_thumbnail(&client, &video_id).await;
 
     let transcript = youtube::fetch_transcript(&client, &video_id).await.ok();
-    let chapters = youtube::fetch_chapters(&client, &video_id).await;
+    let chapters = html.as_deref().and_then(youtube::chapters_from_html);
 
     storage::insert_video(
         paths,
@@ -675,7 +685,15 @@ pub async fn refresh_transcript_impl(paths: &AppPaths, id: i64) -> AppResult<Vid
     let video = storage::get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())?;
     let client = http_client()?;
     let transcript = youtube::fetch_transcript(&client, &video.video_id).await?;
-    let chapters = youtube::fetch_chapters(&client, &video.video_id).await;
+    // Only overwrite chapters when the watch HTML actually loaded. If the fetch
+    // fails, keep the video's existing chapters instead of clearing them.
+    let chapters = match youtube::fetch_watch_html(&client, &video.video_id).await {
+        Ok(html) => youtube::chapters_from_html(&html),
+        Err(_) => video
+            .chapters
+            .as_ref()
+            .and_then(|chapters| serde_json::to_string(chapters).ok()),
+    };
     storage::update_transcript(paths, id, &transcript, chapters.as_deref())
 }
 

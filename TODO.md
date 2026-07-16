@@ -53,6 +53,18 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   - `cargo test`
   - `npm run tauri -- build`
   - Live automation flow for health, transcript loading, summarization and cleanup.
+- Refactored the transcript/metadata fetch in `youtube.rs` for robustness and
+  fewer requests (spec: `docs/spec-transcript-refactor.md`, notes:
+  `docs/impl-notes-transcript-refactor.md`), outer API unchanged:
+  - Innertube player call now runs without watch HTML and without the (ignored)
+    `key` query param, using a matching ANDROID client User-Agent header.
+  - Checks `playabilityStatus` and returns an honest error (status + reason)
+    before the generic "no transcript" message.
+  - Track selection prefers manual subtitles over ASR per language priority.
+  - `fmt=json3` is appended via string ops so the signed caption URL stays
+    byte-identical (no more query re-encoding that could break the signature).
+  - Watch HTML is fetched at most once per flow (add: publish date + chapters;
+    refresh: chapters only) instead of up to three times.
 
 ## Next TODOs
 
@@ -68,6 +80,10 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 - Follow-up cleanup from the AI/provider settings changes:
   - Replace emoji trash buttons with a consistent icon approach when the frontend icon strategy is decided.
   - Consider splitting future broad UI commits more narrowly when they touch independent areas such as dependencies, link handling, Markdown rendering and settings UX.
+- Transcript fetch follow-ups (out of scope of the `youtube.rs` refactor, kept as ideas):
+  - Translation fallback via `tlang` for `isTranslatable` caption tracks.
+  - Fallback chain over additional Innertube clients (WEB, TV_EMBEDDED) or yt-dlp
+    when the ANDROID player response yields no usable captions.
 - Add richer provider metadata such as pricing links, context limits and preferred summarization models.
 - Add Windows and macOS packaging notes once tested on those platforms.
 - Add release checklist once app behavior stabilizes.
@@ -84,6 +100,13 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-07-16
+- Transcript/metadata refactor (`youtube.rs`, `commands.rs`): all four spec gates
+  green from `src-tauri/`: `cargo fmt` (clean), `cargo test` (33 passed, 1 network
+  test ignored), network test `fetches_transcript_from_innertube_caption_url
+  --ignored` passed (confirms the key-less Innertube call still works), and
+  `npm run build` from the repo root. Not committed. No dev/Tauri process left
+  running. `npm run tauri -- build` not re-run (no user-visible feature change).
 - Date: 2026-07-09
 - Settings UI rework after failed review: the first two AI-settings UI passes were rejected (free rebuild instead of folio parity, then cyclic CSS custom properties `--bg: var(--bg)` that invalidated the whole palette, panels visible despite `hidden`, duplicated rule blocks). Final state: single clean `src/settings-ai.css` in this app's design language, ~513 lines of dead legacy settings CSS purged from `styles.css`, provider sorting enabled → keyed/configured → rest (each group alphabetical, `providerRank` as in folio). Verified headless via vite + playwright-core + mocked `window.__TAURI_INTERNALS__` (screenshots + DOM order checks: sorting, single visible panel, search filter, default-model dropdown, badges, custom dialog).
 - folio AI port: `cargo test` (28 passed incl. moved fence-strip tests + new ai module tests), `cargo fmt --check`, `cargo build` with 0 warnings and `npm run build` all green. Live functional test via automation API against the running dev app: migration ran on the real config (6 providers incl. 2 custom, keys → auth.json 0600, defaultModel `opencode-go`/`deepseek-v4-flash`), `/api/config` exposes no keys, `POST /api/summarize/60` produced a real summary through the new SSE client with no wrapping fence. A `npm run tauri dev` instance may still be running from that test session.
