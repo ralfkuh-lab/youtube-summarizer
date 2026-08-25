@@ -348,7 +348,6 @@ function bindEvents() {
   $("#collectionNameInput").addEventListener("keydown", (event) => {
     if (!(event instanceof KeyboardEvent)) return;
     if (event.key === "Enter") void saveCollection();
-    if (event.key === "Escape") hideModal("#collectionModal");
   });
 
   $("#videoSearchInput").addEventListener("input", (event) => {
@@ -379,6 +378,8 @@ function bindEvents() {
 
   $("#deleteBtn").addEventListener("click", () => void deleteActiveVideo());
 
+  bindEscapeToCloseModals();
+
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab as TabName));
   });
@@ -403,6 +404,39 @@ function bindEvents() {
     if (!Number.isNaN(start)) {
       seekVideo(start);
     }
+  });
+}
+
+// Escape schliesst den obersten offenen Dialog. Die Reihenfolge bildet die
+// Stapelung ab: liegt ein Dialog ueber einem anderen, geht zuerst der obere zu.
+const ESCAPE_CLOSABLE_MODALS = [
+  { modal: "#chatTestModal", close: "#chatTestClose" },
+  { modal: "#collectionModal", close: "#collectionCancel" },
+  { modal: "#summaryModal", close: "#summaryCancel" },
+  { modal: "#settingsModal", close: "#configClose" },
+];
+
+// Diese beiden behandeln Escape selbst - der Bestaetigungsdialog muss ein
+// Ergebnis an seinen Aufrufer liefern, das Custom-Provider-Formular liegt ueber
+// den Einstellungen. Solange einer davon offen ist, ruehrt der globale Handler
+// nichts an, sonst ginge der darunterliegende Dialog gleich mit zu.
+const SELF_HANDLED_MODALS = ["#confirmModal", "#ai-custom-dialog"];
+
+function isModalOpen(selector: string): boolean {
+  const element = document.querySelector<HTMLElement>(selector);
+  return !!element && !element.hidden;
+}
+
+function bindEscapeToCloseModals() {
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (SELF_HANDLED_MODALS.some(isModalOpen)) return;
+    const open = ESCAPE_CLOSABLE_MODALS.find((entry) => isModalOpen(entry.modal));
+    if (!open) return;
+    event.preventDefault();
+    // Ueber den vorhandenen Schliessen-Button, damit Escape denselben Pfad
+    // nimmt wie ein Klick - inklusive kuenftiger Aufraeumarbeit dort.
+    document.querySelector<HTMLButtonElement>(open.close)?.click();
   });
 }
 
