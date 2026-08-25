@@ -43,6 +43,7 @@ cargo test fetches_transcript_from_innertube_caption_url -- --ignored
 - Prefer existing patterns in the app over introducing new frameworks.
 - When changing transcript, AI or storage behavior, run `npm run build` and `cargo test`.
 - After finishing a feature, run `npm run tauri -- build` so the project-root symlinks (`youtube-summarizer-release`, `youtube-summarizer.deb`) point to current artifacts.
+- On the maintainer's Linux machine the app is installed as a plain binary copy, not through a package manager. After a release build, copy the fresh binary over it so the installed app is up to date: `cp src-tauri/target/release/youtube-summarizer ~/.local/bin/youtube-summarizer` (the desktop entry points there; no sudo needed, keep a `.bak` of the previous binary).
 - If testing the running app, use the dev-only automation API printed by `npm run tauri dev`.
 
 ## Current Architecture

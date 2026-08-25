@@ -98,6 +98,16 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   with `visible: false` plus a later `show()`. Why folio is unaffected on the
   same machine is still unexplained - its frontend is embedded in the installed
   binary, so it could not be instrumented without a full rebuild.
+- Escape now closes the open dialog (summarize, settings, collection). The
+  global handler clicks the dialog's existing close button instead of hiding the
+  modal itself, so the key takes exactly the same path as a mouse click. The
+  confirmation dialog and the custom-provider form keep their own Escape
+  handling and are skipped by the global handler - otherwise an Escape in the
+  upper dialog would have closed the one underneath as well. The collection
+  dialog previously reacted to Escape only while the name field had focus; that
+  special case was removed in favor of the global handler. Verified headless
+  (vite + playwright-core + mocked `window.__TAURI_INTERNALS__`): all three
+  dialogs close, Escape without an open dialog does nothing, no console errors.
 
 ## Next TODOs
 
@@ -142,6 +152,10 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-08-25 (Escape closes dialogs)
+- `npm run build` green, Escape behavior verified headless for all three
+  dialogs. The Wayland scaling fix was confirmed by the user in the installed
+  app: all buttons work again.
 - Date: 2026-08-25 (Wayland scaling fix)
 - `cargo fmt`, `cargo test` (45 passed, 1 network test ignored) and
   `npm run build` green. Fix verified live: the app now reports
