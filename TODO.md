@@ -108,6 +108,23 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   special case was removed in favor of the global handler. Verified headless
   (vite + playwright-core + mocked `window.__TAURI_INTERNALS__`): all three
   dialogs close, Escape without an open dialog does nothing, no console errors.
+- Made the missing-codec case explainable instead of silent. On Linux the
+  embedded YouTube player only showed "Your browser can't play this video":
+  WebKitGTK decodes video through the system's GStreamer, and this machine had
+  neither `gst-libav` nor `gst-plugins-good` installed - no video decoder at
+  all (`avdec_h264`, `vp9dec`, `vp8dec`, `av1dec` all absent). Two changes:
+  - The Video tab now probes `canPlayType` and `MediaSource.isTypeSupported`
+    for the codecs YouTube ships (H.264, VP9, VP8) and, if none of them is
+    supported, shows a notice naming the cause, the install commands for
+    Arch and Debian, and the YouTube fallback link. Deliberately conservative:
+    the notice only appears when not a single codec is reported, and only on
+    Linux - WebView2 and WKWebView bring their own decoders.
+  - `bundle.linux.deb/rpm` now list the GStreamer plugins under `recommends`
+    (not `depends`): the app runs fine without them, only the embedded player
+    stays silent, and a hard dependency would make the package uninstallable on
+    distributions that do not ship H.264 themselves.
+  The `#tabVideo` grid got a third row for the notice, otherwise the player
+  kept sizing against the full panel height and pushed the notice out of view.
 
 ## Next TODOs
 
@@ -152,6 +169,18 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-08-26 (codec notice + package recommends)
+- Confirmed on the maintainer's machine: after installing the GStreamer plugins
+  the embedded YouTube player works. The missing decoders were the whole cause -
+  the localhost plugin added earlier against YouTube error 153 was unrelated to
+  this failure.
+- `npm run build` green. Verified headless in both states (vite +
+  playwright-core, codec probes stubbed out for the failure case): with codecs
+  present the notice stays hidden, without them it appears, no console errors,
+  and a screenshot confirmed the notice sits above the player instead of being
+  clipped. The headless run also caught a real bug before it shipped: the codec
+  probe ran during event wiring while its module constant was still in the
+  temporal dead zone, which left the whole video list empty.
 - Date: 2026-08-25 (Escape closes dialogs)
 - `npm run build` green, Escape behavior verified headless for all three
   dialogs. The Wayland scaling fix was confirmed by the user in the installed
