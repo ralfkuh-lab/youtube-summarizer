@@ -66,6 +66,39 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   - Watch HTML is fetched at most once per flow (add: publish date + chapters;
     refresh: chapters only) instead of up to three times.
 
+- Added a model picker to the summarize dialog: the dropdown lists all
+  whitelisted models of enabled providers (reusing `populateModelPicker` from
+  the settings UI), preselects the configured default model and remembers the
+  last choice in `localStorage` alongside detail level, language and chapters.
+  The choice applies to the single run only and does not change the global
+  default model. Backend `summarize_video`/`summarize_video_impl` take optional
+  `providerId`/`modelId`; an explicit selection is validated against provider
+  enablement and the model whitelist, no selection keeps the previous
+  default-model behavior. The automation API accepts `provider_id`/`model_id` in
+  the `POST /api/summarize/{id}` body.
+- Fixed shifted click targets on Wayland compositors with fractional display
+  scaling (`src-tauri/src/lib.rs`, `force_x11_backend_on_wayland`). Symptom: the
+  GTK title bar and everything toward the right edge (settings gear, tab
+  buttons) was drawn but not clickable, with the active area compressed toward
+  the window's left. Measured under Hyprland at scale 1.25: Hyprland reports the
+  window as 758x830 logical (948x1038 physical), tao reports `scale_factor = 2`
+  with a never-existing inner size of 2400x1426 and `outer = 0x0`, and WebKit
+  lays out with 945 CSS pixels (the physical width) while GTK delivers pointer
+  events in the logical 758 space. GTK3/WebKitGTK cannot do fractional scaling
+  and receives the rounded-up integer scale 2 from the compositor. Forcing
+  XWayland (`GDK_BACKEND=x11`) realigns all layers (`scale_factor = 1`,
+  `inner = outer = 948`); the title bar disappears there, which suits a tiling
+  WM. Guarded so it only applies on Linux + Wayland + an available `DISPLAY`
+  (otherwise GTK would fail to start instead of merely mis-scaling), with
+  `YOUTUBE_SUMMARIZER_KEEP_WAYLAND=1` as an opt-out. Ruled out by measurement
+  first: the `viewport` meta tag, `GDK_SCALE`, process environment (identical to
+  folio's), tauri/wry/tao versions, the `tauri-plugin-localhost` load path
+  (switching to folio's `tauri://localhost` origin reproduced the bug exactly),
+  a compensating `set_zoom`, `set_size(LogicalSize)`, and starting the window
+  with `visible: false` plus a later `show()`. Why folio is unaffected on the
+  same machine is still unexplained - its frontend is embedded in the installed
+  binary, so it could not be instrumented without a full rebuild.
+
 ## Next TODOs
 
 - Collections/playlists roadmap:
@@ -109,6 +142,31 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-08-25 (Wayland scaling fix)
+- `cargo fmt`, `cargo test` (45 passed, 1 network test ignored) and
+  `npm run build` green. Fix verified live: the app now reports
+  `xwayland: True` in `hyprctl clients`, and the user confirmed the settings
+  gear and tab buttons are clickable again. The two alternatives were tested in
+  the same session and rejected by the user's own click test: unchanged
+  (`scale_factor = 2`) and `set_zoom(1.25)` both stayed broken.
+- `npm run tauri -- build` rebuilt the release binary plus deb and rpm with the
+  fix compiled in (verified: the guard's env var name is present in the binary);
+  the AppImage step keeps failing with `failed to run linuxdeploy` (agent
+  sandbox cannot mount the linuxdeploy AppImage, unrelated to the code). The
+  root symlinks point at the fresh artifacts. Installing the new build is still
+  pending on the user's side. Not committed.
+- Date: 2026-08-25
+- Summarize-dialog model picker: `cargo fmt`, `cargo test` (45 passed incl. 6 new
+  `resolve_summary_model` tests, 1 network test ignored) and `npm run build` are
+  green. UI verified headless (vite + playwright-core + mocked
+  `window.__TAURI_INTERNALS__`): the picker lists only models of enabled
+  providers, preselects the default model, and the chosen model is restored on
+  reopening the dialog; no console errors. `npm run tauri -- build` compiled the
+  release binary and bundled deb + rpm; the AppImage step failed with `failed to
+  run linuxdeploy` (agent sandbox cannot mount the linuxdeploy AppImage - rerun
+  outside the sandbox if an AppImage is needed). The convenience symlinks
+  `youtube-summarizer-release` and `youtube-summarizer.deb` point at the fresh
+  artifacts. No dev server or Tauri process left running. Not committed.
 - Date: 2026-07-16
 - Transcript/metadata refactor (`youtube.rs`, `commands.rs`): all four spec gates
   green from `src-tauri/`: `cargo fmt` (clean), `cargo test` (33 passed, 1 network
