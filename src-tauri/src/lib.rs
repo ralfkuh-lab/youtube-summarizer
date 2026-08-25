@@ -16,6 +16,9 @@ const LOCALHOST_PORT: u16 = 14220;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    force_x11_backend_on_wayland();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_localhost::Builder::new(LOCALHOST_PORT).build())
         .plugin(tauri_plugin_opener::init())
@@ -82,6 +85,38 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// WebKitGTK/GTK3 beherrscht keine fraktionale Display-Skalierung. Laeuft der
+/// Compositor mit einem nicht-ganzzahligen Scale (gemessen unter Hyprland mit
+/// 1.25), bekommt der Client stattdessen den aufgerundeten Ganzzahlwert 2 —
+/// und die Ebenen driften auseinander: tao rechnet mit einer Fenstergroesse,
+/// die das Fenster nie hatte (2400x1426 statt 948x1038 physisch), WebKit
+/// layoutet im physischen Pixelraum (945 CSS-Pixel), waehrend GTK die
+/// Mausereignisse im logischen Raum (758) liefert. Sichtbar wird das als
+/// verschobene Klickflaeche: Bedienelemente am rechten Rand — Zahnrad,
+/// Fensterknoepfe — sind gar nicht mehr erreichbar.
+///
+/// Ueber XWayland stimmen alle Ebenen wieder ueberein (scale_factor 1, Layout
+/// und Eingabe im selben Raum). Ein WebView-Zoom als Gegenrechnung reicht
+/// nicht, das wurde gemessen.
+///
+/// `YOUTUBE_SUMMARIZER_KEEP_WAYLAND=1` erzwingt den nativen Wayland-Pfad.
+#[cfg(target_os = "linux")]
+fn force_x11_backend_on_wayland() {
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return;
+    }
+    if std::env::var("YOUTUBE_SUMMARIZER_KEEP_WAYLAND").as_deref() == Ok("1") {
+        return;
+    }
+    // Ohne erreichbaren X-Server gaebe es nichts, worauf umgestellt werden
+    // koennte - GTK wuerde dann beim Start scheitern statt nur falsch zu
+    // skalieren. Sitzungen ohne XWayland bleiben deshalb unangetastet.
+    if std::env::var_os("DISPLAY").is_none() {
+        return;
+    }
+    std::env::set_var("GDK_BACKEND", "x11");
 }
 
 fn setup_error(message: impl ToString) -> Box<dyn std::error::Error> {
