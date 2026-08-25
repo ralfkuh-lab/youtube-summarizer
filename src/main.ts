@@ -7,6 +7,8 @@ import "./settings-ai.css";
 import {
   applyConfig,
   bindAiConfigEvents,
+  ensureAiData,
+  fillModelPicker,
   initAiConfig,
   type AiConfig,
 } from "./ai-config";
@@ -234,6 +236,9 @@ app.innerHTML = `
   <div id="summaryModal" class="modal" hidden>
     <div class="modal-content modal-wide">
       <h2>Zusammenfassung konfigurieren</h2>
+      <label>Modell
+        <select id="summaryModel"></select>
+      </label>
       <div class="summary-row">
         <label>Detailgrad
           <select id="summaryDetail">
@@ -363,7 +368,7 @@ function bindEvents() {
     });
   });
 
-  $("#summarizeBtn").addEventListener("click", openSummaryDialog);
+  $("#summarizeBtn").addEventListener("click", () => void openSummaryDialog());
   $("#reloadTranscriptBtn").addEventListener("click", () => void refreshActiveTranscript());
   $("#summaryStart").addEventListener("click", () => void startSummary());
   $("#summaryCancel").addEventListener("click", () => hideModal("#summaryModal"));
@@ -497,16 +502,22 @@ async function refreshActiveTranscript() {
 }
 
 
-function openSummaryDialog() {
+async function openSummaryDialog() {
   const video = getActiveVideo();
   if (!video) return;
   if (!video.transcript) {
     setStatus("Kein Transkript vorhanden - bitte Video neu hinzufügen");
     return;
   }
-  loadSummarySettings();
+  const saved = loadSummarySettings();
   updateSummaryPrompt();
   showModal("#summaryModal");
+  try {
+    await ensureAiData();
+  } catch (error) {
+    setStatus(errorMessage(error));
+  }
+  fillModelPicker($<HTMLSelectElement>("#summaryModel"), saved?.model);
 }
 
 const SUMMARY_SETTINGS_KEY = "summarySettings";
@@ -515,18 +526,22 @@ type SummarySettings = {
   detail: string;
   lang: string;
   useChapters: string;
+  // JSON-kodiertes [providerId, modelId] wie im Modell-Auswahlfeld
+  model?: string;
 };
 
-function loadSummarySettings() {
+function loadSummarySettings(): Partial<SummarySettings> | null {
   try {
     const raw = localStorage.getItem(SUMMARY_SETTINGS_KEY);
-    if (!raw) return;
+    if (!raw) return null;
     const saved = JSON.parse(raw) as Partial<SummarySettings>;
     if (saved.detail) $<HTMLSelectElement>("#summaryDetail").value = saved.detail;
     if (saved.lang) $<HTMLSelectElement>("#summaryLang").value = saved.lang;
     if (saved.useChapters) $<HTMLSelectElement>("#summaryUseChapters").value = saved.useChapters;
+    return saved;
   } catch {
     // ignore corrupt entries
+    return null;
   }
 }
 
@@ -535,8 +550,21 @@ function saveSummarySettings() {
     detail: $<HTMLSelectElement>("#summaryDetail").value,
     lang: $<HTMLSelectElement>("#summaryLang").value,
     useChapters: $<HTMLSelectElement>("#summaryUseChapters").value,
+    model: $<HTMLSelectElement>("#summaryModel").value || undefined,
   };
   localStorage.setItem(SUMMARY_SETTINGS_KEY, JSON.stringify(settings));
+}
+
+// Das Auswahlfeld transportiert die Modellwahl als JSON-Paar. Ein leerer Wert
+// bedeutet "keine Auswahl" - dann entscheidet das Backend per Default-Modell.
+function parseModelValue(value: string): [string | null, string | null] {
+  if (!value) return [null, null];
+  try {
+    const [providerId, modelId] = JSON.parse(value) as [string, string];
+    return [providerId, modelId];
+  } catch {
+    return [null, null];
+  }
 }
 
 async function startSummary() {
@@ -544,12 +572,15 @@ async function startSummary() {
   if (!video || busy) return;
 
   saveSummarySettings();
+  const [providerId, modelId] = parseModelValue($<HTMLSelectElement>("#summaryModel").value);
   setBusy(true, "Zusammenfassung wird erstellt...");
   hideModal("#summaryModal");
   try {
     const updated = await invoke<Video>("summarize_video", {
       id: video.id,
       systemPrompt: $<HTMLTextAreaElement>("#summaryPrompt").value.trim(),
+      providerId,
+      modelId,
     });
     videos = videos.map((item) => (item.id === updated.id ? updated : item));
     showDetail(updated);

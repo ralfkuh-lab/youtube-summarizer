@@ -929,6 +929,40 @@ export function populateModelPicker(
     }
 }
 
+/// Laedt Katalog und Konfiguration einmalig nach, damit Modell-Auswahlfelder
+/// ausserhalb der Einstellungen (z. B. der Zusammenfassen-Dialog) lesbare
+/// Anbieter- und Modellnamen anzeigen koennen.
+export async function ensureAiData(): Promise<void> {
+    if (catalogResult && aiConfig) return;
+    await loadAiData();
+}
+
+/// Fuellt ein Auswahlfeld mit allen freigeschalteten Modellen aktivierter
+/// Anbieter. Vorausgewaehlt ist `preferred`, sofern es noch existiert, sonst
+/// das Default-Modell aus den Einstellungen.
+export function fillModelPicker(
+    selectElement: HTMLSelectElement,
+    preferred?: string | null,
+): void {
+    if (!aiConfig) {
+        selectElement.textContent = '';
+        return;
+    }
+    populateModelPicker(selectElement, aiConfig, catalogResult || { catalog: {} }, {
+        separator: ' — ',
+    });
+    if (selectElement.options.length === 0) {
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = 'Kein Modell aktiviert - bitte in den Einstellungen wählen';
+        selectElement.appendChild(empty);
+        return;
+    }
+    if (!preferred) return;
+    const match = Array.from(selectElement.options).some((option) => option.value === preferred);
+    if (match) selectElement.value = preferred;
+}
+
 // --- Glue for youtube-summarizer: open, apply, chat test (kept as extension) ---
 
 function activateSettingsTab(slug: string) {

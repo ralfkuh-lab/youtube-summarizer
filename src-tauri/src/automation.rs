@@ -20,6 +20,8 @@ struct AddVideoRequest {
 #[derive(Debug, Deserialize)]
 struct SummarizeRequest {
     system_prompt: Option<String>,
+    provider_id: Option<String>,
+    model_id: Option<String>,
 }
 
 pub fn start(paths: AppPaths) {
@@ -189,6 +191,8 @@ fn route(
                     &http,
                     id,
                     request.system_prompt.unwrap_or_default(),
+                    request.provider_id,
+                    request.model_id,
                 )),
             )
         }

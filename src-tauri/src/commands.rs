@@ -702,9 +702,11 @@ pub async fn summarize_video(
     paths: State<'_, AppPaths>,
     id: i64,
     system_prompt: String,
+    provider_id: Option<String>,
+    model_id: Option<String>,
     http: State<'_, reqwest::Client>,
 ) -> AppResult<Video> {
-    summarize_video_impl(&paths, &http, id, system_prompt).await
+    summarize_video_impl(&paths, &http, id, system_prompt, provider_id, model_id).await
 }
 
 pub async fn summarize_video_impl(
@@ -712,6 +714,8 @@ pub async fn summarize_video_impl(
     http: &reqwest::Client,
     id: i64,
     system_prompt: String,
+    provider_id: Option<String>,
+    model_id: Option<String>,
 ) -> AppResult<Video> {
     let video = storage::get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())?;
     let transcript = video
@@ -726,19 +730,11 @@ pub async fn summarize_video_impl(
         .and_then(|chapters| serde_json::to_string(chapters).ok());
 
     let ai = AiConfigService::load(paths).data();
-    let default = match &ai.default_model {
-        Some(dm) => dm,
-        None => {
-            return Err(
-                "Kein defaultModel gesetzt - bitte in Einstellungen KI-Modell auswählen"
-                    .to_string(),
-            )
-        }
-    };
+    let selected = resolve_summary_model(&ai, provider_id, model_id)?;
     // resolve
     let catalog = ai_catalog::load(paths).catalog;
-    let base_url = provider_base_url(&ai, &catalog, &default.provider)?;
-    let key = AuthStore::load(paths).get_key(&default.provider);
+    let base_url = provider_base_url(&ai, &catalog, &selected.provider)?;
+    let key = AuthStore::load(paths).get_key(&selected.provider);
 
     // build prompt (unchanged logic from old DEFAULT + user)
     let prompt = system_prompt.trim();
@@ -773,7 +769,7 @@ pub async fn summarize_video_impl(
         http,
         &base_url,
         key.as_deref(),
-        &default.model,
+        &selected.model,
         &messages,
         |_| {},
     )
@@ -784,18 +780,62 @@ pub async fn summarize_video_impl(
 
     let provider_label = ai
         .provider
-        .get(&default.provider)
+        .get(&selected.provider)
         .and_then(|p| p.name.clone())
-        .or_else(|| catalog.get(&default.provider).and_then(|p| p.name.clone()))
-        .unwrap_or_else(|| default.provider.clone());
+        .or_else(|| catalog.get(&selected.provider).and_then(|p| p.name.clone()))
+        .unwrap_or_else(|| selected.provider.clone());
 
     storage::update_summary(
         paths,
         id,
         &summary,
         Some(&provider_label),
-        Some(&default.model),
+        Some(&selected.model),
     )
+}
+
+/// Waehlt das Modell fuer einen Zusammenfassungslauf. Ohne explizite Auswahl
+/// gilt weiterhin das Default-Modell aus den Einstellungen; eine explizite
+/// Auswahl wird gegen die Provider-/Modell-Freischaltung geprueft, damit der
+/// Aufruf nicht an einem laengst deaktivierten Modell haengen bleibt.
+fn resolve_summary_model(
+    ai: &AiConfig,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+) -> AppResult<AiModelRef> {
+    let provider_id = provider_id.filter(|value| !value.trim().is_empty());
+    let model_id = model_id.filter(|value| !value.trim().is_empty());
+    let requested = match (provider_id, model_id) {
+        (Some(provider), Some(model)) => Some(AiModelRef { provider, model }),
+        (None, None) => None,
+        _ => {
+            return Err("Unvollständige Modellauswahl - Anbieter und Modell angeben".to_string());
+        }
+    };
+
+    let Some(selected) = requested else {
+        return ai.default_model.clone().ok_or_else(|| {
+            "Kein defaultModel gesetzt - bitte in Einstellungen KI-Modell auswählen".to_string()
+        });
+    };
+
+    let provider = ai
+        .provider
+        .get(&selected.provider)
+        .ok_or_else(|| format!("KI-Provider '{}' nicht gefunden", selected.provider))?;
+    if !provider.enabled {
+        return Err(format!(
+            "KI-Provider '{}' ist nicht aktiviert",
+            selected.provider
+        ));
+    }
+    if !provider.whitelist.iter().any(|id| id == &selected.model) {
+        return Err(format!(
+            "Modell '{}' ist für '{}' nicht aktiviert",
+            selected.model, selected.provider
+        ));
+    }
+    Ok(selected)
 }
 
 // Unchanged summary prompt + parse/strip (moved here to keep behavior + tests intact)
@@ -847,7 +887,85 @@ fn http_client() -> AppResult<Client> {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_wrapping_code_fence;
+    use super::{resolve_summary_model, strip_wrapping_code_fence};
+    use crate::ai::types::{AiConfig, AiModelRef, AiProviderConfig};
+
+    fn config_with_enabled_model() -> AiConfig {
+        let mut config = AiConfig::default();
+        config.provider.insert(
+            "openrouter".into(),
+            AiProviderConfig {
+                enabled: true,
+                whitelist: vec!["fast".into(), "smart".into()],
+                ..Default::default()
+            },
+        );
+        config.default_model = Some(AiModelRef {
+            provider: "openrouter".into(),
+            model: "fast".into(),
+        });
+        config
+    }
+
+    #[test]
+    fn falls_back_to_default_model_without_selection() {
+        let selected = resolve_summary_model(&config_with_enabled_model(), None, None).unwrap();
+        assert_eq!(selected.model, "fast");
+    }
+
+    #[test]
+    fn uses_explicit_selection_over_default_model() {
+        let selected = resolve_summary_model(
+            &config_with_enabled_model(),
+            Some("openrouter".into()),
+            Some("smart".into()),
+        )
+        .unwrap();
+        assert_eq!(selected.provider, "openrouter");
+        assert_eq!(selected.model, "smart");
+    }
+
+    #[test]
+    fn rejects_model_that_is_not_whitelisted() {
+        let error = resolve_summary_model(
+            &config_with_enabled_model(),
+            Some("openrouter".into()),
+            Some("unknown".into()),
+        )
+        .unwrap_err();
+        assert!(error.contains("nicht aktiviert"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn rejects_selection_from_disabled_provider() {
+        let mut config = config_with_enabled_model();
+        config.provider.get_mut("openrouter").unwrap().enabled = false;
+        let error = resolve_summary_model(&config, Some("openrouter".into()), Some("fast".into()))
+            .unwrap_err();
+        assert!(error.contains("nicht aktiviert"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn rejects_incomplete_selection() {
+        let error = resolve_summary_model(
+            &config_with_enabled_model(),
+            Some("openrouter".into()),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("Unvollständige"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn treats_blank_selection_as_no_selection() {
+        let selected = resolve_summary_model(
+            &config_with_enabled_model(),
+            Some("  ".into()),
+            Some(String::new()),
+        )
+        .unwrap();
+        assert_eq!(selected.model, "fast");
+    }
 
     #[test]
     fn strips_markdown_wrapping_fence() {
