@@ -138,6 +138,7 @@ app.innerHTML = `
           <div id="tabTranscript" class="tabPanel active"></div>
           <div id="tabSummary" class="tabPanel"></div>
           <div id="tabVideo" class="tabPanel">
+            <div id="videoCodecNotice" class="video-codec-notice" hidden></div>
             <div class="video-player-shell">
               <iframe
                 id="videoPlayer"
@@ -379,6 +380,7 @@ function bindEvents() {
   $("#deleteBtn").addEventListener("click", () => void deleteActiveVideo());
 
   bindEscapeToCloseModals();
+  updateVideoCodecNotice();
 
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab as TabName));
@@ -438,6 +440,50 @@ function bindEscapeToCloseModals() {
     // nimmt wie ein Klick - inklusive kuenftiger Aufraeumarbeit dort.
     document.querySelector<HTMLButtonElement>(open.close)?.click();
   });
+}
+
+
+// YouTube liefert seine Streams als H.264/MP4 oder VP8/VP9/WebM ueber die
+// MediaSource-API aus. WebKitGTK reicht die Dekodierung an das GStreamer des
+// Systems weiter; fehlen dort die Plugins, meldet der eingebettete Player nur
+// "Your browser can't play this video" und nennt den Grund nicht. Auf Windows
+// und macOS stellt sich die Frage nicht - WebView2 und WKWebView bringen ihre
+// Decoder mit.
+function hasPlayableVideoCodec(): boolean {
+  // Bewusst lokal: die Pruefung laeuft schon beim Verdrahten der Events, eine
+  // Modulkonstante waere zu diesem Zeitpunkt noch nicht initialisiert.
+  const streamTypes = [
+    'video/mp4; codecs="avc1.42E01E"',
+    'video/webm; codecs="vp9"',
+    'video/webm; codecs="vp8"',
+  ];
+  const probe = document.createElement("video");
+  if (streamTypes.some((type) => probe.canPlayType(type) !== "")) return true;
+  const mediaSource = window.MediaSource;
+  if (!mediaSource) return false;
+  return streamTypes.some((type) => mediaSource.isTypeSupported(type));
+}
+
+function updateVideoCodecNotice() {
+  const notice = $("#videoCodecNotice");
+  // Nur warnen, wenn wirklich kein einziger Codec gemeldet wird - ein
+  // Fehlalarm waere schlimmer als gar kein Hinweis.
+  const missing = navigator.userAgent.includes("Linux") && !hasPlayableVideoCodec();
+  $("#tabVideo").classList.toggle("has-codec-notice", missing);
+  if (!missing) {
+    notice.hidden = true;
+    return;
+  }
+  notice.innerHTML = `
+    <strong>Video kann hier nicht abgespielt werden</strong>
+    <p>Diesem System fehlen die GStreamer-Codecs, mit denen Videos dekodiert
+    werden. Über den Link unter dem Player lässt sich das Video weiterhin
+    direkt auf YouTube ansehen.</p>
+    <p>Abhilfe: Codecs installieren und die Anwendung neu starten.<br>
+    <code>sudo pacman -S gst-libav gst-plugins-good gst-plugins-bad</code><br>
+    <code>sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good</code></p>
+  `;
+  notice.hidden = false;
 }
 
 async function loadInitialData() {
