@@ -192,12 +192,11 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
     add-video result/toast, show it on the video detail page, and add a hint
     that a VPN may be the cause (workaround: run the app outside the tunnel,
     e.g. via `mullvad-exclude`).
-- Add richer provider metadata such as pricing links, context limits and preferred summarization models.
 - Add Windows and macOS packaging notes once tested on those platforms.
 - Add release checklist once app behavior stabilizes.
 - Review whether automation API responses should return compact video objects to avoid huge payloads from thumbnails/transcripts.
 - Backlog: AI provider config reuse/refactor beyond this app. Resolved differently on 2026-07-09: instead of extracting a shared crate, folio's newer implementation was ported back into this app (see `docs/spec-ai-port.md`); `docs/ai-config-refactor.md` is historical context only.
-- Follow-ups from the folio AI port: vitest/jsdom setup for the settings UI like folio, richer catalog metadata display (pricing links, context limits). (UI streaming of summaries shipped 2026-08-29.)
+- Follow-ups from the folio AI port: vitest/jsdom setup for the settings UI like folio. (UI streaming of summaries shipped 2026-08-29; model list already shows catalog metadata badges — context size, reasoning/tools, pricing per 1M tokens.)
 
 ## Known Notes
 
