@@ -634,6 +634,62 @@ main {
   display: block;
 }
 
+#tabSummary.tabPanel {
+  overflow: hidden;
+  padding: 0;
+}
+
+#tabSummary.tabPanel.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.summary-history-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.summary-history-bar[hidden] {
+  display: none;
+}
+
+.summary-history-bar select {
+  flex: 1;
+  min-width: 0;
+}
+
+.summary-history-bar .delete-icon-btn {
+  margin-right: 0;
+}
+
+#summaryBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+.summary-mermaid {
+  margin: 12px 0;
+  overflow-x: auto;
+}
+
+.summary-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+a.summary-seek {
+  font-variant-numeric: tabular-nums;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .empty {
   color: var(--muted);
   font-style: italic;
@@ -868,6 +924,8 @@ footer {
 
 .modal-wide {
   width: 660px;
+  max-height: 90vh;
+  overflow: auto;
 }
 
 .settings-content {
@@ -961,6 +1019,127 @@ footer {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.modal-content label[hidden] {
+  display: none;
+}
+
+.summary-modules {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  min-width: 0;
+}
+
+.summary-modules legend {
+  padding: 0;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.modal-content .summary-module {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.summary-module input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.summary-prompt-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.summary-prompt-details > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.summary-prompt-details > summary::-webkit-details-marker,
+.summary-prompt-details > summary::marker {
+  display: none;
+  content: "";
+}
+
+.summary-prompt-details > summary::before {
+  content: "▸";
+  flex-shrink: 0;
+}
+
+.summary-prompt-details[open] > summary::before {
+  content: "▾";
+}
+
+.summary-edited {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.summary-edited[hidden] {
+  display: none;
+}
+
+.summary-edited a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.summary-edited a:hover {
+  text-decoration: underline;
+}
+
+.summary-prompt-details textarea {
+  width: 100%;
+  min-height: 160px;
+}
+
+.preset-list {
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preset-list .collection-row:hover,
+.preset-list .collection-row:hover .collection-item {
+  background: var(--panel-2);
+}
+
+.preset-list .collection-item {
+  cursor: default;
+}
+
+.preset-list .inline-action {
+  min-height: 24px;
 }
 
 .modal-actions {

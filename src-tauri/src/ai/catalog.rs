@@ -171,22 +171,12 @@ async fn refresh_to(client: &Client, path: &Path) -> Result<CatalogResult, Catal
         fetched_at,
         catalog: catalog.clone(),
     };
-    save_json_atomic(path, &cache).map_err(CatalogError::Persist)?;
+    crate::ai::config::save_json_atomic(path, &cache).map_err(CatalogError::Persist)?;
     Ok(CatalogResult {
         catalog,
         source: CatalogSource::Cache,
         updated_at: fetched_at.to_string(),
     })
-}
-
-fn save_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    let bytes = serde_json::to_vec_pretty(value)?;
-    fs::write(&tmp, bytes)?;
-    fs::rename(tmp, path)
 }
 
 #[cfg(test)]
@@ -227,7 +217,7 @@ mod tests {
     fn newer_cache_wins_over_snapshot() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("ai-catalog.json");
-        save_json_atomic(
+        crate::ai::config::save_json_atomic(
             &path,
             &CatalogCache {
                 fetched_at: SNAPSHOT_UNIX_TIMESTAMP + 1,

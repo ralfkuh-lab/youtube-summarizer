@@ -165,8 +165,25 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   button is disabled while busy and `deleteActiveVideo` guards against `busy`
   (previously a running summarize could end in "Video nicht gefunden").
 
+- Extended the summarize dialog (spec: `docs/spec-summary-dialog.md`; grok
+  implementation in three stages, cross-reviewed by codex + agy, 9 review
+  findings fixed): prompt is now composed from a preset + toggleable modules
+  (tables on by default, Mermaid diagrams, AI assessment, critical claim
+  check, timestamps) with a collapsible editable preview ("Bearbeitet" badge
+  + reset); presets follow folio's template model (4 built-ins + custom CRUD
+  with its own manage dialog, store `summary-presets.json`); summary history
+  in a new `summaries` table (with idempotent backfill from existing
+  `videos.summary`, history dropdown + per-version delete that transactionally
+  re-syncs `videos.summary`); prompt-injection hardening wraps transcript,
+  metadata (title/published) and chapters in untrusted-data delimiters with
+  collision handling; Mermaid rendering (local bundle, strict security,
+  DOMPurify on the SVG, broken syntax stays a code block); `[mm:ss]`
+  timestamps in summaries become clickable seek links into the embedded
+  player.
+
 ## Next TODOs
 
+- Spec `docs/spec-summary-dialog.md`: Etappen 1–3 plus Kreuz-Review-Fixes (F1–F9) umgesetzt. Nicht committet.
 - Collections/playlists roadmap:
   - Add playlist URL import next, without user login, for public/unlisted YouTube playlists.
   - Consider optional YouTube account OAuth later for importing the user's own playlists once the local collection model and import UX are stable.
@@ -207,6 +224,14 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-08-29 (extended summarize dialog)
+- `cargo fmt --check`, `cargo test` (72 passed, 1 network test ignored),
+  `npm run build` green after the review-fix round (9 findings from codex +
+  agy, all fixed; preset saves deliberately use an in-process mutex + unique
+  temp names instead of cross-process locking — single-instance desktop
+  app). NOT yet verified live in the running app: dialog UX, Mermaid
+  rendering, timestamp seeking and history UI need a real run. Not
+  committed.
 - Date: 2026-08-29 (streaming timeout fix + live summary streaming)
 - Live summary streaming: `cargo fmt --check`, `cargo test` (48 passed, 1
   network test ignored) and `npm run build` green after the review-fix round.

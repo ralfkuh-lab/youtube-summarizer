@@ -42,6 +42,17 @@ pub struct Collection {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Summary {
+    pub id: i64,
+    pub video_id: i64,
+    pub created_at: String,
+    pub summary: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub options: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewVideo {
     pub video_id: String,

@@ -3,8 +3,25 @@ use super::types::{
     CustomProviderDefinition,
 };
 use crate::storage::{self, AppPaths};
-use std::{collections::BTreeMap, io, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 use thiserror::Error;
+
+static ATOMIC_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn atomic_tmp_path(path: &Path) -> PathBuf {
+    let pid = std::process::id();
+    let n = ATOMIC_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file");
+    path.with_file_name(format!("{name}.{pid}.{n}.tmp"))
+}
 
 #[derive(Debug, Error)]
 pub enum AiConfigError {
@@ -229,11 +246,11 @@ fn load_ai_json(path: &PathBuf) -> AiConfig {
         .unwrap_or_default()
 }
 
-pub(crate) fn save_json_atomic<T: serde::Serialize>(path: &PathBuf, value: &T) -> io::Result<()> {
+pub(crate) fn save_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("tmp");
+    let tmp = atomic_tmp_path(path);
     let bytes = serde_json::to_vec_pretty(value)?;
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(tmp, path)

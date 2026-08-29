@@ -57,6 +57,31 @@ type Collection = {
 
 type TabName = "transcript" | "summary" | "video";
 
+type SummaryRecord = {
+  id: number;
+  video_id: number;
+  created_at: string;
+  summary: string;
+  provider?: string | null;
+  model?: string | null;
+  options?: string | null;
+};
+
+type SummaryPreset = {
+  id: string;
+  name: string;
+  prompt: string;
+  builtin: boolean;
+};
+
+type SummaryModules = {
+  tables: boolean;
+  mermaid: boolean;
+  assessment: boolean;
+  verify: boolean;
+  timestamps: boolean;
+};
+
 let videos: Video[] = [];
 let collections: Collection[] = [];
 let activeVideoId: number | null = null;
@@ -66,6 +91,16 @@ let busy = false;
 let videoSearchQuery = "";
 let videoStatusFilter: VideoStatusFilter = "all";
 let editingCollectionId: number | null = null;
+let summaryPresets: SummaryPreset[] = [];
+let presetEditMode: "new" | "rename" | "prompt" | null = null;
+let presetEditTarget: SummaryPreset | null = null;
+let presetIdManual = false;
+let summaryHistory: SummaryRecord[] = [];
+let activeSummaryId: number | null = null;
+let streamingVideoId: number | null = null;
+let summaryRenderGen = 0;
+let mermaidLoader: Promise<typeof import("mermaid").default> | null = null;
+let mermaidIdSeq = 0;
 
 type VideoStatusFilter = "all" | "transcript" | "missing-transcript" | "summary" | "missing-summary";
 
@@ -137,7 +172,13 @@ app.innerHTML = `
 
         <div id="tabContent">
           <div id="tabTranscript" class="tabPanel active"></div>
-          <div id="tabSummary" class="tabPanel"></div>
+          <div id="tabSummary" class="tabPanel">
+            <div id="summaryHistoryBar" class="summary-history-bar" hidden>
+              <select id="summaryHistorySelect" aria-label="Zusammenfassungs-Verlauf"></select>
+              <button id="summaryHistoryDelete" class="delete-icon-btn" title="Diese Version löschen" aria-label="Diese Version löschen">🗑</button>
+            </div>
+            <div id="summaryBody"></div>
+          </div>
           <div id="tabVideo" class="tabPanel">
             <div id="videoCodecNotice" class="video-codec-notice" hidden></div>
             <div class="video-player-shell">
@@ -241,6 +282,9 @@ app.innerHTML = `
       <label>Modell
         <select id="summaryModel"></select>
       </label>
+      <label>Vorlage
+        <select id="summaryPreset"></select>
+      </label>
       <div class="summary-row">
         <label>Detailgrad
           <select id="summaryDetail">
@@ -266,9 +310,38 @@ app.innerHTML = `
           </select>
         </label>
       </div>
-      <label>Prompt
+      <fieldset class="summary-modules">
+        <legend>Zusätzlich</legend>
+        <label class="summary-module">
+          <input type="checkbox" id="summaryModTables" checked />
+          Tabellen für Daten/Vergleiche
+        </label>
+        <label class="summary-module">
+          <input type="checkbox" id="summaryModMermaid" />
+          Mermaid-Diagramme für komplexe Zusammenhänge
+        </label>
+        <label class="summary-module">
+          <input type="checkbox" id="summaryModAssessment" />
+          Einordnung durch die KI (Fakt vs. Meinung)
+        </label>
+        <label class="summary-module">
+          <input type="checkbox" id="summaryModVerify" />
+          Aussagen kritisch prüfen
+        </label>
+        <label class="summary-module">
+          <input type="checkbox" id="summaryModTimestamps" />
+          Timestamps [mm:ss] zu den Abschnitten
+        </label>
+      </fieldset>
+      <details id="summaryPromptDetails" class="summary-prompt-details">
+        <summary>
+          <span>Prompt (Vorschau/bearbeiten)</span>
+          <span id="summaryPromptEdited" class="summary-edited" hidden>
+            Bearbeitet <a href="#" id="summaryPromptReset">Zurücksetzen</a>
+          </span>
+        </summary>
         <textarea id="summaryPrompt" rows="8"></textarea>
-      </label>
+      </details>
       <div class="modal-actions">
         <button id="summaryStart">Zusammenfassen</button>
         <button id="summaryCancel">Abbrechen</button>
@@ -285,6 +358,38 @@ app.innerHTML = `
       <div class="modal-actions">
         <button id="collectionSave">Speichern</button>
         <button id="collectionCancel">Abbrechen</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="presetManageModal" class="modal" hidden>
+    <div class="modal-content modal-wide">
+      <h2>Vorlagen verwalten</h2>
+      <div id="presetList" class="preset-list"></div>
+      <div class="modal-actions">
+        <button id="presetNew">Neu</button>
+        <button id="presetManageClose">Schließen</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="presetEditModal" class="modal" hidden>
+    <div class="modal-content">
+      <h2 id="presetEditTitle">Vorlage</h2>
+      <label id="presetEditIdLabel">ID
+        <input id="presetEditId" type="text" maxlength="32" autocomplete="off" spellcheck="false" />
+      </label>
+      <p id="presetEditIdHint" class="settings-hint">Kleinbuchstaben, Ziffern und Bindestrich, max. 32 Zeichen.</p>
+      <label id="presetEditNameLabel">Name
+        <input id="presetEditName" type="text" maxlength="80" autocomplete="off" />
+      </label>
+      <label id="presetEditPromptLabel">Prompt
+        <textarea id="presetEditPrompt" rows="8"></textarea>
+      </label>
+      <p id="presetEditError" class="settings-ai-error" hidden></p>
+      <div class="modal-actions">
+        <button id="presetEditSave">Speichern</button>
+        <button id="presetEditCancel">Abbrechen</button>
       </div>
     </div>
   </div>
@@ -373,9 +478,42 @@ function bindEvents() {
   $("#reloadTranscriptBtn").addEventListener("click", () => void refreshActiveTranscript());
   $("#summaryStart").addEventListener("click", () => void startSummary());
   $("#summaryCancel").addEventListener("click", () => hideModal("#summaryModal"));
+  $("#summaryPreset").addEventListener("change", onSummaryPresetChange);
+  $("#summaryPrompt").addEventListener("input", updateSummaryPromptEditedBadge);
+  $("#summaryPromptReset").addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    recomposeSummaryPrompt();
+  });
 
-  ["#summaryDetail", "#summaryLang", "#summaryUseChapters"].forEach((selector) => {
-    $(selector).addEventListener("change", updateSummaryPrompt);
+  [
+    "#summaryDetail",
+    "#summaryLang",
+    "#summaryUseChapters",
+    "#summaryModTables",
+    "#summaryModMermaid",
+    "#summaryModAssessment",
+    "#summaryModVerify",
+    "#summaryModTimestamps",
+  ].forEach((selector) => {
+    $(selector).addEventListener("change", recomposeSummaryPrompt);
+  });
+
+  $("#presetNew").addEventListener("click", () => openPresetEditDialog("new"));
+  $("#presetManageClose").addEventListener("click", () => hideModal("#presetManageModal"));
+  $("#presetEditCancel").addEventListener("click", () => hideModal("#presetEditModal"));
+  $("#presetEditSave").addEventListener("click", () => void savePresetEdit());
+  $("#presetEditName").addEventListener("input", onPresetNameInput);
+  $("#presetEditId").addEventListener("input", () => {
+    presetIdManual = true;
+  });
+  ["#presetEditId", "#presetEditName"].forEach((selector) => {
+    $(selector).addEventListener("keydown", (event) => {
+      if (event instanceof KeyboardEvent && event.key === "Enter") {
+        event.preventDefault();
+        void savePresetEdit();
+      }
+    });
   });
 
   $("#deleteBtn").addEventListener("click", () => void deleteActiveVideo());
@@ -408,12 +546,32 @@ function bindEvents() {
       seekVideo(start);
     }
   });
+
+  $("#tabSummary").addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const link = target.closest<HTMLElement>("[data-seek]");
+    if (!link || !$("#tabSummary").contains(link)) return;
+    event.preventDefault();
+    const seconds = Number(link.dataset.seek);
+    if (!Number.isNaN(seconds)) {
+      seekVideo(seconds);
+    }
+  });
+
+  $("#summaryHistorySelect").addEventListener("change", () => {
+    const id = Number($<HTMLSelectElement>("#summaryHistorySelect").value);
+    if (!Number.isNaN(id)) void showSummaryVersion(id);
+  });
+  $("#summaryHistoryDelete").addEventListener("click", () => void deleteDisplayedSummary());
 }
 
 // Escape schliesst den obersten offenen Dialog. Die Reihenfolge bildet die
 // Stapelung ab: liegt ein Dialog ueber einem anderen, geht zuerst der obere zu.
 const ESCAPE_CLOSABLE_MODALS = [
   { modal: "#chatTestModal", close: "#chatTestClose" },
+  { modal: "#presetEditModal", close: "#presetEditCancel" },
+  { modal: "#presetManageModal", close: "#presetManageClose" },
   { modal: "#collectionModal", close: "#collectionCancel" },
   { modal: "#summaryModal", close: "#summaryCancel" },
   { modal: "#settingsModal", close: "#configClose" },
@@ -591,17 +749,35 @@ async function openSummaryDialog() {
     return;
   }
   const saved = loadSummarySettings();
-  updateSummaryPrompt();
+  $<HTMLDetailsElement>("#summaryPromptDetails").open = false;
+  try {
+    await loadSummaryPresets();
+  } catch (error) {
+    setStatus(errorMessage(error));
+  }
+  fillPresetPicker(saved.presetId);
+  recomposeSummaryPrompt();
   showModal("#summaryModal");
   try {
     await ensureAiData();
   } catch (error) {
     setStatus(errorMessage(error));
   }
-  fillModelPicker($<HTMLSelectElement>("#summaryModel"), saved?.model);
+  fillModelPicker($<HTMLSelectElement>("#summaryModel"), saved.model);
 }
 
 const SUMMARY_SETTINGS_KEY = "summarySettings";
+const MANAGE_PRESET_VALUE = "__manage__";
+const DEFAULT_PRESET_ID = "standard";
+const STANDARD_PRESET_PROMPT =
+  "You are an expert assistant that turns YouTube video transcripts into clear, well-structured Markdown summaries. Start with a 1-2 sentence overview. Organize the key points under short headings and use bullet points. End with the main conclusions or takeaways. Ground every statement in the transcript; do not invent facts.";
+const DEFAULT_SUMMARY_MODULES: SummaryModules = {
+  tables: true,
+  mermaid: false,
+  assessment: false,
+  verify: false,
+  timestamps: false,
+};
 
 type SummarySettings = {
   detail: string;
@@ -609,21 +785,96 @@ type SummarySettings = {
   useChapters: string;
   // JSON-kodiertes [providerId, modelId] wie im Modell-Auswahlfeld
   model?: string;
+  presetId: string;
+  modules: SummaryModules;
 };
 
-function loadSummarySettings(): Partial<SummarySettings> | null {
+function defaultSummarySettings(): SummarySettings {
+  return {
+    detail: "medium",
+    lang: "original",
+    useChapters: "yes",
+    presetId: DEFAULT_PRESET_ID,
+    modules: { ...DEFAULT_SUMMARY_MODULES },
+  };
+}
+
+function coerceBool(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function parseSummaryModules(value: unknown): SummaryModules {
+  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    tables: coerceBool(raw.tables, DEFAULT_SUMMARY_MODULES.tables),
+    mermaid: coerceBool(raw.mermaid, DEFAULT_SUMMARY_MODULES.mermaid),
+    assessment: coerceBool(raw.assessment, DEFAULT_SUMMARY_MODULES.assessment),
+    verify: coerceBool(raw.verify, DEFAULT_SUMMARY_MODULES.verify),
+    timestamps: coerceBool(raw.timestamps, DEFAULT_SUMMARY_MODULES.timestamps),
+  };
+}
+
+function parseSummarySettings(value: unknown): SummarySettings {
+  const defaults = defaultSummarySettings();
+  if (!value || typeof value !== "object") return defaults;
+  const saved = value as Record<string, unknown>;
+  const detail = typeof saved.detail === "string" && saved.detail ? saved.detail : defaults.detail;
+  const lang = typeof saved.lang === "string" && saved.lang ? saved.lang : defaults.lang;
+  const useChapters =
+    typeof saved.useChapters === "string" && saved.useChapters ? saved.useChapters : defaults.useChapters;
+  const model = typeof saved.model === "string" && saved.model ? saved.model : undefined;
+  const presetId =
+    typeof saved.presetId === "string" && saved.presetId.trim() ? saved.presetId.trim() : defaults.presetId;
+  return {
+    detail,
+    lang,
+    useChapters,
+    model,
+    presetId,
+    modules: parseSummaryModules(saved.modules),
+  };
+}
+
+function readSummaryModules(): SummaryModules {
+  return {
+    tables: $<HTMLInputElement>("#summaryModTables").checked,
+    mermaid: $<HTMLInputElement>("#summaryModMermaid").checked,
+    assessment: $<HTMLInputElement>("#summaryModAssessment").checked,
+    verify: $<HTMLInputElement>("#summaryModVerify").checked,
+    timestamps: $<HTMLInputElement>("#summaryModTimestamps").checked,
+  };
+}
+
+function applySummarySettings(settings: SummarySettings) {
+  const detailSelect = $<HTMLSelectElement>("#summaryDetail");
+  const langSelect = $<HTMLSelectElement>("#summaryLang");
+  const chaptersSelect = $<HTMLSelectElement>("#summaryUseChapters");
+  if ([...detailSelect.options].some((option) => option.value === settings.detail)) {
+    detailSelect.value = settings.detail;
+  }
+  if ([...langSelect.options].some((option) => option.value === settings.lang)) {
+    langSelect.value = settings.lang;
+  }
+  if ([...chaptersSelect.options].some((option) => option.value === settings.useChapters)) {
+    chaptersSelect.value = settings.useChapters;
+  }
+  $<HTMLInputElement>("#summaryModTables").checked = settings.modules.tables;
+  $<HTMLInputElement>("#summaryModMermaid").checked = settings.modules.mermaid;
+  $<HTMLInputElement>("#summaryModAssessment").checked = settings.modules.assessment;
+  $<HTMLInputElement>("#summaryModVerify").checked = settings.modules.verify;
+  $<HTMLInputElement>("#summaryModTimestamps").checked = settings.modules.timestamps;
+}
+
+function loadSummarySettings(): SummarySettings {
+  let settings = defaultSummarySettings();
   try {
     const raw = localStorage.getItem(SUMMARY_SETTINGS_KEY);
-    if (!raw) return null;
-    const saved = JSON.parse(raw) as Partial<SummarySettings>;
-    if (saved.detail) $<HTMLSelectElement>("#summaryDetail").value = saved.detail;
-    if (saved.lang) $<HTMLSelectElement>("#summaryLang").value = saved.lang;
-    if (saved.useChapters) $<HTMLSelectElement>("#summaryUseChapters").value = saved.useChapters;
-    return saved;
+    if (raw) settings = parseSummarySettings(JSON.parse(raw));
   } catch {
     // ignore corrupt entries
-    return null;
   }
+  applySummarySettings(settings);
+  return settings;
 }
 
 function saveSummarySettings() {
@@ -632,6 +883,8 @@ function saveSummarySettings() {
     lang: $<HTMLSelectElement>("#summaryLang").value,
     useChapters: $<HTMLSelectElement>("#summaryUseChapters").value,
     model: $<HTMLSelectElement>("#summaryModel").value || undefined,
+    presetId: selectedPresetId(),
+    modules: readSummaryModules(),
   };
   localStorage.setItem(SUMMARY_SETTINGS_KEY, JSON.stringify(settings));
 }
@@ -656,9 +909,14 @@ async function startSummary() {
   const [providerId, modelId] = parseModelValue($<HTMLSelectElement>("#summaryModel").value);
   const videoId = video.id;
   setBusy(true, "Zusammenfassung wird erstellt...");
+  hideModal("#presetEditModal");
+  hideModal("#presetManageModal");
   hideModal("#summaryModal");
   switchTab("summary");
-  $("#tabSummary").innerHTML = '<p class="empty">Zusammenfassung wird erstellt…</p>';
+  streamingVideoId = videoId;
+  summaryRenderGen += 1;
+  hideSummaryHistoryBar();
+  $("#summaryBody").innerHTML = '<p class="empty">Zusammenfassung wird erstellt…</p>';
 
   let unlisten: (() => void) | undefined;
   try {
@@ -668,16 +926,25 @@ async function startSummary() {
         if (event.payload.videoId !== videoId) return;
         const active = getActiveVideo();
         if (!active || active.id !== videoId) return;
-        $("#tabSummary").innerHTML = markdownToHtml(event.payload.text);
+        void renderSummaryMarkdown(event.payload.text);
         setStatus(`Zusammenfassung läuft – ${event.payload.chars} Zeichen`);
       },
     );
+    const modules = readSummaryModules();
     const updated = await invoke<Video>("summarize_video", {
       id: videoId,
       systemPrompt: $<HTMLTextAreaElement>("#summaryPrompt").value.trim(),
       providerId,
       modelId,
+      timestamps: modules.timestamps,
+      options: JSON.stringify({
+        presetId: selectedPresetId(),
+        modules,
+        detail: $<HTMLSelectElement>("#summaryDetail").value,
+        language: $<HTMLSelectElement>("#summaryLang").value,
+      }),
     });
+    streamingVideoId = null;
     videos = videos.map((item) => (item.id === updated.id ? updated : item));
     renderVideoList();
     if (getActiveVideo()?.id === videoId) {
@@ -686,6 +953,7 @@ async function startSummary() {
     }
     setStatus("Zusammenfassung fertig");
   } catch (error) {
+    streamingVideoId = null;
     if (getActiveVideo()?.id === videoId) {
       const current = videos.find((item) => item.id === videoId);
       if (current) {
@@ -694,6 +962,7 @@ async function startSummary() {
     }
     setStatus(errorMessage(error));
   } finally {
+    streamingVideoId = null;
     unlisten?.();
     setBusy(false);
   }
@@ -932,21 +1201,14 @@ function showDetail(video: Video) {
     publishedMeta.textContent = "";
     publishedMeta.hidden = true;
   }
-  const summaryMeta = $("#detailSummaryMeta");
-  if (video.summary && (video.summary_provider || video.summary_model)) {
-    const parts = [video.summary_provider, video.summary_model].filter((part): part is string => !!part);
-    summaryMeta.textContent = `Zusammengefasst mit: ${parts.join(" / ")}`;
-    summaryMeta.hidden = false;
-  } else {
-    summaryMeta.textContent = "";
-    summaryMeta.hidden = true;
-  }
+  updateDetailSummaryMeta(
+    video.summary ? video.summary_provider : null,
+    video.summary ? video.summary_model : null,
+  );
   const videoFallbackLink = $<HTMLAnchorElement>("#videoFallbackLink");
   videoFallbackLink.href = video.url;
   $("#tabTranscript").innerHTML = renderTranscript(video.transcript, video.chapters);
-  $("#tabSummary").innerHTML = video.summary
-    ? markdownToHtml(video.summary)
-    : '<p class="empty">Noch keine Zusammenfassung - klicke auf "Zusammenfassen lassen"</p>';
+  void renderSummaryTab(video);
   $<HTMLIFrameElement>("#videoPlayer").src = buildYouTubeEmbedUrl(video.video_id);
   $<HTMLButtonElement>("#reloadTranscriptBtn").hidden = !!video.transcript;
   renderVideoCollections(video);
@@ -1061,6 +1323,18 @@ function renderChapters(chapters?: Chapter[] | null) {
   });
 }
 
+function updateDetailSummaryMeta(provider?: string | null, model?: string | null) {
+  const summaryMeta = $("#detailSummaryMeta");
+  const parts = [provider, model].filter((part): part is string => !!part && part.trim().length > 0);
+  if (parts.length) {
+    summaryMeta.textContent = `Zusammengefasst mit: ${parts.join(" / ")}`;
+    summaryMeta.hidden = false;
+  } else {
+    summaryMeta.textContent = "";
+    summaryMeta.hidden = true;
+  }
+}
+
 function seekVideo(seconds: number) {
   const video = getActiveVideo();
   if (!video) return;
@@ -1095,38 +1369,299 @@ function switchTab(tab: TabName) {
   });
 }
 
+const LANGUAGE_NAMES: Record<string, string> = {
+  original: "the same language as the transcript",
+  german: "German",
+  english: "English",
+  french: "French",
+  spanish: "Spanish",
+  italian: "Italian",
+};
+
+const MODULE_PROMPT_ORDER = ["tables", "mermaid", "assessment", "verify", "timestamps"] as const;
+
+const MODULE_PROMPTS: Record<(typeof MODULE_PROMPT_ORDER)[number], string> = {
+  tables:
+    "Use Markdown tables for comparisons, numbers, rankings or other data where a table is clearer than prose.",
+  mermaid:
+    "Where a process, architecture, timeline or set of relationships is complex, add a Mermaid diagram in a ```mermaid code block. Keep diagrams small and syntactically valid; prefer flowchart or sequenceDiagram.",
+  assessment:
+    "After the summary, add a section titled 'Einordnung' (in the summary language) with your own assessment: distinguish facts from opinions and claims, note how strong the presented evidence is, and mention notable counterarguments.",
+  verify:
+    "Critically check the video's central claims against your own knowledge: explicitly flag statements that are outdated, disputed or likely wrong, and briefly say why.",
+  timestamps:
+    "Prefix each major section or key point with the timestamp [mm:ss] of the transcript passage it is based on. Use exactly the bracketed format [mm:ss] or [h:mm:ss].",
+};
+
+function detailParagraph(detail: string): string {
+  if (detail === "short") {
+    return "Provide a very concise summary: just 3-5 bullet points with the key takeaways.";
+  }
+  if (detail === "detailed") {
+    return "Provide a comprehensive and detailed summary.\nInclude all main topics, key arguments, facts, insights, conclusions and takeaways.";
+  }
+  return "Provide a clear, structured summary with overview, key points and takeaways.";
+}
+
+function selectedPresetId(): string {
+  const value = $<HTMLSelectElement>("#summaryPreset").value;
+  if (!value || value === MANAGE_PRESET_VALUE) return DEFAULT_PRESET_ID;
+  return value;
+}
+
+function selectedPresetPrompt(): string {
+  const fromList = summaryPresets.find((preset) => preset.id === selectedPresetId())?.prompt.trim();
+  if (fromList) return fromList;
+  return STANDARD_PRESET_PROMPT;
+}
+
 function buildSummaryPrompt(): string {
   const detail = $<HTMLSelectElement>("#summaryDetail").value;
   const lang = $<HTMLSelectElement>("#summaryLang").value;
   const useChapters = $<HTMLSelectElement>("#summaryUseChapters").value;
-  const languageNames: Record<string, string> = {
-    original: "the same language as the transcript",
-    german: "German",
-    english: "English",
-    french: "French",
-    spanish: "Spanish",
-    italian: "Italian",
-  };
-
-  const lines = ["You are a helpful assistant that summarizes YouTube video transcripts.", ""];
-  if (detail === "short") {
-    lines.push("Provide a very concise summary: just 3-5 bullet points with the key takeaways.");
-  } else if (detail === "detailed") {
-    lines.push("Provide a comprehensive and detailed summary.");
-    lines.push("Include all main topics, key arguments, facts, insights, conclusions and takeaways.");
-  } else {
-    lines.push("Provide a clear, structured summary with overview, key points and takeaways.");
-  }
-  lines.push("", `Write the summary in ${languageNames[lang]}.`);
+  const modules = readSummaryModules();
+  const language = LANGUAGE_NAMES[lang] ?? LANGUAGE_NAMES.original;
+  const parts = [selectedPresetPrompt(), detailParagraph(detail), `Write the summary in ${language}.`];
   if (useChapters === "yes") {
-    lines.push("If chapter markers are provided, structure the summary by chapter.");
+    parts.push("If chapter markers are provided, structure the summary by chapter.");
   }
-  lines.push("", "Format your response as Markdown.");
-  return lines.join("\n");
+  for (const key of MODULE_PROMPT_ORDER) {
+    if (modules[key]) parts.push(MODULE_PROMPTS[key]);
+  }
+  return parts.filter((part) => part.length > 0).join("\n\n");
 }
 
-function updateSummaryPrompt() {
+function updateSummaryPromptEditedBadge() {
+  const composed = buildSummaryPrompt();
+  const current = $<HTMLTextAreaElement>("#summaryPrompt").value;
+  $<HTMLSpanElement>("#summaryPromptEdited").hidden = current === composed;
+}
+
+function recomposeSummaryPrompt() {
   $<HTMLTextAreaElement>("#summaryPrompt").value = buildSummaryPrompt();
+  updateSummaryPromptEditedBadge();
+}
+
+function onSummaryPresetChange() {
+  const select = $<HTMLSelectElement>("#summaryPreset");
+  if (select.value === MANAGE_PRESET_VALUE) {
+    const last = select.dataset.lastPresetId;
+    select.value =
+      last && summaryPresets.some((preset) => preset.id === last) ? last : DEFAULT_PRESET_ID;
+    void openPresetManager();
+    return;
+  }
+  select.dataset.lastPresetId = select.value;
+  recomposeSummaryPrompt();
+}
+
+async function loadSummaryPresets() {
+  summaryPresets = await invoke<SummaryPreset[]>("summary_presets_list");
+}
+
+function fillPresetPicker(selectedId: string) {
+  const select = $<HTMLSelectElement>("#summaryPreset");
+  const fallback = summaryPresets.some((preset) => preset.id === DEFAULT_PRESET_ID)
+    ? DEFAULT_PRESET_ID
+    : (summaryPresets[0]?.id ?? MANAGE_PRESET_VALUE);
+  const resolved = summaryPresets.some((preset) => preset.id === selectedId) ? selectedId : fallback;
+  select.innerHTML = [
+    ...summaryPresets.map(
+      (preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)}</option>`,
+    ),
+    `<option value="${MANAGE_PRESET_VALUE}">Verwalten…</option>`,
+  ].join("");
+  select.value = resolved;
+  if (resolved !== MANAGE_PRESET_VALUE) {
+    select.dataset.lastPresetId = resolved;
+  }
+}
+
+async function openPresetManager() {
+  try {
+    await loadSummaryPresets();
+  } catch (error) {
+    setStatus(errorMessage(error));
+  }
+  fillPresetPicker(selectedPresetId());
+  renderPresetList();
+  showModal("#presetManageModal");
+}
+
+function renderPresetList() {
+  const list = $<HTMLDivElement>("#presetList");
+  if (!summaryPresets.length) {
+    list.innerHTML = '<p class="empty-list compact">Keine Vorlagen</p>';
+    return;
+  }
+  list.innerHTML = summaryPresets.map(renderPresetRow).join("");
+  list.querySelectorAll<HTMLButtonElement>("[data-preset-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.presetId ?? "";
+      const preset = summaryPresets.find((item) => item.id === id);
+      if (!preset || preset.builtin) return;
+      const action = button.dataset.presetAction;
+      if (action === "rename") openPresetEditDialog("rename", preset);
+      else if (action === "prompt") openPresetEditDialog("prompt", preset);
+      else if (action === "delete") void deletePreset(preset);
+    });
+  });
+}
+
+function renderPresetRow(preset: SummaryPreset): string {
+  const actions = preset.builtin
+    ? '<span class="collection-count">fest</span>'
+    : `
+      <div class="collection-actions">
+        <button class="inline-action" data-preset-action="rename" data-preset-id="${escapeHtml(preset.id)}">Umbenennen</button>
+        <button class="inline-action" data-preset-action="prompt" data-preset-id="${escapeHtml(preset.id)}">Prompt</button>
+        <button class="inline-action" data-preset-action="delete" data-preset-id="${escapeHtml(preset.id)}">Löschen</button>
+      </div>
+    `;
+  return `
+    <div class="collection-row">
+      <div class="collection-item">
+        <span class="collection-name">${escapeHtml(preset.name)}</span>
+        <span class="collection-count">${escapeHtml(preset.id)}</span>
+      </div>
+      ${actions}
+    </div>
+  `;
+}
+
+function slugFromName(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32)
+    .replace(/-+$/, "");
+  return /^[a-z0-9]/.test(slug) ? slug : "";
+}
+
+function setPresetEditError(message: string | null) {
+  const errorEl = $<HTMLParagraphElement>("#presetEditError");
+  errorEl.hidden = !message;
+  errorEl.textContent = message ?? "";
+}
+
+function openPresetEditDialog(mode: "new" | "rename" | "prompt", preset?: SummaryPreset) {
+  presetEditMode = mode;
+  presetEditTarget = preset ?? null;
+  presetIdManual = mode !== "new";
+  setPresetEditError(null);
+
+  const idLabel = $<HTMLLabelElement>("#presetEditIdLabel");
+  const idHint = $<HTMLParagraphElement>("#presetEditIdHint");
+  const nameLabel = $<HTMLLabelElement>("#presetEditNameLabel");
+  const promptLabel = $<HTMLLabelElement>("#presetEditPromptLabel");
+  const idInput = $<HTMLInputElement>("#presetEditId");
+  const nameInput = $<HTMLInputElement>("#presetEditName");
+  const promptInput = $<HTMLTextAreaElement>("#presetEditPrompt");
+
+  idInput.value = preset?.id ?? "";
+  nameInput.value = preset?.name ?? "";
+  promptInput.value = preset?.prompt ?? "";
+  idInput.disabled = mode !== "new";
+
+  const showId = mode === "new";
+  const showName = mode === "new" || mode === "rename";
+  const showPrompt = mode === "new" || mode === "prompt";
+  idLabel.hidden = !showId;
+  idHint.hidden = !showId;
+  nameLabel.hidden = !showName;
+  promptLabel.hidden = !showPrompt;
+
+  $<HTMLHeadingElement>("#presetEditTitle").textContent =
+    mode === "new" ? "Vorlage anlegen" : mode === "rename" ? "Vorlage umbenennen" : "Prompt bearbeiten";
+
+  showModal("#presetEditModal");
+  queueMicrotask(() => {
+    if (showId) nameInput.focus();
+    else if (showName) {
+      nameInput.focus();
+      nameInput.select();
+    } else {
+      promptInput.focus();
+    }
+  });
+}
+
+function onPresetNameInput() {
+  if (presetEditMode !== "new" || presetIdManual) return;
+  $<HTMLInputElement>("#presetEditId").value = slugFromName($<HTMLInputElement>("#presetEditName").value);
+}
+
+async function savePresetEdit() {
+  if (!presetEditMode) return;
+  const id =
+    presetEditMode === "new"
+      ? $<HTMLInputElement>("#presetEditId").value.trim()
+      : (presetEditTarget?.id ?? "");
+  const name =
+    presetEditMode === "prompt"
+      ? (presetEditTarget?.name ?? "")
+      : $<HTMLInputElement>("#presetEditName").value.trim();
+  const prompt =
+    presetEditMode === "rename"
+      ? (presetEditTarget?.prompt ?? "")
+      : $<HTMLTextAreaElement>("#presetEditPrompt").value;
+  if (presetEditMode === "new" && !id) {
+    setPresetEditError("ID darf nicht leer sein");
+    return;
+  }
+  if ((presetEditMode === "new" || presetEditMode === "rename") && !name) {
+    setPresetEditError("Name darf nicht leer sein");
+    return;
+  }
+  if ((presetEditMode === "new" || presetEditMode === "prompt") && !prompt.trim()) {
+    setPresetEditError("Prompt darf nicht leer sein");
+    return;
+  }
+  if (presetEditMode === "new" && summaryPresets.some((preset) => preset.id === id)) {
+    setPresetEditError("ID ist bereits vergeben");
+    return;
+  }
+
+  try {
+    const saved = await invoke<SummaryPreset>("summary_preset_save", {
+      preset: { id, name, prompt, builtin: false },
+    });
+    hideModal("#presetEditModal");
+    await loadSummaryPresets();
+    const selectNext = presetEditMode === "new" ? saved.id : selectedPresetId();
+    fillPresetPicker(selectNext);
+    renderPresetList();
+    if (saved.id === selectedPresetId()) recomposeSummaryPrompt();
+    setStatus("Vorlage gespeichert");
+  } catch (error) {
+    setPresetEditError(errorMessage(error));
+  }
+}
+
+async function deletePreset(preset: SummaryPreset) {
+  if (
+    !(await confirmDialog(`Vorlage "${preset.name}" löschen?`, {
+      title: "Vorlage löschen",
+      okLabel: "Löschen",
+    }))
+  ) {
+    return;
+  }
+  try {
+    await invoke<void>("summary_preset_delete", { id: preset.id });
+    const wasSelected = selectedPresetId() === preset.id;
+    await loadSummaryPresets();
+    fillPresetPicker(wasSelected ? DEFAULT_PRESET_ID : selectedPresetId());
+    renderPresetList();
+    if (wasSelected) recomposeSummaryPrompt();
+    setStatus("Vorlage gelöscht");
+  } catch (error) {
+    setStatus(errorMessage(error));
+  }
 }
 
 // Some models wrap their entire Markdown reply in a single ```markdown ... ```
@@ -1152,6 +1687,260 @@ function markdownToHtml(markdown: string): string {
   });
 }
 
+const EMPTY_SUMMARY_HTML =
+  '<p class="empty">Noch keine Zusammenfassung - klicke auf "Zusammenfassen lassen"</p>';
+
+const TIMESTAMP_RE = /\[(?:(\d+):)?(\d{1,2}):(\d{2})\]/g;
+
+function timestampSeconds(match: RegExpMatchArray): number | null {
+  const hoursPart = match[1];
+  const mid = Number(match[2]);
+  const seconds = Number(match[3]);
+  if (!Number.isFinite(mid) || !Number.isFinite(seconds) || seconds > 59) return null;
+  if (hoursPart !== undefined) {
+    const hours = Number(hoursPart);
+    if (!Number.isFinite(hours) || mid > 59) return null;
+    return hours * 3600 + mid * 60 + seconds;
+  }
+  if (mid > 59) return null;
+  return mid * 60 + seconds;
+}
+
+function linkifySummaryTimestamps(root: HTMLElement) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest("a, pre, code, svg, button")) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      TIMESTAMP_RE.lastIndex = 0;
+      return TIMESTAMP_RE.test(node.textContent ?? "")
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+    nodes.push(current as Text);
+  }
+  for (const textNode of nodes) {
+    replaceTimestampsInTextNode(textNode);
+  }
+}
+
+function replaceTimestampsInTextNode(textNode: Text) {
+  const text = textNode.textContent ?? "";
+  TIMESTAMP_RE.lastIndex = 0;
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  let found = false;
+  let match: RegExpExecArray | null;
+  while ((match = TIMESTAMP_RE.exec(text))) {
+    const seconds = timestampSeconds(match);
+    if (seconds === null) continue;
+    found = true;
+    if (match.index > last) {
+      frag.append(text.slice(last, match.index));
+    }
+    const link = document.createElement("a");
+    link.href = "#";
+    link.dataset.seek = String(seconds);
+    link.className = "summary-seek";
+    link.textContent = match[0];
+    frag.append(link);
+    last = match.index + match[0].length;
+  }
+  if (!found) return;
+  if (last < text.length) {
+    frag.append(text.slice(last));
+  }
+  textNode.replaceWith(frag);
+}
+
+function getMermaid() {
+  if (!mermaidLoader) {
+    mermaidLoader = import("mermaid")
+      .then((mod) => {
+        const mermaid = mod.default;
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: "dark",
+          darkMode: true,
+        });
+        return mermaid;
+      })
+      .catch((error) => {
+        mermaidLoader = null;
+        throw error;
+      });
+  }
+  return mermaidLoader;
+}
+
+function removeMermaidArtifacts(id: string) {
+  document.getElementById(id)?.remove();
+  document.getElementById(`d${id}`)?.remove();
+}
+
+async function renderMermaidBlocks(root: HTMLElement, gen: number) {
+  const blocks = [...root.querySelectorAll("pre > code.language-mermaid")];
+  if (!blocks.length) return;
+  let mermaid;
+  try {
+    mermaid = await getMermaid();
+  } catch {
+    return;
+  }
+  if (gen !== summaryRenderGen) return;
+  for (const code of blocks) {
+    if (gen !== summaryRenderGen) return;
+    const pre = code.parentElement;
+    if (!(pre instanceof HTMLElement) || !pre.isConnected) continue;
+    const source = (code.textContent ?? "").trim();
+    if (!source) continue;
+    const id = `summaryMermaid${(mermaidIdSeq += 1)}`;
+    try {
+      const { svg } = await mermaid.render(id, source);
+      if (gen !== summaryRenderGen || !pre.isConnected) {
+        removeMermaidArtifacts(id);
+        return;
+      }
+      const wrapper = document.createElement("div");
+      wrapper.className = "summary-mermaid";
+      wrapper.innerHTML = DOMPurify.sanitize(svg, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+      });
+      if (!wrapper.querySelector("svg")) {
+        removeMermaidArtifacts(id);
+        continue;
+      }
+      pre.replaceWith(wrapper);
+    } catch {
+      removeMermaidArtifacts(id);
+    }
+  }
+}
+
+async function renderSummaryMarkdown(markdown: string, gen = ++summaryRenderGen) {
+  const body = $("#summaryBody");
+  body.innerHTML = markdownToHtml(markdown);
+  linkifySummaryTimestamps(body);
+  await renderMermaidBlocks(body, gen);
+}
+
+function hideSummaryHistoryBar() {
+  $<HTMLDivElement>("#summaryHistoryBar").hidden = true;
+  activeSummaryId = null;
+}
+
+function formatSummaryHistoryTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date
+    .toLocaleString("de-DE", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+    .replace(",", "");
+}
+
+function summaryHistoryLabel(row: SummaryRecord): string {
+  const model = row.model?.trim() || row.provider?.trim() || "unbekannt";
+  return `${formatSummaryHistoryTime(row.created_at)} – ${model}`;
+}
+
+function fillSummaryHistorySelect(selectedId: number) {
+  const select = $<HTMLSelectElement>("#summaryHistorySelect");
+  select.innerHTML = summaryHistory
+    .map(
+      (row) =>
+        `<option value="${row.id}">${escapeHtml(summaryHistoryLabel(row))}</option>`,
+    )
+    .join("");
+  select.value = String(selectedId);
+}
+
+async function renderSummaryTab(video: Video) {
+  const gen = ++summaryRenderGen;
+  const body = $("#summaryBody");
+  if (streamingVideoId === video.id) {
+    hideSummaryHistoryBar();
+    body.innerHTML = '<p class="empty">Zusammenfassung wird erstellt…</p>';
+    return;
+  }
+
+  hideSummaryHistoryBar();
+  if (video.summary) {
+    body.innerHTML = markdownToHtml(video.summary);
+    linkifySummaryTimestamps(body);
+  } else {
+    body.innerHTML = EMPTY_SUMMARY_HTML;
+  }
+
+  try {
+    summaryHistory = await invoke<SummaryRecord[]>("get_summaries", { videoId: video.id });
+  } catch (error) {
+    summaryHistory = [];
+    if (gen === summaryRenderGen) setStatus(errorMessage(error));
+  }
+  if (gen !== summaryRenderGen || getActiveVideo()?.id !== video.id) return;
+
+  if (summaryHistory.length) {
+    const newest = summaryHistory[0];
+    activeSummaryId = newest.id;
+    fillSummaryHistorySelect(newest.id);
+    $<HTMLDivElement>("#summaryHistoryBar").hidden = false;
+    await renderSummaryMarkdown(newest.summary, gen);
+    return;
+  }
+
+  if (video.summary) {
+    await renderMermaidBlocks(body, gen);
+  }
+}
+
+async function showSummaryVersion(id: number) {
+  const row = summaryHistory.find((item) => item.id === id);
+  if (!row) return;
+  activeSummaryId = row.id;
+  updateDetailSummaryMeta(row.provider, row.model);
+  await renderSummaryMarkdown(row.summary);
+}
+
+async function deleteDisplayedSummary() {
+  if (busy || activeSummaryId === null) return;
+  const video = getActiveVideo();
+  if (!video) return;
+  if (
+    !(await confirmDialog("Diese Zusammenfassungs-Version wirklich löschen?", {
+      title: "Zusammenfassung löschen",
+      okLabel: "Löschen",
+    }))
+  ) {
+    return;
+  }
+  const id = activeSummaryId;
+  setBusy(true, "Zusammenfassung wird gelöscht...");
+  try {
+    await invoke<void>("delete_summary", { id });
+    const updated = await invoke<Video>("get_video_detail", { id: video.id });
+    videos = videos.map((item) => (item.id === updated.id ? updated : item));
+    renderVideoList();
+    if (getActiveVideo()?.id === updated.id) {
+      showDetail(updated);
+    }
+    setStatus("Zusammenfassung gelöscht");
+  } catch (error) {
+    setStatus(errorMessage(error));
+  } finally {
+    setBusy(false);
+  }
+}
+
 function getActiveVideo(): Video | null {
   return videos.find((video) => video.id === activeVideoId) ?? null;
 }
@@ -1162,6 +1951,8 @@ function setBusy(value: boolean, message?: string) {
   $<HTMLButtonElement>("#summarizeBtn").disabled = value;
   $<HTMLButtonElement>("#reloadTranscriptBtn").disabled = value;
   $<HTMLButtonElement>("#deleteBtn").disabled = value;
+  $<HTMLButtonElement>("#summaryHistoryDelete").disabled = value;
+  $<HTMLSelectElement>("#summaryHistorySelect").disabled = value;
   document.querySelectorAll<HTMLButtonElement>(".collection-action, #addCollectionBtn, #collectionSave").forEach((button) => {
     button.disabled = value;
   });

@@ -17,7 +17,8 @@
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@types/dompurify": "^3.0.5",
     "dompurify": "^3.4.2",
-    "marked": "^18.0.3"
+    "marked": "^18.0.3",
+    "mermaid": "^11.17.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",

@@ -146,6 +146,30 @@ pub fn transcript_to_text(transcript_json: &str) -> String {
         .unwrap_or_else(|_| transcript_json.to_string())
 }
 
+pub fn transcript_to_text_with_timestamps(transcript_json: &str) -> String {
+    serde_json::from_str::<Vec<TranscriptSnippet>>(transcript_json)
+        .map(|snippets| {
+            snippets
+                .into_iter()
+                .map(|snippet| format!("{} {}", format_timestamp(snippet.start), snippet.text))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_else(|_| transcript_json.to_string())
+}
+
+fn format_timestamp(seconds: f64) -> String {
+    let total = seconds.max(0.0).floor() as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("[{h}:{m:02}:{s:02}]")
+    } else {
+        format!("[{m:02}:{s:02}]")
+    }
+}
+
 fn is_asr(track: &Value) -> bool {
     track.get("kind").and_then(Value::as_str) == Some("asr")
 }
@@ -575,6 +599,43 @@ mod tests {
         assert!(language_matches(Some("de-DE"), "de"));
         assert!(language_matches(Some("en"), "en"));
         assert!(!language_matches(Some("pt-BR"), "de"));
+    }
+
+    #[test]
+    fn timestamp_format_uses_mmss_and_hmmss() {
+        assert_eq!(format_timestamp(0.0), "[00:00]");
+        assert_eq!(format_timestamp(5.9), "[00:05]");
+        assert_eq!(format_timestamp(65.0), "[01:05]");
+        assert_eq!(format_timestamp(3599.9), "[59:59]");
+        assert_eq!(format_timestamp(3600.0), "[1:00:00]");
+        assert_eq!(format_timestamp(3661.0), "[1:01:01]");
+        assert_eq!(format_timestamp(36000.0), "[10:00:00]");
+    }
+
+    #[test]
+    fn transcript_with_timestamps_prefixes_each_snippet() {
+        let json = serde_json::to_string(&vec![
+            TranscriptSnippet {
+                text: "Hello".into(),
+                start: 0.4,
+                time: "0:00".into(),
+            },
+            TranscriptSnippet {
+                text: "Later".into(),
+                start: 3723.0,
+                time: "1:02:03".into(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            transcript_to_text_with_timestamps(&json),
+            "[00:00] Hello\n[1:02:03] Later"
+        );
+    }
+
+    #[test]
+    fn transcript_with_timestamps_falls_back_to_raw_on_invalid_json() {
+        assert_eq!(transcript_to_text_with_timestamps("not json"), "not json");
     }
 
     #[tokio::test]

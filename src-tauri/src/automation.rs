@@ -22,6 +22,8 @@ struct SummarizeRequest {
     system_prompt: Option<String>,
     provider_id: Option<String>,
     model_id: Option<String>,
+    timestamps: Option<bool>,
+    options: Option<String>,
 }
 
 pub fn start(paths: AppPaths) {
@@ -196,6 +198,8 @@ fn route(
                     request.system_prompt.unwrap_or_default(),
                     request.provider_id,
                     request.model_id,
+                    request.timestamps,
+                    request.options,
                     |_| {},
                 )),
             )

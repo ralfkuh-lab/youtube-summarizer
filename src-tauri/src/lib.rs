@@ -4,6 +4,7 @@ mod automation;
 mod commands;
 mod models;
 mod storage;
+mod summary_presets;
 mod youtube;
 
 use std::fs;
@@ -84,7 +85,12 @@ pub fn run() {
             commands::add_video,
             commands::refresh_transcript,
             commands::summarize_video,
-            commands::delete_video
+            commands::delete_video,
+            commands::summary_presets_list,
+            commands::summary_preset_save,
+            commands::summary_preset_delete,
+            commands::get_summaries,
+            commands::delete_summary
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
