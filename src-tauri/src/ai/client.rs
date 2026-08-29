@@ -167,7 +167,7 @@ pub async fn chat_stream_cancellable(
     let response = request
         .send()
         .await
-        .map_err(|error| ChatError::Request(error.to_string()))?;
+        .map_err(|error| ChatError::Request(error_chain(&error)))?;
     let status = response.status();
     let content_type = response
         .headers()
@@ -180,7 +180,7 @@ pub async fn chat_stream_cancellable(
         let body = response
             .text()
             .await
-            .map_err(|error| ChatError::ResponseRead(error.to_string()))?;
+            .map_err(|error| ChatError::ResponseRead(error_chain(&error)))?;
         return Err(ChatError::Http {
             status,
             message: provider_error_message(&body, api_key),
@@ -191,7 +191,7 @@ pub async fn chat_stream_cancellable(
         let body = response
             .text()
             .await
-            .map_err(|error| ChatError::ResponseRead(error.to_string()))?;
+            .map_err(|error| ChatError::ResponseRead(error_chain(&error)))?;
         let text = parse_chat_response(&body)?;
         on_delta(&text);
         return Ok(text);
@@ -219,7 +219,7 @@ pub async fn chat_stream_cancellable(
         let Some(chunk) = next else {
             break;
         };
-        let chunk = chunk.map_err(|error| ChatError::ResponseRead(error.to_string()))?;
+        let chunk = chunk.map_err(|error| ChatError::ResponseRead(error_chain(&error)))?;
         chunk_wait_started = Instant::now();
         for event in decoder.push(&chunk)? {
             if is_cancelled() {
@@ -296,6 +296,23 @@ fn parse_chat_response(body: &str) -> Result<String, ChatError> {
     Some(choice.message.content)
         .filter(|content| !content.trim().is_empty())
         .ok_or_else(|| ChatError::MissingChoice)
+}
+
+/// reqwest zeigt in Display nur die oberste Ebene ("error decoding response
+/// body"); die eigentliche Ursache (z. B. ein Timeout) steckt in der
+/// source-Kette und gehört mit in die Meldung.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !message.contains(&cause_text) {
+            message.push_str(": ");
+            message.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    message
 }
 
 fn provider_error_message(body: &str, api_key: Option<&str>) -> String {
@@ -396,6 +413,164 @@ mod tests {
             parse_chat_response(r#"{"choices":[{"message":{"content":"  "}}]}"#),
             Err(ChatError::MissingChoice)
         ));
+    }
+
+    /// Reproduziert den Praxisfall: Ein Client-Total-Timeout mitten im
+    /// SSE-Stream erscheint bei reqwest nur als "error decoding response
+    /// body" - die Meldung muss die Timeout-Ursache mitnennen.
+    #[tokio::test]
+    async fn stream_abort_by_client_timeout_names_the_cause() {
+        use std::io::{BufRead as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            let payload: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", payload.len()).as_bytes())
+                .unwrap();
+            stream.write_all(payload).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+            // Stream offen halten, bis der Client per Timeout abbricht.
+            std::thread::sleep(Duration::from_millis(1500));
+        });
+
+        let http = Client::builder()
+            .timeout(Duration::from_millis(400))
+            .build()
+            .unwrap();
+        let error = chat_stream(
+            &http,
+            &format!("http://{addr}/v1"),
+            None,
+            "test-model",
+            &[ChatMessage::user("hi")],
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+
+        let ChatError::ResponseRead(message) = error else {
+            panic!("unerwarteter Fehler: {error:?}");
+        };
+        assert!(
+            message.contains("error decoding response body"),
+            "{message}"
+        );
+        assert!(message.to_lowercase().contains("timed out"), "{message}");
+    }
+
+    /// Beweist: connect_timeout + read_timeout ohne Gesamt-Timeout lassen
+    /// einen Stream durch, dessen Gesamtdauer den read_timeout uebersteigt,
+    /// solange die Luecken zwischen Chunks darunter bleiben (wie in lib.rs).
+    #[tokio::test]
+    async fn stream_completes_when_total_duration_exceeds_read_timeout() {
+        use std::io::{BufRead as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let parts = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"];
+        let expected = parts.concat();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            for part in parts {
+                let payload =
+                    format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{part}\"}}}}]}}\n\n");
+                let payload = payload.into_bytes();
+                stream
+                    .write_all(format!("{:x}\r\n", payload.len()).as_bytes())
+                    .unwrap();
+                stream.write_all(&payload).unwrap();
+                stream.write_all(b"\r\n").unwrap();
+                stream.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            let done: &[u8] = b"data: [DONE]\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", done.len()).as_bytes())
+                .unwrap();
+            stream.write_all(done).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.write_all(b"0\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let http = Client::builder()
+            .connect_timeout(Duration::from_millis(400))
+            .read_timeout(Duration::from_millis(400))
+            .build()
+            .unwrap();
+        let text = chat_stream(
+            &http,
+            &format!("http://{addr}/v1"),
+            None,
+            "test-model",
+            &[ChatMessage::user("hi")],
+            |_| {},
+        )
+        .await
+        .expect("stream should complete without a total timeout");
+        server.join().unwrap();
+        assert_eq!(expected, text);
+    }
+
+    #[test]
+    fn error_chain_appends_sources_without_duplicates() {
+        #[derive(Debug)]
+        struct Wrapper(std::io::Error);
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "error decoding response body")
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let wrapped = Wrapper(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "operation timed out",
+        ));
+        assert_eq!(
+            "error decoding response body: operation timed out",
+            error_chain(&wrapped)
+        );
+
+        let plain = std::io::Error::new(std::io::ErrorKind::Other, "nur eine Ebene");
+        assert_eq!("nur eine Ebene", error_chain(&plain));
     }
 
     #[test]

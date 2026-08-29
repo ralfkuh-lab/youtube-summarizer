@@ -179,9 +179,12 @@ fn route(
             let request = parse_body::<SummarizeRequest>(body)?;
             let runtime = tokio::runtime::Runtime::new()
                 .map_err(|err| format!("Runtime konnte nicht erstellt werden: {err}"))?;
+            // Wie der verwaltete AI-Client in lib.rs: kein Total-Timeout,
+            // sonst reisst ein langer Summarize-Stream mitten im Body ab.
             let http = reqwest::Client::builder()
                 .user_agent("Mozilla/5.0 YouTubeSummarizer/0.1")
-                .timeout(std::time::Duration::from_secs(300))
+                .connect_timeout(std::time::Duration::from_secs(20))
+                .read_timeout(std::time::Duration::from_secs(60))
                 .build()
                 .map_err(|err| format!("HTTP-Client konnte nicht erstellt werden: {err}"))?;
             write_result(

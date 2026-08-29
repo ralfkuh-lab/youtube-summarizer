@@ -35,9 +35,12 @@ pub fn run() {
             crate::commands::ensure_migrated(&paths);
 
             // AI state: config service + auth store (0600) + shared HTTP client for catalog/chat
+            // Kein Total-Timeout: Zusammenfassungen streamen oft laenger als
+            // eine Minute; Hänger fangen connect_timeout/read_timeout ab.
             let ai_http: reqwest::Client = reqwest::Client::builder()
                 .user_agent("Mozilla/5.0 YouTubeSummarizer/0.1")
-                .timeout(std::time::Duration::from_secs(60))
+                .connect_timeout(std::time::Duration::from_secs(20))
+                .read_timeout(std::time::Duration::from_secs(60))
                 .build()
                 .map_err(setup_error)?;
             let ai_config = std::sync::Mutex::new(crate::ai::config::AiConfigService::load(&paths));
