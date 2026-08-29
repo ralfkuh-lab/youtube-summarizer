@@ -126,6 +126,45 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
   The `#tabVideo` grid got a third row for the notice, otherwise the player
   kept sizing against the full panel height and pushed the notice out of view.
 
+- Fixed summaries failing with "KI-Anfrage fehlgeschlagen: KI-Antwort konnte
+  nicht gelesen werden: error decoding response body". Cause: the shared AI
+  HTTP client in `lib.rs` had a 60s *total* request timeout (reqwest's
+  `ClientBuilder::timeout` covers the whole body, including SSE streaming), so
+  any summarize run streaming longer than a minute was cut off mid-stream;
+  reqwest reports that abort only as the generic "error decoding response
+  body" because its Display omits the source chain. Three changes:
+  - `lib.rs`: replaced `.timeout(60s)` with `.connect_timeout(20s)` +
+    `.read_timeout(60s)` (per-read, resets with every chunk) - hangs are still
+    caught, long streams are not. The stream loop in `client.rs` already had
+    its own 60s inter-chunk timeout, so the total timeout was redundant.
+  - `automation.rs`: same change for the automation API's own client (had the
+    same problem with a 300s total timeout).
+  - `client.rs`: reqwest errors now include their source chain via a new
+    `error_chain` helper, so future failures read "error decoding response
+    body: operation timed out" instead of hiding the cause.
+  A new `#[tokio::test]` (`stream_abort_by_client_timeout_names_the_cause`)
+  reproduces the field failure against a local mock SSE server: a client total
+  timeout mid-stream yields exactly the user's error text, now with the
+  timeout cause appended. A second test
+  (`stream_completes_when_total_duration_exceeds_read_timeout`) guards the fix
+  itself: a steady stream whose total duration exceeds the read timeout must
+  complete — it would fail if anyone reintroduced a total timeout.
+- Added live streaming of the summary into the UI (grok implementation after
+  spec, cross-reviewed by codex + agy, follows folio's translation-streaming
+  pattern): `summarize_video` gets an `AppHandle` and emits the throttled
+  (150 ms) event `ai:summarize_stream` `{videoId, text, chars}` from the
+  existing `on_delta` callback (`summarize_video_impl` now takes
+  `on_delta: impl FnMut(&str)`; automation API passes a no-op and is
+  unchanged). The frontend switches to the summary tab on start, shows a
+  placeholder, listens for the event and renders the accumulated Markdown
+  live; `unlisten` in `finally`. Review fixes included: success only calls
+  `showDetail`/`switchTab` when the summarized video is still the active one
+  (the `videos` array and the sidebar list are always updated, fixing the
+  stale "Z" status chip); the error path restores the previous summary view
+  instead of leaving the placeholder or an unsaved partial text; the delete
+  button is disabled while busy and `deleteActiveVideo` guards against `busy`
+  (previously a running summarize could end in "Video nicht gefunden").
+
 ## Next TODOs
 
 - Collections/playlists roadmap:
@@ -158,7 +197,7 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 - Add release checklist once app behavior stabilizes.
 - Review whether automation API responses should return compact video objects to avoid huge payloads from thumbnails/transcripts.
 - Backlog: AI provider config reuse/refactor beyond this app. Resolved differently on 2026-07-09: instead of extracting a shared crate, folio's newer implementation was ported back into this app (see `docs/spec-ai-port.md`); `docs/ai-config-refactor.md` is historical context only.
-- Follow-ups from the folio AI port: optional UI streaming of summaries (client already streams via SSE), vitest/jsdom setup for the settings UI like folio, richer catalog metadata display (pricing links, context limits).
+- Follow-ups from the folio AI port: vitest/jsdom setup for the settings UI like folio, richer catalog metadata display (pricing links, context limits). (UI streaming of summaries shipped 2026-08-29.)
 
 ## Known Notes
 
@@ -169,6 +208,30 @@ The app is now focused on the Tauri 2 implementation with a TypeScript frontend 
 
 ## Last Verified State
 
+- Date: 2026-08-29 (streaming timeout fix + live summary streaming)
+- Live summary streaming: `cargo fmt --check`, `cargo test` (48 passed, 1
+  network test ignored) and `npm run build` green after the review-fix round.
+  Cross-review: codex (backend focus) and agy (frontend focus) each confirmed
+  the timeout fix's reqwest semantics and found five valid issues between them
+  (view desync on video switch during a run, error path leaving the
+  placeholder/partial text, unguarded delete during busy, stale status chip,
+  timeout test not guarding the actual fix) — all fixed. NOT verified live in
+  the running app yet: the streamed rendering needs a real summarize run in
+  the UI (the automation API bypasses the webview events).
+- `cargo fmt`, `cargo test` (47 passed incl. the new timeout-reproduction test,
+  1 network test ignored) and `npm run build` green. Live automation test
+  against the dev app: `POST /api/summarize/115` (the video the user's failure
+  occurred on) produced a real 2.8k summary via OpenRouter
+  `z-ai/glm-5.3-flash` in 21s. Note: that run finished under the old 60s limit
+  anyway, so the hard proof of the diagnosis is the new mock-server test, which
+  reproduces the exact user-visible error from a total timeout mid-stream.
+  `npm run tauri -- build` green incl. all three bundles (deb/rpm/AppImage -
+  the AppImage step succeeded this time); root symlinks point at the fresh
+  artifacts. Installing is pending on the user's side (`sudo dpkg -i
+  youtube-summarizer.deb`) - the app is installed as a deb package now, the
+  old `~/.local/bin` copy described in AGENTS.md no longer existed; AGENTS.md
+  updated accordingly. No dev server or Tauri process left running. Not
+  committed.
 - Date: 2026-08-26 (codec notice + package recommends)
 - Confirmed on the maintainer's machine: after installing the GStreamer plugins
   the embedded YouTube player works. The missing decoders were the whole cause -

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -542,7 +543,7 @@ async function selectVideo(id: number) {
 }
 
 async function deleteActiveVideo() {
-  if (activeVideoId === null) return;
+  if (activeVideoId === null || busy) return;
   if (!(await confirmDialog("Video wirklich löschen?", { title: "Video löschen", okLabel: "Löschen" }))) return;
   const id = activeVideoId;
   setBusy(true, "Video wird gelöscht...");
@@ -653,22 +654,47 @@ async function startSummary() {
 
   saveSummarySettings();
   const [providerId, modelId] = parseModelValue($<HTMLSelectElement>("#summaryModel").value);
+  const videoId = video.id;
   setBusy(true, "Zusammenfassung wird erstellt...");
   hideModal("#summaryModal");
+  switchTab("summary");
+  $("#tabSummary").innerHTML = '<p class="empty">Zusammenfassung wird erstellt…</p>';
+
+  let unlisten: (() => void) | undefined;
   try {
+    unlisten = await listen<{ videoId: number; text: string; chars: number }>(
+      "ai:summarize_stream",
+      (event) => {
+        if (event.payload.videoId !== videoId) return;
+        const active = getActiveVideo();
+        if (!active || active.id !== videoId) return;
+        $("#tabSummary").innerHTML = markdownToHtml(event.payload.text);
+        setStatus(`Zusammenfassung läuft – ${event.payload.chars} Zeichen`);
+      },
+    );
     const updated = await invoke<Video>("summarize_video", {
-      id: video.id,
+      id: videoId,
       systemPrompt: $<HTMLTextAreaElement>("#summaryPrompt").value.trim(),
       providerId,
       modelId,
     });
     videos = videos.map((item) => (item.id === updated.id ? updated : item));
-    showDetail(updated);
-    switchTab("summary");
+    renderVideoList();
+    if (getActiveVideo()?.id === videoId) {
+      showDetail(updated);
+      switchTab("summary");
+    }
     setStatus("Zusammenfassung fertig");
   } catch (error) {
+    if (getActiveVideo()?.id === videoId) {
+      const current = videos.find((item) => item.id === videoId);
+      if (current) {
+        showDetail(current);
+      }
+    }
     setStatus(errorMessage(error));
   } finally {
+    unlisten?.();
     setBusy(false);
   }
 }
@@ -1135,6 +1161,7 @@ function setBusy(value: boolean, message?: string) {
   $<HTMLButtonElement>("#addBtn").disabled = value;
   $<HTMLButtonElement>("#summarizeBtn").disabled = value;
   $<HTMLButtonElement>("#reloadTranscriptBtn").disabled = value;
+  $<HTMLButtonElement>("#deleteBtn").disabled = value;
   document.querySelectorAll<HTMLButtonElement>(".collection-action, #addCollectionBtn, #collectionSave").forEach((button) => {
     button.disabled = value;
   });

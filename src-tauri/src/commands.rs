@@ -1,6 +1,7 @@
 use reqwest::Client;
 use std::collections::BTreeMap;
-use tauri::State;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::ai::auth::AuthStore;
 use crate::ai::catalog::{self as ai_catalog, CatalogResult};
@@ -699,6 +700,7 @@ pub async fn refresh_transcript_impl(paths: &AppPaths, id: i64) -> AppResult<Vid
 
 #[tauri::command]
 pub async fn summarize_video(
+    app: AppHandle,
     paths: State<'_, AppPaths>,
     id: i64,
     system_prompt: String,
@@ -706,7 +708,39 @@ pub async fn summarize_video(
     model_id: Option<String>,
     http: State<'_, reqwest::Client>,
 ) -> AppResult<Video> {
-    summarize_video_impl(&paths, &http, id, system_prompt, provider_id, model_id).await
+    let mut last_emit = None;
+    let mut emit_error_logged = false;
+    summarize_video_impl(
+        &paths,
+        &http,
+        id,
+        system_prompt,
+        provider_id,
+        model_id,
+        |accumulated| {
+            let now = Instant::now();
+            if last_emit
+                .is_some_and(|last: Instant| now.duration_since(last) < Duration::from_millis(150))
+            {
+                return;
+            }
+            last_emit = Some(now);
+            if let Err(error) = app.emit(
+                "ai:summarize_stream",
+                serde_json::json!({
+                    "videoId": id,
+                    "text": accumulated,
+                    "chars": accumulated.chars().count(),
+                }),
+            ) {
+                if !emit_error_logged {
+                    eprintln!("ai:summarize_stream emit failed: {error}");
+                    emit_error_logged = true;
+                }
+            }
+        },
+    )
+    .await
 }
 
 pub async fn summarize_video_impl(
@@ -716,6 +750,7 @@ pub async fn summarize_video_impl(
     system_prompt: String,
     provider_id: Option<String>,
     model_id: Option<String>,
+    on_delta: impl FnMut(&str),
 ) -> AppResult<Video> {
     let video = storage::get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())?;
     let transcript = video
@@ -771,7 +806,7 @@ pub async fn summarize_video_impl(
         key.as_deref(),
         &selected.model,
         &messages,
-        |_| {},
+        on_delta,
     )
     .await
     .map_err(|e| format!("KI-Anfrage fehlgeschlagen: {}", e))?;

@@ -196,6 +196,7 @@ fn route(
                     request.system_prompt.unwrap_or_default(),
                     request.provider_id,
                     request.model_id,
+                    |_| {},
                 )),
             )
         }
