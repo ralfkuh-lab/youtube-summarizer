@@ -42,6 +42,7 @@ type Video = {
   summary_provider?: string | null;
   summary_model?: string | null;
   published_at?: string | null;
+  description?: string | null;
   collection_ids: number[];
   created_at: string;
   updated_at: string;
@@ -80,6 +81,7 @@ type SummaryModules = {
   assessment: boolean;
   verify: boolean;
   timestamps: boolean;
+  links: boolean;
 };
 
 let videos: Video[] = [];
@@ -156,6 +158,10 @@ app.innerHTML = `
             <a id="detailUrl" href="#" target="_blank" rel="noreferrer"></a>
             <span id="detailPublishedMeta" class="detail-summary-meta" hidden></span>
             <span id="detailSummaryMeta" class="detail-summary-meta" hidden></span>
+            <details id="detailDescription" class="detail-description" hidden>
+              <summary>Beschreibung</summary>
+              <div id="detailDescriptionText"></div>
+            </details>
           </div>
           <button id="deleteBtn" class="delete-icon-btn" title="Video entfernen" aria-label="Video entfernen">🗑</button>
         </div>
@@ -332,6 +338,10 @@ app.innerHTML = `
           <input type="checkbox" id="summaryModTimestamps" />
           Timestamps [mm:ss] zu den Abschnitten
         </label>
+        <label class="summary-module">
+          <input type="checkbox" id="summaryModLinks" />
+          Hilfreiche Links aus der Beschreibung als „Ressourcen"
+        </label>
       </fieldset>
       <details id="summaryPromptDetails" class="summary-prompt-details">
         <summary>
@@ -495,6 +505,7 @@ function bindEvents() {
     "#summaryModAssessment",
     "#summaryModVerify",
     "#summaryModTimestamps",
+    "#summaryModLinks",
   ].forEach((selector) => {
     $(selector).addEventListener("change", recomposeSummaryPrompt);
   });
@@ -552,6 +563,18 @@ function bindEvents() {
     if (!(target instanceof Element)) return;
     const link = target.closest<HTMLElement>("[data-seek]");
     if (!link || !$("#tabSummary").contains(link)) return;
+    event.preventDefault();
+    const seconds = Number(link.dataset.seek);
+    if (!Number.isNaN(seconds)) {
+      seekVideo(seconds);
+    }
+  });
+
+  $("#detailDescriptionText").addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const link = target.closest<HTMLElement>("[data-seek]");
+    if (!link) return;
     event.preventDefault();
     const seconds = Number(link.dataset.seek);
     if (!Number.isNaN(seconds)) {
@@ -777,6 +800,7 @@ const DEFAULT_SUMMARY_MODULES: SummaryModules = {
   assessment: false,
   verify: false,
   timestamps: false,
+  links: false,
 };
 
 type SummarySettings = {
@@ -811,6 +835,7 @@ function parseSummaryModules(value: unknown): SummaryModules {
     assessment: coerceBool(raw.assessment, DEFAULT_SUMMARY_MODULES.assessment),
     verify: coerceBool(raw.verify, DEFAULT_SUMMARY_MODULES.verify),
     timestamps: coerceBool(raw.timestamps, DEFAULT_SUMMARY_MODULES.timestamps),
+    links: coerceBool(raw.links, DEFAULT_SUMMARY_MODULES.links),
   };
 }
 
@@ -842,6 +867,7 @@ function readSummaryModules(): SummaryModules {
     assessment: $<HTMLInputElement>("#summaryModAssessment").checked,
     verify: $<HTMLInputElement>("#summaryModVerify").checked,
     timestamps: $<HTMLInputElement>("#summaryModTimestamps").checked,
+    links: $<HTMLInputElement>("#summaryModLinks").checked,
   };
 }
 
@@ -863,6 +889,7 @@ function applySummarySettings(settings: SummarySettings) {
   $<HTMLInputElement>("#summaryModAssessment").checked = settings.modules.assessment;
   $<HTMLInputElement>("#summaryModVerify").checked = settings.modules.verify;
   $<HTMLInputElement>("#summaryModTimestamps").checked = settings.modules.timestamps;
+  $<HTMLInputElement>("#summaryModLinks").checked = settings.modules.links;
 }
 
 function loadSummarySettings(): SummarySettings {
@@ -1185,6 +1212,40 @@ function renderVideoStatusChip(label: string, available: boolean, title: string)
   return `<span class="status-chip${stateClass}" title="${title} ${status}">${label}</span>`;
 }
 
+// Escapes the description and turns plain http(s) URLs into clickable links;
+// timestamps outside of URLs become video seek links.
+function renderDescriptionHtml(raw: string): string {
+  const urlPattern = /https?:\/\/[^\s<>"')\]]+/g;
+  let html = "";
+  let last = 0;
+  for (const match of raw.matchAll(urlPattern)) {
+    const url = match[0];
+    html += renderDescriptionTextFragment(raw.slice(last, match.index));
+    html += `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`;
+    last = match.index + url.length;
+  }
+  html += renderDescriptionTextFragment(raw.slice(last));
+  return html;
+}
+
+// Escapes a URL-free description fragment and links timestamps (1:23, 1:02:03)
+// as data-seek jumps into the video tab.
+function renderDescriptionTextFragment(raw: string): string {
+  const timestampPattern = /(^|[^\d:])((?:\d{1,2}:)?\d{1,2}:\d{2})(?![\d:])/gm;
+  let html = "";
+  let last = 0;
+  for (const match of raw.matchAll(timestampPattern)) {
+    const stamp = match[2];
+    const stampIndex = match.index + match[1].length;
+    const seconds = stamp.split(":").reduce((total, part) => total * 60 + Number(part), 0);
+    html += escapeHtml(raw.slice(last, stampIndex));
+    html += `<a href="#" data-seek="${seconds}">${escapeHtml(stamp)}</a>`;
+    last = stampIndex + stamp.length;
+  }
+  html += escapeHtml(raw.slice(last));
+  return html;
+}
+
 function showDetail(video: Video) {
   detailPlaceholder.hidden = true;
   detailContent.hidden = false;
@@ -1205,12 +1266,26 @@ function showDetail(video: Video) {
     video.summary ? video.summary_provider : null,
     video.summary ? video.summary_model : null,
   );
+  const descriptionDetails = $<HTMLDetailsElement>("#detailDescription");
+  const descriptionText = $("#detailDescriptionText");
+  descriptionDetails.open = false;
+  if (video.description?.trim()) {
+    descriptionText.innerHTML = renderDescriptionHtml(video.description);
+    descriptionDetails.hidden = false;
+  } else {
+    descriptionText.textContent = "";
+    descriptionDetails.hidden = true;
+  }
   const videoFallbackLink = $<HTMLAnchorElement>("#videoFallbackLink");
   videoFallbackLink.href = video.url;
   $("#tabTranscript").innerHTML = renderTranscript(video.transcript, video.chapters);
   void renderSummaryTab(video);
   $<HTMLIFrameElement>("#videoPlayer").src = buildYouTubeEmbedUrl(video.video_id);
-  $<HTMLButtonElement>("#reloadTranscriptBtn").hidden = !!video.transcript;
+  const reloadBtn = $<HTMLButtonElement>("#reloadTranscriptBtn");
+  reloadBtn.textContent = video.transcript ? "Neu laden" : "Transkript laden";
+  reloadBtn.title = video.transcript
+    ? "Transkript, Kapitel und Beschreibung neu von YouTube laden"
+    : "";
   renderVideoCollections(video);
   renderChapters(video.chapters);
   switchTab(activeTab);
@@ -1378,7 +1453,14 @@ const LANGUAGE_NAMES: Record<string, string> = {
   italian: "Italian",
 };
 
-const MODULE_PROMPT_ORDER = ["tables", "mermaid", "assessment", "verify", "timestamps"] as const;
+const MODULE_PROMPT_ORDER = [
+  "tables",
+  "mermaid",
+  "assessment",
+  "verify",
+  "timestamps",
+  "links",
+] as const;
 
 const MODULE_PROMPTS: Record<(typeof MODULE_PROMPT_ORDER)[number], string> = {
   tables:
@@ -1391,6 +1473,8 @@ const MODULE_PROMPTS: Record<(typeof MODULE_PROMPT_ORDER)[number], string> = {
     "Critically check the video's central claims against your own knowledge: explicitly flag statements that are outdated, disputed or likely wrong, and briefly say why.",
   timestamps:
     "Prefix each major section or key point with the timestamp [mm:ss] of the transcript passage it is based on. Use exactly the bracketed format [mm:ss] or [h:mm:ss].",
+  links:
+    "If the video description contains helpful links (documentation, tools, sources, mentioned projects), end the summary with a section titled 'Ressourcen' (in the summary language) listing them as Markdown links with a short label each. Skip sponsor, affiliate, social media and channel self-promotion links. Omit the section entirely if no helpful links exist.",
 };
 
 function detailParagraph(detail: string): string {

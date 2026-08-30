@@ -12,7 +12,7 @@ pub type AppResult<T> = Result<T, String>;
 const VIDEO_COLUMNS: &str = r#"
     id, video_id, url, title, thumbnail_url, thumbnail_data,
     transcript, chapters, summary, summary_provider, summary_model,
-    published_at, created_at, updated_at
+    published_at, description, created_at, updated_at
 "#;
 
 #[derive(Debug, Clone)]
@@ -46,6 +46,7 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
             summary_provider TEXT,
             summary_model TEXT,
             published_at TEXT,
+            description TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -88,7 +89,25 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
         "#,
     )
     .map_err(|err| format!("Datenbank konnte nicht initialisiert werden: {err}"))?;
+    ensure_video_column(&conn, "description", "TEXT")?;
     backfill_legacy_summaries(&conn)?;
+    Ok(())
+}
+
+/// Adds a column to an existing videos table; CREATE TABLE IF NOT EXISTS
+/// only covers fresh databases.
+fn ensure_video_column(conn: &Connection, name: &str, column_type: &str) -> AppResult<()> {
+    let exists = conn
+        .prepare("SELECT 1 FROM pragma_table_info('videos') WHERE name = ?1")
+        .and_then(|mut stmt| stmt.exists(params![name]))
+        .map_err(|err| format!("Videotabelle konnte nicht geprüft werden: {err}"))?;
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE videos ADD COLUMN {name} {column_type}"),
+            [],
+        )
+        .map_err(|err| format!("Spalte {name} konnte nicht ergänzt werden: {err}"))?;
+    }
     Ok(())
 }
 
@@ -133,9 +152,9 @@ pub fn insert_video(paths: &AppPaths, video: NewVideo) -> AppResult<Video> {
         r#"
         INSERT INTO videos (
             video_id, url, title, thumbnail_url, thumbnail_data,
-            transcript, chapters, summary, created_at, updated_at, published_at
+            transcript, chapters, summary, created_at, updated_at, published_at, description
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9, ?10)
         "#,
         params![
             video.video_id,
@@ -147,6 +166,7 @@ pub fn insert_video(paths: &AppPaths, video: NewVideo) -> AppResult<Video> {
             video.chapters,
             now,
             video.published_at,
+            video.description,
         ],
     )
     .map_err(|err| format!("Video konnte nicht gespeichert werden: {err}"))?;
@@ -314,12 +334,13 @@ pub fn update_transcript(
     id: i64,
     transcript: &str,
     chapters: Option<&str>,
+    description: Option<&str>,
 ) -> AppResult<Video> {
     let conn = open_db(paths)?;
     let now = Utc::now().to_rfc3339();
     conn.execute(
-        "UPDATE videos SET transcript = ?1, chapters = ?2, updated_at = ?3 WHERE id = ?4",
-        params![transcript, chapters, now, id],
+        "UPDATE videos SET transcript = ?1, chapters = ?2, description = ?3, updated_at = ?4 WHERE id = ?5",
+        params![transcript, chapters, description, now, id],
     )
     .map_err(|err| format!("Transkript konnte nicht gespeichert werden: {err}"))?;
     get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())
@@ -511,6 +532,7 @@ fn row_to_video(row: &Row<'_>) -> rusqlite::Result<Video> {
         summary_provider: row.get("summary_provider")?,
         summary_model: row.get("summary_model")?,
         published_at: row.get("published_at")?,
+        description: row.get("description")?,
         collection_ids: Vec::new(),
     })
 }
@@ -588,6 +610,7 @@ mod tests {
             transcript: Some(r#"[{"text":"hi","start":0.0,"time":"0:00"}]"#.into()),
             chapters: None,
             published_at: None,
+            description: None,
         }
     }
 

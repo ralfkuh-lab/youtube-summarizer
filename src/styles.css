@@ -576,6 +576,50 @@ main {
   font-size: 11px;
 }
 
+.detail-description {
+  margin-top: 6px;
+}
+
+.detail-description > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.detail-description > summary::-webkit-details-marker,
+.detail-description > summary::marker {
+  display: none;
+  content: "";
+}
+
+.detail-description > summary::before {
+  content: "▸";
+  flex-shrink: 0;
+}
+
+.detail-description[open] > summary::before {
+  content: "▾";
+}
+
+#detailDescriptionText {
+  margin-top: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+#detailDescriptionText a {
+  color: var(--accent);
+}
+
 #tabBar {
   flex-shrink: 0;
   display: flex;
@@ -858,16 +902,31 @@ a.summary-seek {
   padding: 16px;
 }
 
+/* Die Shell füllt die mittlere Grid-Zeile komplett und dient als
+   Size-Container: der Player misst sich per cqw/cqh am tatsächlich
+   verfügbaren Platz statt an einer Viewport-Schätzung. Die Zeilen sind
+   explizit zugewiesen, weil der versteckte Codec-Hinweis kein Grid-Item
+   erzeugt und die Auto-Platzierung sonst verrutscht. */
+.video-codec-notice {
+  grid-row: 1;
+}
+
 .video-player-shell {
-  width: min(100%, calc((100vh - 270px) * 16 / 9));
-  max-width: 100%;
-  max-height: 100%;
-  aspect-ratio: 16 / 9;
+  grid-row: 2;
+  justify-self: stretch;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  container-type: size;
+  display: grid;
+  place-items: center;
 }
 
 #videoPlayer {
-  width: 100%;
-  height: 100%;
+  /* Fallback für Engines ohne Container-Query-Einheiten */
+  width: min(100%, calc((100vh - 270px) * 16 / 9));
+  width: min(100cqw, calc(100cqh * 16 / 9));
+  aspect-ratio: 16 / 9;
   display: block;
   border: none;
   border-radius: var(--radius);
@@ -875,6 +934,7 @@ a.summary-seek {
 }
 
 .video-fallback {
+  grid-row: 3;
   display: flex;
   justify-content: flex-end;
   width: 100%;
@@ -1338,11 +1398,4 @@ select option:hover {
   color: var(--text);
   font-size: 12px;
   user-select: all;
-}
-
-/* Solange der Hinweis steht, braucht er Platz - der Player rechnet seine
-   Groesse sonst weiter gegen die volle Panelhoehe und schiebt ihn aus dem
-   sichtbaren Bereich. */
-#tabVideo.active.has-codec-notice .video-player-shell {
-  width: min(100%, calc((100vh - 400px) * 16 / 9));
 }

@@ -122,6 +122,20 @@ pub async fn fetch_transcript(client: &Client, video_id: &str) -> AppResult<Stri
         .map_err(|err| format!("Transkript konnte nicht serialisiert werden: {err}"))
 }
 
+/// Reads the full video description from the watch HTML's player response.
+pub fn description_from_html(html: &str) -> Option<String> {
+    let data = extract_json_assignment(html, "ytInitialPlayerResponse")?;
+    let description = data
+        .pointer("/videoDetails/shortDescription")
+        .and_then(Value::as_str)?
+        .trim();
+    if description.is_empty() {
+        None
+    } else {
+        Some(description.to_string())
+    }
+}
+
 pub fn chapters_from_html(html: &str) -> Option<String> {
     for var_name in ["ytInitialData", "ytInitialPlayerResponse"] {
         if let Some(data) = extract_json_assignment(html, var_name) {
@@ -636,6 +650,25 @@ mod tests {
     #[test]
     fn transcript_with_timestamps_falls_back_to_raw_on_invalid_json() {
         assert_eq!(transcript_to_text_with_timestamps("not json"), "not json");
+    }
+
+    #[test]
+    fn description_from_html_reads_short_description() {
+        let html = concat!(
+            "<script>var ytInitialPlayerResponse = {\"videoDetails\":",
+            "{\"shortDescription\":\"Zeile 1\\nhttps://example.com\"}};</script>"
+        );
+        assert_eq!(
+            description_from_html(html).as_deref(),
+            Some("Zeile 1\nhttps://example.com")
+        );
+    }
+
+    #[test]
+    fn description_from_html_ignores_missing_or_empty_description() {
+        let empty = "<script>var ytInitialPlayerResponse = {\"videoDetails\":{\"shortDescription\":\"  \"}};</script>";
+        assert_eq!(description_from_html(empty), None);
+        assert_eq!(description_from_html("<html></html>"), None);
     }
 
     #[tokio::test]

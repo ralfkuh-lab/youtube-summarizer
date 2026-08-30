@@ -15,7 +15,18 @@ collections/search/filters, Innertube transcript loading, AI provider/model
 configuration ported from folio, live-streaming summaries, and the extended
 summarize dialog (prompt presets + modules, summary history, Mermaid,
 clickable timestamps, prompt-injection hardening) — spec:
-`docs/spec-summary-dialog.md`.
+`docs/spec-summary-dialog.md`. Since 2026-08-30 the video description is
+stored (`videos.description`, from the watch HTML's player response), shown
+as a collapsible block under the detail title and passed to the summarizer
+as an untrusted DESCRIPTION prompt block. Timestamps in the description are
+seek links into the video tab, and the video player sizes itself against
+the actual panel space via container queries (cqw/cqh; the grid rows are
+explicitly assigned because the hidden codec notice creates no grid item).
+The transcript button is always visible ("Neu laden" once a transcript
+exists) so old videos can backfill chapters and description. A "links"
+module in the summarize dialog asks the model for a 'Ressourcen' section
+built from helpful description links (opt-in, persisted like the other
+modules).
 
 ## Next TODOs
 
@@ -52,11 +63,15 @@ clickable timestamps, prompt-injection hardening) — spec:
 
 ## Last Verified State
 
-- Date: 2026-08-29 (extended summarize dialog)
-- `cargo fmt --check`, `cargo test` (72 passed, 1 network test ignored),
-  `npm run build` and `npm run tauri -- build` (deb/rpm/AppImage) green after
-  the cross-review fix round (9 findings from codex + agy, all fixed).
-  Confirmed live by the maintainer in the installed app: dialog, streaming and
-  the new summary features work. No dev server or Tauri process left running.
+- Date: 2026-08-30 (video description feature + seek links + player sizing)
+- `cargo fmt`, `cargo test` (75 passed, 1 network test ignored) and
+  `npm run build` green. Existing videos get the description only after
+  "Transkript laden" (refresh re-reads the watch HTML); new videos store it
+  on add. Headless UI check (playwright-core + Tauri mock): description
+  block, URL/timestamp links, tab switch with start/autoplay params and
+  player fit/aspect verified via screenshots and bounding boxes. No dev
+  server or Tauri process left running.
+- Previous: 2026-08-29 (extended summarize dialog) — all gates green after
+  the cross-review fix round, confirmed live by the maintainer.
 - Older verified states were trimmed 2026-08-29; see the git history of this
   file if needed.

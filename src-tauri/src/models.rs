@@ -28,6 +28,7 @@ pub struct Video {
     pub summary_provider: Option<String>,
     pub summary_model: Option<String>,
     pub published_at: Option<String>,
+    pub description: Option<String>,
     pub collection_ids: Vec<i64>,
     pub created_at: String,
     pub updated_at: String,
@@ -63,6 +64,7 @@ pub struct NewVideo {
     pub transcript: Option<String>,
     pub chapters: Option<String>,
     pub published_at: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone)]
