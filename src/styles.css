@@ -739,6 +739,41 @@ a.summary-seek {
   font-style: italic;
 }
 
+.transcript-error {
+  background: var(--panel-2);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.transcript-error p {
+  margin: 0 0 8px;
+  line-height: 1.4;
+}
+
+.transcript-error p:last-child {
+  margin-bottom: 0;
+}
+
+.transcript-error-title {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.transcript-error-message {
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.transcript-error-hint {
+  color: var(--text);
+}
+
+.transcript-error-retry {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .ts-line {
   display: flex;
   gap: 8px;
@@ -958,6 +993,11 @@ footer {
   background: var(--panel);
   color: var(--muted);
   font-size: 11px;
+}
+
+#statusText {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .modal {

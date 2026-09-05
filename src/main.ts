@@ -46,6 +46,7 @@ type Video = {
   collection_ids: number[];
   created_at: string;
   updated_at: string;
+  transcript_error?: string | null;
 };
 
 type Collection = {
@@ -703,7 +704,13 @@ async function addVideo() {
     input.value = "";
     renderVideoList();
     await selectVideo(video.id);
-    setStatus(video.transcript ? "Video hinzugefügt und Transkript geladen" : "Video hinzugefügt, aber kein Transkript gefunden");
+    if (video.transcript) {
+      setStatus("Video hinzugefügt und Transkript geladen");
+    } else if (video.transcript_error) {
+      setStatus(`Video hinzugefügt, Transkript fehlgeschlagen: ${video.transcript_error}`);
+    } else {
+      setStatus("Video hinzugefügt, aber kein Transkript gefunden");
+    }
   } catch (error) {
     setStatus(errorMessage(error));
   } finally {
@@ -754,10 +761,22 @@ async function refreshActiveTranscript() {
     const updated = await invoke<Video>("refresh_transcript", { id: video.id });
     videos = videos.map((item) => (item.id === updated.id ? updated : item));
     showDetail(updated);
+    renderVideoList();
     switchTab("transcript");
     setStatus("Transkript geladen");
   } catch (error) {
-    setStatus(errorMessage(error));
+    const message = errorMessage(error);
+    try {
+      const reloaded = await invoke<Video>("get_video_detail", { id: video.id });
+      videos = videos.map((item) => (item.id === reloaded.id ? reloaded : item));
+      renderVideoList();
+      if (activeVideoId === video.id) {
+        showDetail(reloaded);
+      }
+    } catch {
+      // Schlägt das Nachladen fehl, wird es ignoriert
+    }
+    setStatus(message);
   } finally {
     setBusy(false);
   }
@@ -768,7 +787,7 @@ async function openSummaryDialog() {
   const video = getActiveVideo();
   if (!video) return;
   if (!video.transcript) {
-    setStatus("Kein Transkript vorhanden - bitte Video neu hinzufügen");
+    setStatus("Kein Transkript vorhanden – bitte „Transkript laden“ versuchen");
     return;
   }
   const saved = loadSummarySettings();
@@ -1147,7 +1166,7 @@ function renderVideoList() {
           <span class="info">
             <span class="title">${escapeHtml(video.title)}</span>
             <span class="meta">
-              ${renderVideoStatusChip("T", !!video.transcript, "Transkript")}
+              ${renderVideoStatusChip("T", !!video.transcript, "Transkript", video.transcript_error)}
               ${renderVideoStatusChip("Z", !!video.summary, "Zusammenfassung")}
             </span>
           </span>
@@ -1206,10 +1225,10 @@ function matchesVideoSearch(video: Video, normalizedQuery: string): boolean {
     .some((value) => normalizeSearch(value).includes(normalizedQuery));
 }
 
-function renderVideoStatusChip(label: string, available: boolean, title: string): string {
+function renderVideoStatusChip(label: string, available: boolean, title: string, detail?: string | null): string {
   const stateClass = available ? " available" : "";
-  const status = available ? "vorhanden" : "fehlt";
-  return `<span class="status-chip${stateClass}" title="${title} ${status}">${label}</span>`;
+  const titleText = !available && detail ? `${title} fehlt: ${detail}` : `${title} ${available ? "vorhanden" : "fehlt"}`;
+  return `<span class="status-chip${stateClass}" title="${escapeHtml(titleText)}">${label}</span>`;
 }
 
 // Escapes the description and turns plain http(s) URLs into clickable links;
@@ -1278,7 +1297,7 @@ function showDetail(video: Video) {
   }
   const videoFallbackLink = $<HTMLAnchorElement>("#videoFallbackLink");
   videoFallbackLink.href = video.url;
-  $("#tabTranscript").innerHTML = renderTranscript(video.transcript, video.chapters);
+  $("#tabTranscript").innerHTML = renderTranscript(video.transcript, video.chapters, video.transcript_error);
   void renderSummaryTab(video);
   $<HTMLIFrameElement>("#videoPlayer").src = buildYouTubeEmbedUrl(video.video_id);
   const reloadBtn = $<HTMLButtonElement>("#reloadTranscriptBtn");
@@ -1350,8 +1369,26 @@ async function updateActiveVideoCollections() {
   }
 }
 
-function renderTranscript(raw?: string | null, chapters?: Chapter[] | null): string {
-  if (!raw) return '<p class="empty">Kein Transkript verfügbar</p>';
+function transcriptErrorHint(error: string): string | null {
+  if (error.includes("LOGIN_REQUIRED")) {
+    return 'YouTube verlangt hier eine Anmeldung (Bot-Check). Das passiert typischerweise über bekannte VPN-Ausgangs-IPs, z. B. Mullvad. Abhilfe: die App außerhalb des VPN-Tunnels starten (unter Linux etwa mit mullvad-exclude) und dann „Transkript laden“ klicken.';
+  }
+  return null;
+}
+
+function renderTranscript(raw?: string | null, chapters?: Chapter[] | null, error?: string | null): string {
+  if (!raw) {
+    if (error) {
+      const hint = transcriptErrorHint(error);
+      const hintHtml = hint ? `\n    <p class="transcript-error-hint">${escapeHtml(hint)}</p>` : "";
+      return `<div class="transcript-error">
+    <p class="transcript-error-title">Transkript konnte nicht geladen werden</p>
+    <p class="transcript-error-message">${escapeHtml(error)}</p>${hintHtml}
+    <p class="transcript-error-retry">Erneut versuchen über „Transkript laden“.</p>
+  </div>`;
+    }
+    return '<p class="empty">Kein Transkript verfügbar</p>';
+  }
   let snippets: TranscriptSnippet[];
   try {
     snippets = JSON.parse(raw) as TranscriptSnippet[];

@@ -12,7 +12,7 @@ pub type AppResult<T> = Result<T, String>;
 const VIDEO_COLUMNS: &str = r#"
     id, video_id, url, title, thumbnail_url, thumbnail_data,
     transcript, chapters, summary, summary_provider, summary_model,
-    published_at, description, created_at, updated_at
+    published_at, description, created_at, updated_at, transcript_error
 "#;
 
 #[derive(Debug, Clone)]
@@ -48,7 +48,8 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
             published_at TEXT,
             description TEXT,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            transcript_error TEXT
         );
 
         CREATE TABLE IF NOT EXISTS collections (
@@ -90,6 +91,7 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
     )
     .map_err(|err| format!("Datenbank konnte nicht initialisiert werden: {err}"))?;
     ensure_video_column(&conn, "description", "TEXT")?;
+    ensure_video_column(&conn, "transcript_error", "TEXT")?;
     backfill_legacy_summaries(&conn)?;
     Ok(())
 }
@@ -148,13 +150,19 @@ pub fn video_exists(paths: &AppPaths, video_id: &str) -> AppResult<bool> {
 pub fn insert_video(paths: &AppPaths, video: NewVideo) -> AppResult<Video> {
     let conn = open_db(paths)?;
     let now = Utc::now().to_rfc3339();
+    let transcript_error = if video.transcript.is_some() {
+        None
+    } else {
+        video.transcript_error
+    };
     conn.execute(
         r#"
         INSERT INTO videos (
             video_id, url, title, thumbnail_url, thumbnail_data,
-            transcript, chapters, summary, created_at, updated_at, published_at, description
+            transcript, chapters, summary, created_at, updated_at, published_at, description,
+            transcript_error
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9, ?10, ?11)
         "#,
         params![
             video.video_id,
@@ -167,6 +175,7 @@ pub fn insert_video(paths: &AppPaths, video: NewVideo) -> AppResult<Video> {
             now,
             video.published_at,
             video.description,
+            transcript_error,
         ],
     )
     .map_err(|err| format!("Video konnte nicht gespeichert werden: {err}"))?;
@@ -339,10 +348,21 @@ pub fn update_transcript(
     let conn = open_db(paths)?;
     let now = Utc::now().to_rfc3339();
     conn.execute(
-        "UPDATE videos SET transcript = ?1, chapters = ?2, description = ?3, updated_at = ?4 WHERE id = ?5",
+        "UPDATE videos SET transcript = ?1, chapters = ?2, description = ?3, transcript_error = NULL, updated_at = ?4 WHERE id = ?5",
         params![transcript, chapters, description, now, id],
     )
     .map_err(|err| format!("Transkript konnte nicht gespeichert werden: {err}"))?;
+    get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())
+}
+
+pub fn set_transcript_error(paths: &AppPaths, id: i64, error: &str) -> AppResult<Video> {
+    let conn = open_db(paths)?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE videos SET transcript_error = ?1, updated_at = ?2 WHERE id = ?3 AND transcript IS NULL",
+        params![error, now, id],
+    )
+    .map_err(|err| format!("Transkript-Fehler konnte nicht gespeichert werden: {err}"))?;
     get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())
 }
 
@@ -534,6 +554,7 @@ fn row_to_video(row: &Row<'_>) -> rusqlite::Result<Video> {
         published_at: row.get("published_at")?,
         description: row.get("description")?,
         collection_ids: Vec::new(),
+        transcript_error: row.get("transcript_error")?,
     })
 }
 
@@ -611,6 +632,7 @@ mod tests {
             chapters: None,
             published_at: None,
             description: None,
+            transcript_error: None,
         }
     }
 
@@ -715,5 +737,168 @@ mod tests {
         let (_temp, paths) = temp_paths();
         let error = delete_summary(&paths, 99).unwrap_err();
         assert!(error.contains("nicht gefunden"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn insert_video_with_transcript_error_persists_error() {
+        let (_temp, paths) = temp_paths();
+        let mut sample = sample_video("errvideo123");
+        sample.transcript = None;
+        sample.transcript_error =
+            Some("LOGIN_REQUIRED: Sign in to confirm you're not a bot".into());
+
+        let video = insert_video(&paths, sample).unwrap();
+        assert!(video.transcript.is_none());
+        assert_eq!(
+            video.transcript_error.as_deref(),
+            Some("LOGIN_REQUIRED: Sign in to confirm you're not a bot")
+        );
+
+        let fetched = get_video(&paths, video.id).unwrap().unwrap();
+        assert!(fetched.transcript.is_none());
+        assert_eq!(
+            fetched.transcript_error.as_deref(),
+            Some("LOGIN_REQUIRED: Sign in to confirm you're not a bot")
+        );
+    }
+
+    #[test]
+    fn set_transcript_error_then_update_transcript_clears_error() {
+        let (_temp, paths) = temp_paths();
+        let mut sample = sample_video("refreshvid1");
+        sample.transcript = None;
+        sample.transcript_error = None;
+        let video = insert_video(&paths, sample).unwrap();
+        assert_eq!(video.transcript_error, None);
+
+        let updated = set_transcript_error(&paths, video.id, "Netzwerkfehler").unwrap();
+        assert_eq!(updated.transcript_error.as_deref(), Some("Netzwerkfehler"));
+        assert!(updated.transcript.is_none());
+
+        let after_fetch = get_video(&paths, video.id).unwrap().unwrap();
+        assert_eq!(
+            after_fetch.transcript_error.as_deref(),
+            Some("Netzwerkfehler")
+        );
+
+        let with_transcript = update_transcript(
+            &paths,
+            video.id,
+            r#"[{"text":"hallo","start":0.0,"time":"0:00"}]"#,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(with_transcript.transcript.is_some());
+        assert_eq!(with_transcript.transcript_error, None);
+
+        let final_video = get_video(&paths, video.id).unwrap().unwrap();
+        assert!(final_video.transcript.is_some());
+        assert_eq!(final_video.transcript_error, None);
+    }
+
+    #[test]
+    fn migration_adds_transcript_error_column_to_legacy_db() {
+        let temp = TempDir::new().unwrap();
+        let paths = AppPaths {
+            db_path: temp.path().join("videos.db"),
+            config_path: temp.path().join("config.json"),
+        };
+        // Create legacy schema without transcript_error column
+        {
+            let conn = Connection::open(&paths.db_path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE videos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    video_id TEXT NOT NULL UNIQUE,
+                    url TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    thumbnail_url TEXT NOT NULL,
+                    thumbnail_data BLOB,
+                    transcript TEXT,
+                    chapters TEXT,
+                    summary TEXT,
+                    summary_provider TEXT,
+                    summary_model TEXT,
+                    published_at TEXT,
+                    description TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+            conn.execute(
+                r#"
+                INSERT INTO videos (
+                    video_id, url, title, thumbnail_url, transcript, created_at, updated_at
+                ) VALUES ('legacy123', 'https://example.com', 'Old Video', 'https://example.com/t.jpg', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+                "#,
+                [],
+            )
+            .unwrap();
+        }
+
+        // Running init_db must migrate the table and add transcript_error column
+        init_db(&paths).unwrap();
+
+        let videos = get_videos(&paths).unwrap();
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].video_id, "legacy123");
+        assert_eq!(videos[0].transcript_error, None);
+    }
+
+    #[test]
+    fn set_transcript_error_does_not_overwrite_existing_transcript() {
+        let (_temp, paths) = temp_paths();
+        let mut sample = sample_video("racevid1");
+        sample.transcript = None;
+        sample.transcript_error = None;
+        let video = insert_video(&paths, sample).unwrap();
+
+        let with_transcript = update_transcript(
+            &paths,
+            video.id,
+            r#"[{"text":"fertig","start":0.0,"time":"0:00"}]"#,
+            None,
+            None,
+        )
+        .unwrap();
+        let expected_updated_at = with_transcript.updated_at.clone();
+
+        // Late arrival of error (e.g. parallel race condition)
+        let after_late_error =
+            set_transcript_error(&paths, video.id, "Später Netzwerkfehler").unwrap();
+        assert_eq!(after_late_error.transcript_error, None);
+        assert_eq!(
+            after_late_error.transcript.as_deref(),
+            Some(r#"[{"text":"fertig","start":0.0,"time":"0:00"}]"#)
+        );
+        assert_eq!(after_late_error.updated_at, expected_updated_at);
+
+        let fetched = get_video(&paths, video.id).unwrap().unwrap();
+        assert_eq!(fetched.transcript_error, None);
+        assert_eq!(
+            fetched.transcript.as_deref(),
+            Some(r#"[{"text":"fertig","start":0.0,"time":"0:00"}]"#)
+        );
+        assert_eq!(fetched.updated_at, expected_updated_at);
+    }
+
+    #[test]
+    fn insert_video_forces_transcript_error_to_none_when_transcript_is_some() {
+        let (_temp, paths) = temp_paths();
+        let mut sample = sample_video("bothsome1");
+        sample.transcript = Some(r#"[{"text":"vorhanden","start":0.0,"time":"0:00"}]"#.into());
+        sample.transcript_error = Some("Widersprüchlicher Fehler".into());
+
+        let video = insert_video(&paths, sample).unwrap();
+        assert!(video.transcript.is_some());
+        assert_eq!(video.transcript_error, None);
+
+        let fetched = get_video(&paths, video.id).unwrap().unwrap();
+        assert!(fetched.transcript.is_some());
+        assert_eq!(fetched.transcript_error, None);
     }
 }

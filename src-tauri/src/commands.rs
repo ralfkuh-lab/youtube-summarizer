@@ -660,7 +660,10 @@ pub async fn add_video_impl(paths: &AppPaths, url: String) -> AppResult<Video> {
 
     let thumbnail_data = youtube::download_thumbnail(&client, &video_id).await;
 
-    let transcript = youtube::fetch_transcript(&client, &video_id).await.ok();
+    let (transcript, transcript_error) = match youtube::fetch_transcript(&client, &video_id).await {
+        Ok(transcript) => (Some(transcript), None),
+        Err(error) => (None, Some(error)),
+    };
     let chapters = html.as_deref().and_then(youtube::chapters_from_html);
     let description = html.as_deref().and_then(youtube::description_from_html);
 
@@ -676,6 +679,7 @@ pub async fn add_video_impl(paths: &AppPaths, url: String) -> AppResult<Video> {
             chapters,
             published_at: info.published_at,
             description,
+            transcript_error,
         },
     )
 }
@@ -688,7 +692,17 @@ pub async fn refresh_transcript(paths: State<'_, AppPaths>, id: i64) -> AppResul
 pub async fn refresh_transcript_impl(paths: &AppPaths, id: i64) -> AppResult<Video> {
     let video = storage::get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())?;
     let client = http_client()?;
-    let transcript = youtube::fetch_transcript(&client, &video.video_id).await?;
+    let transcript = match youtube::fetch_transcript(&client, &video.video_id).await {
+        Ok(transcript) => transcript,
+        Err(error) => {
+            if video.transcript.is_none() {
+                if let Err(storage_error) = storage::set_transcript_error(paths, id, &error) {
+                    eprintln!("Transkript-Fehler für Video {id} konnte nicht gespeichert werden: {storage_error}");
+                }
+            }
+            return Err(error);
+        }
+    };
     // Only overwrite chapters and description when the watch HTML actually
     // loaded. If the fetch fails, keep the video's existing values instead of
     // clearing them.
@@ -779,7 +793,9 @@ pub async fn summarize_video_impl(
         .transcript
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "Kein Transkript vorhanden - bitte Video neu hinzufügen".to_string())?;
+        .ok_or_else(|| {
+            "Kein Transkript vorhanden – bitte „Transkript laden“ versuchen".to_string()
+        })?;
     let with_timestamps = timestamps.unwrap_or(false);
     let transcript_text = if with_timestamps {
         youtube::transcript_to_text_with_timestamps(transcript)

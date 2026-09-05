@@ -32,6 +32,7 @@ pub struct Video {
     pub collection_ids: Vec<i64>,
     pub created_at: String,
     pub updated_at: String,
+    pub transcript_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +66,7 @@ pub struct NewVideo {
     pub chapters: Option<String>,
     pub published_at: Option<String>,
     pub description: Option<String>,
+    pub transcript_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
