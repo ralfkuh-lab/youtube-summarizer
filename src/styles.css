@@ -473,7 +473,7 @@ main {
   flex-shrink: 0;
   min-height: 42px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding: 8px 16px;
   background: var(--bg);
@@ -482,18 +482,20 @@ main {
 
 .collection-assignment-label {
   flex-shrink: 0;
+  line-height: 26px; /* centers on the first chip row (chip height) */
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
 }
 
+/* Chips wrap onto further lines instead of scrolling horizontally: a scrollbar
+   inside the 26px row would cover the lower half of the chips and eat clicks. */
 .collection-checkboxes {
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 1px;
 }
 
 .collection-checkbox {
