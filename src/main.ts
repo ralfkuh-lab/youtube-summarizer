@@ -724,9 +724,14 @@ async function selectVideo(id: number) {
   try {
     const video = await invoke<Video>("get_video_detail", { id });
     videos = videos.map((item) => (item.id === id ? video : item));
-    showDetail(video);
+    renderVideoList();
+    if (activeVideoId === id) {
+      showDetail(video);
+    }
   } catch (error) {
-    setStatus(errorMessage(error));
+    if (activeVideoId === id) {
+      setStatus(errorMessage(error));
+    }
   }
 }
 
@@ -739,14 +744,18 @@ async function deleteActiveVideo() {
     await invoke<void>("delete_video", { id });
     videos = videos.filter((video) => video.id !== id);
     await loadCollections();
-    activeVideoId = null;
     renderVideoList();
-    detailContent.hidden = true;
-    detailPlaceholder.hidden = false;
-    chaptersPanel.hidden = true;
+    if (activeVideoId === id) {
+      activeVideoId = null;
+      detailContent.hidden = true;
+      detailPlaceholder.hidden = false;
+      chaptersPanel.hidden = true;
+    }
     setStatus("Video gelöscht");
   } catch (error) {
-    setStatus(errorMessage(error));
+    if (activeVideoId === id) {
+      setStatus(errorMessage(error));
+    }
   } finally {
     setBusy(false);
   }
@@ -760,9 +769,11 @@ async function refreshActiveTranscript() {
   try {
     const updated = await invoke<Video>("refresh_transcript", { id: video.id });
     videos = videos.map((item) => (item.id === updated.id ? updated : item));
-    showDetail(updated);
     renderVideoList();
-    switchTab("transcript");
+    if (activeVideoId === video.id) {
+      showDetail(updated);
+      switchTab("transcript");
+    }
     setStatus("Transkript geladen");
   } catch (error) {
     const message = errorMessage(error);
@@ -1359,11 +1370,15 @@ async function updateActiveVideoCollections() {
     videos = videos.map((item) => (item.id === updated.id ? updated : item));
     await loadCollections();
     renderVideoList();
-    renderVideoCollections(updated);
-    setStatus("Sammlungen gespeichert");
+    if (activeVideoId === video.id) {
+      renderVideoCollections(updated);
+      setStatus("Sammlungen gespeichert");
+    }
   } catch (error) {
-    setStatus(errorMessage(error));
-    renderVideoCollections(video);
+    if (activeVideoId === video.id) {
+      setStatus(errorMessage(error));
+      renderVideoCollections(video);
+    }
   } finally {
     setBusy(false);
   }

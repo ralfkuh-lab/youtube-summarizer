@@ -34,6 +34,13 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Next TODOs
 
+- [ ] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
+  - [x] 1: Race Conditions beim Videowechsel und Transkript-Neuladen beheben (Etappe 1).
+  - [ ] 2: Gemeinsamen KI-Konfigurationszustand verwenden und Speicheränderungen bei Schreibfehlern verhindern (Etappe 2).
+  - [x] 3: Unvollständig beendete KI-Streams erkennen (Etappe 1).
+  - [ ] 4: Schlanke Video-Listenobjekte und gesammelte Sammlungsabfragen einführen (Etappe 2).
+  - [x] 5: Standardmodell genauso wie explizite Modellauswahl validieren (Etappe 1).
+  - [ ] Modulgrenzen in `src/main.ts` und `commands.rs` refactoren; gezielte Regressionstests ergänzen (Etappe 3).
 - Collections/playlists roadmap:
   - Add playlist URL import next, without user login, for public/unlisted YouTube playlists.
   - Consider optional YouTube account OAuth later for importing the user's own playlists once the local collection model and import UX are stable.
@@ -60,6 +67,16 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-06: Etappe 1 umgesetzt (Race Conditions, Standardmodell-Validierung,
+  Stream-Abschluss, UI-Testharness, gleiche Guards in deleteActiveVideo und
+  updateActiveVideoCollections). `cargo fmt`, `cargo test` (87 bestanden, 1
+  Netzwerktest ignoriert), `npm run build` und `npm run test:ui` (3 bestanden) grün.
+  UI-Regressionstests vor Fix rot und nach Fix grün belegt. Kein Dev-Server aktiv.
+- 2026-09-06: Code-Review dokumentiert in `docs/code-review-2026-09-06.md`;
+  Abarbeitung oben erfasst. `npm run build` erfolgreich, `cargo test` mit
+  80 bestandenen Tests und einem ignorierten Netzwerktest. Race Condition beim
+  Videowechsel mit verzögerten Antworten reproduziert. Keine Implementierungsänderungen;
+  im Review und bei der Dokumentation keinen Dev-Server oder Tauri-Prozess gestartet.
 - Date: 2026-09-05 (transcript error visibility feature, spec: `docs/spec-transcript-error.md`)
 - `cargo fmt`, `cargo test` (80 passed, 1 network test ignored) and
   `npm run build` green. Transcript load failures are stored in `videos.transcript_error`

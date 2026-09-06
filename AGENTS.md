@@ -20,8 +20,11 @@ Use these from the repository root unless noted otherwise:
 
 ```bash
 npm run build
+npm run test:ui
 npm run tauri dev
 ```
+
+UI-Tests mit `npm run test:ui` nutzen das System-Chromium (`/usr/bin/chromium`), überschreibbar per `CHROMIUM_PATH`.
 
 Use these from `src-tauri/`:
 

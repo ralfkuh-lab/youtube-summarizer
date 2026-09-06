@@ -57,6 +57,10 @@ pub enum ChatError {
          oder ein Modell mit größerem Output-Limit wählen."
     )]
     TruncatedOutput,
+    #[error(
+        "Die KI-Antwort endete vorzeitig ohne Abschlusssignal des Providers, das Ergebnis ist unvollständig - bitte erneut versuchen"
+    )]
+    IncompleteStream,
 }
 
 #[derive(Debug, Serialize)]
@@ -201,6 +205,7 @@ pub async fn chat_stream_cancellable(
     let mut decoder = SseDecoder::default();
     let mut accumulated = String::new();
     let mut chunk_wait_started = Instant::now();
+    let mut finished = false;
     loop {
         if is_cancelled() {
             return Err(ChatError::Cancelled);
@@ -226,7 +231,7 @@ pub async fn chat_stream_cancellable(
                 return Err(ChatError::Cancelled);
             }
             if event.trim() == "[DONE]" {
-                return finish_stream(accumulated);
+                return finish_stream(accumulated, true);
             }
             if let Some(message) = stream_error_message(&event, api_key) {
                 return Err(ChatError::Http {
@@ -241,17 +246,24 @@ pub async fn chat_stream_cancellable(
                     accumulated.push_str(&content);
                     on_delta(&accumulated);
                 }
-                if choice.finish_reason.as_deref() == Some("length") {
-                    return Err(ChatError::TruncatedOutput);
+                if let Some(reason) = choice.finish_reason.as_deref() {
+                    if reason == "length" {
+                        return Err(ChatError::TruncatedOutput);
+                    }
+                    if !reason.trim().is_empty() {
+                        finished = true;
+                    }
                 }
             }
         }
     }
-    finish_stream(accumulated)
+    finish_stream(accumulated, finished)
 }
 
-fn finish_stream(accumulated: String) -> Result<String, ChatError> {
-    if accumulated.trim().is_empty() {
+fn finish_stream(accumulated: String, completed: bool) -> Result<String, ChatError> {
+    if !completed {
+        Err(ChatError::IncompleteStream)
+    } else if accumulated.trim().is_empty() {
         Err(ChatError::MissingChoice)
     } else {
         Ok(accumulated)
@@ -585,5 +597,254 @@ mod tests {
         assert!(message.contains("[REDACTED]"));
         assert!(message.chars().count() <= MAX_PROVIDER_ERROR_CHARS);
         assert!(!message.contains('\n'));
+    }
+
+    #[tokio::test]
+    async fn stream_without_done_or_finish_reason_fails_with_incomplete_stream() {
+        use std::io::{BufRead as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            let chunk1: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"Teil 1, \"}}]}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", chunk1.len()).as_bytes())
+                .unwrap();
+            stream.write_all(chunk1).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+
+            let chunk2: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"Teil 2\"}}]}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", chunk2.len()).as_bytes())
+                .unwrap();
+            stream.write_all(chunk2).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+
+            // Stream ohne [DONE] und ohne finish_reason regulär beenden
+            stream.write_all(b"0\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let http = Client::builder().build().unwrap();
+        let error = chat_stream(
+            &http,
+            &format!("http://{addr}/v1"),
+            None,
+            "test-model",
+            &[ChatMessage::user("hi")],
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+
+        assert!(
+            matches!(error, ChatError::IncompleteStream),
+            "unexpected: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "Die KI-Antwort endete vorzeitig ohne Abschlusssignal des Providers, das Ergebnis ist unvollständig - bitte erneut versuchen"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_with_finish_reason_completes_without_done() {
+        use std::io::{BufRead as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            let chunk1: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hallo \"}}]}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", chunk1.len()).as_bytes())
+                .unwrap();
+            stream.write_all(chunk1).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+
+            let chunk2: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"Welt\"},\"finish_reason\":\"stop\"}]}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", chunk2.len()).as_bytes())
+                .unwrap();
+            stream.write_all(chunk2).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+
+            // Stream ohne [DONE] beenden
+            stream.write_all(b"0\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let http = Client::builder().build().unwrap();
+        let text = chat_stream(
+            &http,
+            &format!("http://{addr}/v1"),
+            None,
+            "test-model",
+            &[ChatMessage::user("hi")],
+            |_| {},
+        )
+        .await
+        .expect("stream with finish_reason should succeed");
+        server.join().unwrap();
+
+        assert_eq!(text, "Hallo Welt");
+    }
+
+    #[tokio::test]
+    async fn stream_with_done_completes_successfully() {
+        use std::io::{BufRead as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            let chunk1: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"Erfolg\"}}]}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", chunk1.len()).as_bytes())
+                .unwrap();
+            stream.write_all(chunk1).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+
+            let done: &[u8] = b"data: [DONE]\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", done.len()).as_bytes())
+                .unwrap();
+            stream.write_all(done).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let http = Client::builder().build().unwrap();
+        let text = chat_stream(
+            &http,
+            &format!("http://{addr}/v1"),
+            None,
+            "test-model",
+            &[ChatMessage::user("hi")],
+            |_| {},
+        )
+        .await
+        .expect("stream with [DONE] should succeed");
+        server.join().unwrap();
+
+        assert_eq!(text, "Erfolg");
+    }
+
+    #[tokio::test]
+    async fn stream_with_finish_reason_and_trailing_usage_event_completes() {
+        use std::io::{BufRead as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            let chunk1: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"Nach\"}}]}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", chunk1.len()).as_bytes())
+                .unwrap();
+            stream.write_all(chunk1).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+
+            let chunk2: &[u8] =
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"richt\"},\"finish_reason\":\"stop\"}]}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", chunk2.len()).as_bytes())
+                .unwrap();
+            stream.write_all(chunk2).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+
+            // Nachgelagertes usage-Event mit leerem choices
+            let chunk3: &[u8] = b"data: {\"choices\":[],\"usage\":{\"total_tokens\":3}}\n\n";
+            stream
+                .write_all(format!("{:x}\r\n", chunk3.len()).as_bytes())
+                .unwrap();
+            stream.write_all(chunk3).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+
+            // Verbindungsende ohne [DONE]
+            stream.write_all(b"0\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let http = Client::builder().build().unwrap();
+        let text = chat_stream(
+            &http,
+            &format!("http://{addr}/v1"),
+            None,
+            "test-model",
+            &[ChatMessage::user("hi")],
+            |_| {},
+        )
+        .await
+        .expect("stream with finish_reason and trailing usage event should succeed");
+        server.join().unwrap();
+
+        assert_eq!(text, "Nachricht");
     }
 }

@@ -866,36 +866,68 @@ fn resolve_summary_model(
 ) -> AppResult<AiModelRef> {
     let provider_id = provider_id.filter(|value| !value.trim().is_empty());
     let model_id = model_id.filter(|value| !value.trim().is_empty());
-    let requested = match (provider_id, model_id) {
-        (Some(provider), Some(model)) => Some(AiModelRef { provider, model }),
-        (None, None) => None,
+    let (selected, is_default) = match (provider_id, model_id) {
+        (Some(provider), Some(model)) => (AiModelRef { provider, model }, false),
+        (None, None) => {
+            let default = ai.default_model.clone().ok_or_else(|| {
+                "Kein defaultModel gesetzt - bitte in Einstellungen KI-Modell auswählen".to_string()
+            })?;
+            (default, true)
+        }
         _ => {
             return Err("Unvollständige Modellauswahl - Anbieter und Modell angeben".to_string());
         }
     };
 
-    let Some(selected) = requested else {
-        return ai.default_model.clone().ok_or_else(|| {
-            "Kein defaultModel gesetzt - bitte in Einstellungen KI-Modell auswählen".to_string()
-        });
+    let default_unavailable_error = || {
+        format!(
+            "Standardmodell '{}' von '{}' ist nicht mehr verfügbar, weil der Anbieter fehlt oder deaktiviert ist - bitte in den Einstellungen ein KI-Modell auswählen",
+            selected.model, selected.provider
+        )
+    };
+    let default_not_active_error = || {
+        format!(
+            "Standardmodell '{}' von '{}' ist nicht mehr aktiviert - bitte in den Einstellungen ein KI-Modell auswählen",
+            selected.model, selected.provider
+        )
     };
 
-    let provider = ai
-        .provider
-        .get(&selected.provider)
-        .ok_or_else(|| format!("KI-Provider '{}' nicht gefunden", selected.provider))?;
+    let provider = match ai.provider.get(&selected.provider) {
+        Some(provider) => provider,
+        None => {
+            if is_default {
+                return Err(default_unavailable_error());
+            } else {
+                return Err(format!(
+                    "KI-Provider '{}' nicht gefunden",
+                    selected.provider
+                ));
+            }
+        }
+    };
+
     if !provider.enabled {
-        return Err(format!(
-            "KI-Provider '{}' ist nicht aktiviert",
-            selected.provider
-        ));
+        if is_default {
+            return Err(default_unavailable_error());
+        } else {
+            return Err(format!(
+                "KI-Provider '{}' ist nicht aktiviert",
+                selected.provider
+            ));
+        }
     }
+
     if !provider.whitelist.iter().any(|id| id == &selected.model) {
-        return Err(format!(
-            "Modell '{}' ist für '{}' nicht aktiviert",
-            selected.model, selected.provider
-        ));
+        if is_default {
+            return Err(default_not_active_error());
+        } else {
+            return Err(format!(
+                "Modell '{}' ist für '{}' nicht aktiviert",
+                selected.model, selected.provider
+            ));
+        }
     }
+
     Ok(selected)
 }
 
@@ -1109,6 +1141,39 @@ mod tests {
     fn falls_back_to_default_model_without_selection() {
         let selected = resolve_summary_model(&config_with_enabled_model(), None, None).unwrap();
         assert_eq!(selected.model, "fast");
+    }
+
+    #[test]
+    fn rejects_default_model_when_provider_disabled() {
+        let mut config = config_with_enabled_model();
+        config.provider.get_mut("openrouter").unwrap().enabled = false;
+        let error = resolve_summary_model(&config, None, None).unwrap_err();
+        assert_eq!(
+            error,
+            "Standardmodell 'fast' von 'openrouter' ist nicht mehr verfügbar, weil der Anbieter fehlt oder deaktiviert ist - bitte in den Einstellungen ein KI-Modell auswählen"
+        );
+    }
+
+    #[test]
+    fn rejects_default_model_when_not_in_whitelist() {
+        let mut config = config_with_enabled_model();
+        config.provider.get_mut("openrouter").unwrap().whitelist = vec!["smart".into()];
+        let error = resolve_summary_model(&config, None, None).unwrap_err();
+        assert_eq!(
+            error,
+            "Standardmodell 'fast' von 'openrouter' ist nicht mehr aktiviert - bitte in den Einstellungen ein KI-Modell auswählen"
+        );
+    }
+
+    #[test]
+    fn rejects_default_model_when_provider_missing() {
+        let mut config = config_with_enabled_model();
+        config.provider.remove("openrouter");
+        let error = resolve_summary_model(&config, None, None).unwrap_err();
+        assert_eq!(
+            error,
+            "Standardmodell 'fast' von 'openrouter' ist nicht mehr verfügbar, weil der Anbieter fehlt oder deaktiviert ist - bitte in den Einstellungen ein KI-Modell auswählen"
+        );
     }
 
     #[test]
