@@ -74,9 +74,8 @@ tab, and detail tooltip on the 'T' status chip) — spec:
   Kein Feature-Modul über 600 Zeilen, kein DOM-Zugriff auf Modulebene.
   `cargo fmt`, `cargo test` (94 bestanden, 1 Netzwerktest ignoriert),
   `npm run build` und `npm run test:ui` (5 bestanden) grün. Kein Dev-Server aktiv.
-  Release-Build (`npm run tauri -- build`) steht noch aus: zweimal wegen
-  Speichermangel abgebrochen (FreeToken-Prozess belegte 12 GB); vor dem
-  nächsten `dpkg -i` nachholen.
+  Release-Build (`npm run tauri -- build`) danach erfolgreich, `.deb` über
+  den Projekt-Symlink installierbar.
 - 2026-09-06: Etappe 2 umgesetzt (`SummaryTarget` entkoppelt
   `summarize_video_impl` von den Konfigurationsspeichern, Setter in
   `AiConfigService`/`AuthStore` übernehmen erst nach erfolgreichem Save,
