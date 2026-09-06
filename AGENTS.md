@@ -4,12 +4,22 @@ This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri a
 
 ## Important Files
 
-- `src/main.ts`: frontend UI and Tauri command calls.
-- `src/styles.css`: frontend styling.
-- `src-tauri/src/commands.rs`: Tauri command layer and shared command implementations.
-- `src-tauri/src/youtube.rs`: YouTube metadata, transcript and chapter fetching.
-- `src-tauri/src/ai/`: AI provider/model config (models.dev catalog, ai.json, auth.json) and the OpenAI-compatible chat client; ported from folio, see `docs/spec-ai-port.md`.
+- `src/main.ts`: frontend entry point and bootstrap (DOM init, top bar event wiring, modal escape handling).
+- `src/library.ts`: video list, filtering, searching, video selection/deletion, and collection management.
+- `src/detail.ts`: video detail view, transcript display, chapter navigation, seek handling, and video player embedding.
+- `src/summary-view.ts`: summary tab view, version history, markdown rendering, timestamp linking, and Mermaid diagram rendering.
+- `src/summary-dialog.ts`: summary creation dialog, settings persistence, preset management, and prompt composition.
+- `src/state.ts`: shared frontend application state object (`state`), active video getters, and status/busy helpers.
+- `src/template.ts`: HTML shell template.
+- `src/types.ts`: shared TypeScript type and interface definitions.
+- `src/utils.ts`: pure utility helpers (formatting, search normalization, collection comparison).
 - `src/ai-config.ts`: settings UI for the "KI-Anbieter" / "KI-Modelle" tabs.
+- `src/styles.css`: frontend styling.
+- `src-tauri/src/commands.rs`: Tauri command layer delegating to domain modules.
+- `src-tauri/src/summarize.rs`: AI summary target resolution, prompt building, untrusted content delimiters, and streaming summary orchestration.
+- `src-tauri/src/ai/migration.rs`: legacy AI config migration.
+- `src-tauri/src/ai/`: AI provider/model config (models.dev catalog, ai.json, auth.json) and the OpenAI-compatible chat client; ported from folio, see `docs/spec-ai-port.md`.
+- `src-tauri/src/youtube.rs`: YouTube metadata, transcript and chapter fetching.
 - `src-tauri/src/storage.rs`: config and SQLite persistence.
 - `src-tauri/src/automation.rs`: debug-only local automation API for functional tests.
 - `TODO.md`: current collaboration state, open tasks and session handoff notes.

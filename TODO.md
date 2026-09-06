@@ -34,13 +34,13 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Next TODOs
 
-- [ ] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
+- [x] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
   - [x] 1: Race Conditions beim Videowechsel und Transkript-Neuladen beheben (Etappe 1).
   - [x] 2: Gemeinsamen KI-Konfigurationszustand verwenden und Speicheränderungen bei Schreibfehlern verhindern (Etappe 2).
   - [x] 3: Unvollständig beendete KI-Streams erkennen (Etappe 1).
   - [x] 4: Schlanke Video-Listenobjekte und gesammelte Sammlungsabfragen einführen (Etappe 2).
   - [x] 5: Standardmodell genauso wie explizite Modellauswahl validieren (Etappe 1).
-  - [ ] Modulgrenzen in `src/main.ts` und `commands.rs` refactoren; gezielte Regressionstests ergänzen (Etappe 3).
+  - [x] Modulgrenzen in `src/main.ts` und `commands.rs` refactoren; gezielte Regressionstests ergänzen (Etappe 3).
 - Collections/playlists roadmap:
   - Add playlist URL import next, without user login, for public/unlisted YouTube playlists.
   - Consider optional YouTube account OAuth later for importing the user's own playlists once the local collection model and import UX are stable.
@@ -65,6 +65,15 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-06: Etappe 3 umgesetzt (Reines Refactoring der Modulgrenzen ohne
+  Verhaltensänderung). Backend: `migration.rs` für Alt-Konfig-Migration,
+  `summarize.rs` für Zusammenfassungslogik und Tests aus `commands.rs`
+  ausgelagert. Frontend: `main.ts` auf 140 Zeilen Bootstrap
+  reduziert (vorher rund 2.150), Domänenlogik in `types.ts`, `utils.ts`, `template.ts`, `state.ts`,
+  `summary-view.ts`, `summary-dialog.ts`, `detail.ts` und `library.ts` aufgeteilt.
+  Kein Feature-Modul über 600 Zeilen, kein DOM-Zugriff auf Modulebene.
+  `cargo fmt`, `cargo test` (94 bestanden, 1 Netzwerktest ignoriert),
+  `npm run build` und `npm run test:ui` (5 bestanden) grün. Kein Dev-Server aktiv.
 - 2026-09-06: Etappe 2 umgesetzt (`SummaryTarget` entkoppelt
   `summarize_video_impl` von den Konfigurationsspeichern, Setter in
   `AiConfigService`/`AuthStore` übernehmen erst nach erfolgreichem Save,

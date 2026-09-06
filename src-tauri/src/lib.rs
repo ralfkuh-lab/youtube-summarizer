@@ -4,6 +4,7 @@ mod automation;
 mod commands;
 mod models;
 mod storage;
+mod summarize;
 mod summary_presets;
 mod youtube;
 
@@ -33,7 +34,7 @@ pub fn run() {
             };
 
             storage::init_db(&paths).map_err(setup_error)?;
-            crate::commands::ensure_migrated(&paths);
+            crate::ai::migration::ensure_migrated(&paths);
 
             // AI state: config service + auth store (0600) + shared HTTP client for catalog/chat
             // Kein Total-Timeout: Zusammenfassungen streamen oft laenger als

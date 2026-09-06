@@ -11,6 +11,7 @@ use crate::ai::catalog as ai_catalog;
 use crate::ai::config::AiConfigService;
 use crate::commands;
 use crate::storage::{self, AppPaths, AppResult};
+use crate::summarize;
 
 #[derive(Debug, Deserialize)]
 struct AddVideoRequest {
@@ -196,21 +197,21 @@ fn route(
             let result = (|| -> AppResult<crate::models::Video> {
                 let ai = crate::ai::config::AiConfigService::load(paths).data();
                 let catalog = crate::ai::catalog::load(paths).catalog;
-                let (selected, base_url) = commands::resolve_summary_target(
+                let (selected, base_url) = summarize::resolve_summary_target(
                     &ai,
                     &catalog,
                     request.provider_id,
                     request.model_id,
                 )?;
                 let key = crate::ai::auth::AuthStore::load(paths).get_key(&selected.provider);
-                let provider_label = commands::provider_label(&ai, &catalog, &selected.provider);
-                let target = commands::SummaryTarget {
+                let provider_label = summarize::provider_label(&ai, &catalog, &selected.provider);
+                let target = summarize::SummaryTarget {
                     provider_label,
                     model: selected.model,
                     base_url,
                     api_key: key,
                 };
-                runtime.block_on(commands::summarize_video_impl(
+                runtime.block_on(summarize::summarize_video_impl(
                     paths,
                     &http,
                     id,
