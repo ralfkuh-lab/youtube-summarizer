@@ -33,6 +33,8 @@ pub struct Video {
     pub created_at: String,
     pub updated_at: String,
     pub transcript_error: Option<String>,
+    pub has_transcript: bool,
+    pub has_summary: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

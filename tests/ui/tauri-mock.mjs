@@ -18,6 +18,8 @@ export const defaultFixtures = {
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
       transcript_error: null,
+      has_transcript: false,
+      has_summary: false,
     },
     {
       id: 2,
@@ -37,6 +39,8 @@ export const defaultFixtures = {
       created_at: "2026-01-02T00:00:00Z",
       updated_at: "2026-01-02T00:00:00Z",
       transcript_error: null,
+      has_transcript: true,
+      has_summary: true,
     },
   ],
   collections: [],
@@ -63,6 +67,14 @@ export const defaultFixtures = {
     source: "cache",
     updatedAt: "2026-09-01T00:00:00Z",
   },
+  summaryPresets: [
+    {
+      id: "standard",
+      name: "Standard",
+      prompt: "Standard Prompt",
+      builtin: true,
+    },
+  ],
 };
 
 export function createMockScript(fixtures = {}, delays = {}) {
@@ -99,7 +111,8 @@ export function createMockScript(fixtures = {}, delays = {}) {
     },
     handleInvoke: async function(cmd, args, options) {
       this.pending++;
-      this.calls.push({ cmd, args, time: Date.now() });
+      const callRecord = { cmd, args, time: Date.now() };
+      this.calls.push(callRecord);
 
       try {
         let delayMs = 0;
@@ -139,7 +152,15 @@ export function createMockScript(fixtures = {}, delays = {}) {
           return null;
         }
         if (cmd === 'get_videos') {
-          return JSON.parse(JSON.stringify(this.fixtures.videos));
+          const res = JSON.parse(JSON.stringify(this.fixtures.videos.map((v) => ({
+            ...v,
+            transcript: null,
+            chapters: null,
+            summary: null,
+            description: null,
+          }))));
+          callRecord.result = res;
+          return res;
         }
         if (cmd === 'get_collections') {
           return JSON.parse(JSON.stringify(this.fixtures.collections || []));
@@ -171,6 +192,7 @@ export function createMockScript(fixtures = {}, delays = {}) {
           const updated = {
             ...v,
             transcript: 'Nachgeladenes Transkript für Video ' + id,
+            has_transcript: true,
             transcript_error: null,
           };
           return JSON.parse(JSON.stringify(updated));
@@ -180,6 +202,9 @@ export function createMockScript(fixtures = {}, delays = {}) {
         }
         if (cmd === 'get_summaries') {
           return [];
+        }
+        if (cmd === 'summary_presets_list') {
+          return JSON.parse(JSON.stringify(this.fixtures.summaryPresets || []));
         }
 
         throw new Error('Unhandled Tauri mock command: ' + cmd + ' with args: ' + JSON.stringify(args));

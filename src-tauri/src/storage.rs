@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -12,7 +13,17 @@ pub type AppResult<T> = Result<T, String>;
 const VIDEO_COLUMNS: &str = r#"
     id, video_id, url, title, thumbnail_url, thumbnail_data,
     transcript, chapters, summary, summary_provider, summary_model,
-    published_at, description, created_at, updated_at, transcript_error
+    published_at, description, created_at, updated_at, transcript_error,
+    (transcript IS NOT NULL AND transcript != '') AS has_transcript,
+    (summary IS NOT NULL AND summary != '') AS has_summary
+"#;
+
+const VIDEO_LIST_COLUMNS: &str = r#"
+    id, video_id, url, title, thumbnail_url, thumbnail_data,
+    NULL AS transcript, NULL AS chapters, NULL AS summary, summary_provider, summary_model,
+    published_at, NULL AS description, created_at, updated_at, transcript_error,
+    (transcript IS NOT NULL AND transcript != '') AS has_transcript,
+    (summary IS NOT NULL AND summary != '') AS has_summary
 "#;
 
 #[derive(Debug, Clone)]
@@ -189,7 +200,7 @@ pub fn get_videos(paths: &AppPaths) -> AppResult<Vec<Video>> {
     let mut stmt = conn
         .prepare(&format!(
             r#"
-            SELECT {VIDEO_COLUMNS}
+            SELECT {VIDEO_LIST_COLUMNS}
             FROM videos
             ORDER BY created_at DESC
             "#
@@ -509,8 +520,24 @@ fn collection_write_error(err: rusqlite::Error, fallback: &str) -> String {
 }
 
 fn hydrate_video_collections(conn: &Connection, videos: &mut [Video]) -> AppResult<()> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT video_id, collection_id FROM video_collections ORDER BY video_id, collection_id",
+        )
+        .map_err(|err| format!("Video-Sammlungen konnten nicht geladen werden: {err}"))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .map_err(|err| format!("Video-Sammlungen konnten nicht gelesen werden: {err}"))?;
+
+    let mut map: HashMap<i64, Vec<i64>> = HashMap::new();
+    for row in rows {
+        let (video_id, collection_id) =
+            row.map_err(|err| format!("Video-Sammlung konnte nicht gelesen werden: {err}"))?;
+        map.entry(video_id).or_default().push(collection_id);
+    }
+
     for video in videos {
-        video.collection_ids = get_video_collection_ids(conn, video.id)?;
+        video.collection_ids = map.remove(&video.id).unwrap_or_default();
     }
     Ok(())
 }
@@ -555,6 +582,8 @@ fn row_to_video(row: &Row<'_>) -> rusqlite::Result<Video> {
         description: row.get("description")?,
         collection_ids: Vec::new(),
         transcript_error: row.get("transcript_error")?,
+        has_transcript: row.get("has_transcript")?,
+        has_summary: row.get("has_summary")?,
     })
 }
 
@@ -900,5 +929,105 @@ mod tests {
         let fetched = get_video(&paths, video.id).unwrap().unwrap();
         assert!(fetched.transcript.is_some());
         assert_eq!(fetched.transcript_error, None);
+    }
+
+    #[test]
+    fn hydrate_video_collections_preserves_order_and_handles_multiple_videos() {
+        let (_temp, paths) = temp_paths();
+        let v1 = insert_video(&paths, sample_video("vid11111111")).unwrap();
+        let v2 = insert_video(&paths, sample_video("vid22222222")).unwrap();
+        let v3 = insert_video(&paths, sample_video("vid33333333")).unwrap();
+
+        let c1 = create_collection(&paths, "Sammlung A").unwrap();
+        let c2 = create_collection(&paths, "Sammlung B").unwrap();
+        let c3 = create_collection(&paths, "Sammlung C").unwrap();
+
+        set_video_collections(&paths, v1.id, vec![c3.id, c1.id]).unwrap();
+        set_video_collections(&paths, v3.id, vec![c2.id]).unwrap();
+
+        let videos = get_videos(&paths).unwrap();
+        let fetched_v1 = videos.iter().find(|v| v.id == v1.id).unwrap();
+        let fetched_v2 = videos.iter().find(|v| v.id == v2.id).unwrap();
+        let fetched_v3 = videos.iter().find(|v| v.id == v3.id).unwrap();
+
+        assert_eq!(fetched_v1.collection_ids, vec![c1.id, c3.id]);
+        assert_eq!(fetched_v2.collection_ids, Vec::<i64>::new());
+        assert_eq!(fetched_v3.collection_ids, vec![c2.id]);
+    }
+
+    #[test]
+    fn get_videos_returns_compact_objects_while_get_video_returns_full_content() {
+        let (_temp, paths) = temp_paths();
+        let mut sample1 = sample_video("compact1111");
+        sample1.transcript = Some("Full transcript text".into());
+        sample1.chapters = Some(r#"[{"time":"0:00","start":0.0,"title":"Intro"}]"#.into());
+        sample1.description = Some("Full description".into());
+        let v1 = insert_video(&paths, sample1).unwrap();
+        update_summary(
+            &paths,
+            v1.id,
+            "Full summary text",
+            Some("OpenRouter"),
+            Some("model-x"),
+            None,
+        )
+        .unwrap();
+
+        let mut sample2 = sample_video("compact2222");
+        sample2.transcript = None;
+        sample2.chapters = None;
+        sample2.description = None;
+        let v2 = insert_video(&paths, sample2).unwrap();
+
+        // get_videos returns compact objects
+        let list = get_videos(&paths).unwrap();
+        let list_v1 = list.iter().find(|v| v.id == v1.id).unwrap();
+        let list_v2 = list.iter().find(|v| v.id == v2.id).unwrap();
+
+        assert!(list_v1.transcript.is_none());
+        assert!(list_v1.chapters.is_none());
+        assert!(list_v1.summary.is_none());
+        assert!(list_v1.description.is_none());
+        assert!(list_v1.has_transcript);
+        assert!(list_v1.has_summary);
+
+        assert!(list_v2.transcript.is_none());
+        assert!(list_v2.chapters.is_none());
+        assert!(list_v2.summary.is_none());
+        assert!(list_v2.description.is_none());
+        assert!(!list_v2.has_transcript);
+        assert!(!list_v2.has_summary);
+
+        // get_video returns full objects
+        let detail_v1 = get_video(&paths, v1.id).unwrap().unwrap();
+        assert_eq!(
+            detail_v1.transcript.as_deref(),
+            Some("Full transcript text")
+        );
+        assert!(detail_v1.chapters.is_some());
+        assert_eq!(detail_v1.summary.as_deref(), Some("Full summary text"));
+        assert_eq!(detail_v1.description.as_deref(), Some("Full description"));
+        assert!(detail_v1.has_transcript);
+        assert!(detail_v1.has_summary);
+    }
+
+    #[test]
+    fn empty_string_transcript_and_summary_yield_false_flags() {
+        let (_temp, paths) = temp_paths();
+        let mut sample = sample_video("empty_str_vid");
+        sample.transcript = Some("".into());
+        let video = insert_video(&paths, sample).unwrap();
+        update_summary(&paths, video.id, "", None, None, None).unwrap();
+
+        let list = get_videos(&paths).unwrap();
+        let list_v = list.iter().find(|v| v.id == video.id).unwrap();
+        assert!(!list_v.has_transcript);
+        assert!(!list_v.has_summary);
+
+        let detail = get_video(&paths, video.id).unwrap().unwrap();
+        assert_eq!(detail.transcript.as_deref(), Some(""));
+        assert_eq!(detail.summary.as_deref(), Some(""));
+        assert!(!detail.has_transcript);
+        assert!(!detail.has_summary);
     }
 }

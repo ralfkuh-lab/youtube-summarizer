@@ -58,24 +58,27 @@ impl AuthStore {
         if key.trim().is_empty() {
             return Err(AuthError::EmptyKey);
         }
-        self.entries.insert(
+        let mut next = self.entries.clone();
+        next.insert(
             provider_id,
             AuthEntry {
                 kind: AuthType::Api,
                 key,
             },
         );
-        self.save()
+        self.commit(next)
     }
 
     pub fn remove(&mut self, provider_id: &str) -> Result<(), AuthError> {
         if provider_id.trim().is_empty() {
             return Err(AuthError::EmptyProviderId);
         }
-        if self.entries.remove(provider_id).is_some() {
-            self.save()?;
+        if !self.entries.contains_key(provider_id) {
+            return Ok(());
         }
-        Ok(())
+        let mut next = self.entries.clone();
+        next.remove(provider_id);
+        self.commit(next)
     }
 
     pub fn status(&self) -> AuthStatus {
@@ -90,8 +93,10 @@ impl AuthStore {
         self.entries.get(provider_id).map(|entry| entry.key.clone())
     }
 
-    fn save(&self) -> Result<(), AuthError> {
-        save_secure_json_atomic(&self.path, &self.entries)
+    fn commit(&mut self, next: BTreeMap<String, AuthEntry>) -> Result<(), AuthError> {
+        save_secure_json_atomic(&self.path, &next)?;
+        self.entries = next;
+        Ok(())
     }
 }
 
@@ -204,5 +209,33 @@ mod tests {
         store.set("openai".into(), "secret".into()).unwrap();
 
         assert!(!tmp.exists());
+    }
+
+    #[test]
+    fn setter_failure_preserves_state_and_retry_fails_again() {
+        let temp = TempDir::new().unwrap();
+        let regular_file = temp.path().join("not_a_dir");
+        fs::write(&regular_file, "blocking file").unwrap();
+        let unwriteable_path = regular_file.join("auth.json");
+
+        let mut store = AuthStore::load_from(unwriteable_path);
+        assert!(store.status().is_empty());
+
+        let err1 = store.set("openrouter".into(), "sk-test-key".into());
+        assert!(err1.is_err(), "Setter must fail when path is unwriteable");
+        assert!(
+            store.status().is_empty(),
+            "AuthStore state must remain unchanged after write failure"
+        );
+
+        let err2 = store.set("openrouter".into(), "sk-test-key".into());
+        assert!(
+            err2.is_err(),
+            "Repeated setter call must fail again and not succeed silently"
+        );
+        assert!(
+            store.status().is_empty(),
+            "AuthStore state must still be unchanged"
+        );
     }
 }

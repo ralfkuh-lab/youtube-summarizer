@@ -47,6 +47,8 @@ type Video = {
   created_at: string;
   updated_at: string;
   transcript_error?: string | null;
+  has_transcript: boolean;
+  has_summary: boolean;
 };
 
 type Collection = {
@@ -704,7 +706,7 @@ async function addVideo() {
     input.value = "";
     renderVideoList();
     await selectVideo(video.id);
-    if (video.transcript) {
+    if (video.has_transcript) {
       setStatus("Video hinzugefügt und Transkript geladen");
     } else if (video.transcript_error) {
       setStatus(`Video hinzugefügt, Transkript fehlgeschlagen: ${video.transcript_error}`);
@@ -795,11 +797,25 @@ async function refreshActiveTranscript() {
 
 
 async function openSummaryDialog() {
-  const video = getActiveVideo();
+  let video = getActiveVideo();
   if (!video) return;
-  if (!video.transcript) {
+  if (!video.has_transcript) {
     setStatus("Kein Transkript vorhanden – bitte „Transkript laden“ versuchen");
     return;
+  }
+  const id = video.id;
+  if (!video.transcript) {
+    try {
+      const detail = await invoke<Video>("get_video_detail", { id });
+      videos = videos.map((item) => (item.id === id ? detail : item));
+      if (activeVideoId !== id) return;
+      video = detail;
+    } catch (error) {
+      if (activeVideoId === id) {
+        setStatus(errorMessage(error));
+      }
+      return;
+    }
   }
   const saved = loadSummarySettings();
   $<HTMLDetailsElement>("#summaryPromptDetails").open = false;
@@ -1177,8 +1193,8 @@ function renderVideoList() {
           <span class="info">
             <span class="title">${escapeHtml(video.title)}</span>
             <span class="meta">
-              ${renderVideoStatusChip("T", !!video.transcript, "Transkript", video.transcript_error)}
-              ${renderVideoStatusChip("Z", !!video.summary, "Zusammenfassung")}
+              ${renderVideoStatusChip("T", video.has_transcript, "Transkript", video.transcript_error)}
+              ${renderVideoStatusChip("Z", video.has_summary, "Zusammenfassung")}
             </span>
           </span>
         </button>
@@ -1217,13 +1233,13 @@ function matchesActiveCollection(video: Video): boolean {
 function matchesVideoStatusFilter(video: Video): boolean {
   switch (videoStatusFilter) {
     case "transcript":
-      return !!video.transcript;
+      return video.has_transcript;
     case "missing-transcript":
-      return !video.transcript;
+      return !video.has_transcript;
     case "summary":
-      return !!video.summary;
+      return video.has_summary;
     case "missing-summary":
-      return !video.summary;
+      return !video.has_summary;
     case "all":
       return true;
   }
@@ -1293,8 +1309,8 @@ function showDetail(video: Video) {
     publishedMeta.hidden = true;
   }
   updateDetailSummaryMeta(
-    video.summary ? video.summary_provider : null,
-    video.summary ? video.summary_model : null,
+    video.has_summary ? video.summary_provider : null,
+    video.has_summary ? video.summary_model : null,
   );
   const descriptionDetails = $<HTMLDetailsElement>("#detailDescription");
   const descriptionText = $("#detailDescriptionText");
@@ -1312,8 +1328,8 @@ function showDetail(video: Video) {
   void renderSummaryTab(video);
   $<HTMLIFrameElement>("#videoPlayer").src = buildYouTubeEmbedUrl(video.video_id);
   const reloadBtn = $<HTMLButtonElement>("#reloadTranscriptBtn");
-  reloadBtn.textContent = video.transcript ? "Neu laden" : "Transkript laden";
-  reloadBtn.title = video.transcript
+  reloadBtn.textContent = video.has_transcript ? "Neu laden" : "Transkript laden";
+  reloadBtn.title = video.has_transcript
     ? "Transkript, Kapitel und Beschreibung neu von YouTube laden"
     : "";
   renderVideoCollections(video);

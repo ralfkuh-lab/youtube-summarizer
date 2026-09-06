@@ -189,20 +189,39 @@ fn route(
                 .read_timeout(std::time::Duration::from_secs(60))
                 .build()
                 .map_err(|err| format!("HTTP-Client konnte nicht erstellt werden: {err}"))?;
-            write_result(
-                stream,
+            // Die Automation-API laeuft debug-only und hat keinen Zugriff auf den
+            // verwalteten Tauri-State (Mutex<AiConfigService>, Mutex<AuthStore>).
+            // Daher wird die Konfiguration hier wie bei GET /api/ai/config direkt
+            // von Platte geladen.
+            let result = (|| -> AppResult<crate::models::Video> {
+                let ai = crate::ai::config::AiConfigService::load(paths).data();
+                let catalog = crate::ai::catalog::load(paths).catalog;
+                let (selected, base_url) = commands::resolve_summary_target(
+                    &ai,
+                    &catalog,
+                    request.provider_id,
+                    request.model_id,
+                )?;
+                let key = crate::ai::auth::AuthStore::load(paths).get_key(&selected.provider);
+                let provider_label = commands::provider_label(&ai, &catalog, &selected.provider);
+                let target = commands::SummaryTarget {
+                    provider_label,
+                    model: selected.model,
+                    base_url,
+                    api_key: key,
+                };
                 runtime.block_on(commands::summarize_video_impl(
                     paths,
                     &http,
                     id,
                     request.system_prompt.unwrap_or_default(),
-                    request.provider_id,
-                    request.model_id,
+                    target,
                     request.timestamps,
                     request.options,
                     |_| {},
-                )),
-            )
+                ))
+            })();
+            write_result(stream, result)
         }
         _ => write_json(stream, 404, &json!({"error": "Not found"})),
     }

@@ -166,3 +166,82 @@ test("Race Condition 3: Löschen während Videowechsel", async () => {
   });
 });
 
+test("Schlanke Listenobjekte: Chips T und Z aus Flags und Filter 'mit Transkript'", async () => {
+  await withApp(async (page, mock) => {
+    // Warten bis die initiale Liste gerendert ist
+    await page.waitForSelector('.video-item[data-id="1"]');
+    await page.waitForSelector('.video-item[data-id="2"]');
+
+    // get_videos liefert schlanke Objekte (ohne transcript/summary-Inhalt, nur Flags).
+    // Video 1: has_transcript = false, has_summary = false
+    // Video 2: has_transcript = true, has_summary = true
+
+    // Sicherstellen, dass get_videos schlanke Objekte geliefert hat (transcript/summary sind null)
+    const getVideosCall = await page.evaluate(() =>
+      window.__tauriMock.calls.find((c) => c.cmd === "get_videos"),
+    );
+    assert.ok(getVideosCall?.result, "get_videos muss ein Ergebnis aufgezeichnet haben");
+    for (const item of getVideosCall.result) {
+      assert.strictEqual(item.transcript, null, `Video ${item.id} muss transcript === null haben`);
+      assert.strictEqual(item.summary, null, `Video ${item.id} muss summary === null haben`);
+    }
+
+    // Prüfen von Video 1: T-Chip und Z-Chip dürfen nicht die Klasse "available" haben
+    const v1Chips = page.locator('.video-item[data-id="1"] .status-chip');
+    const v1TAvailable = await v1Chips.nth(0).evaluate((el) => el.classList.contains("available"));
+    const v1ZAvailable = await v1Chips.nth(1).evaluate((el) => el.classList.contains("available"));
+    assert.strictEqual(v1TAvailable, false, "Video 1 T-Chip darf nicht available sein");
+    assert.strictEqual(v1ZAvailable, false, "Video 1 Z-Chip darf nicht available sein");
+
+    // Prüfen von Video 2: T-Chip und Z-Chip müssen die Klasse "available" haben
+    const v2Chips = page.locator('.video-item[data-id="2"] .status-chip');
+    const v2TAvailable = await v2Chips.nth(0).evaluate((el) => el.classList.contains("available"));
+    const v2ZAvailable = await v2Chips.nth(1).evaluate((el) => el.classList.contains("available"));
+    assert.strictEqual(v2TAvailable, true, "Video 2 T-Chip muss available sein");
+    assert.strictEqual(v2ZAvailable, true, "Video 2 Z-Chip muss available sein");
+
+    // Filter "mit Transkript" aktivieren
+    await page.locator('.filter-chip[data-video-filter="transcript"]').click();
+
+    // Video 2 muss sichtbar sein, Video 1 darf nicht in der Liste sein
+    const countV1 = await page.locator('.video-item[data-id="1"]').count();
+    const countV2 = await page.locator('.video-item[data-id="2"]').count();
+    assert.strictEqual(countV1, 0, "Video 1 (ohne Transkript) muss ausgefiltert sein");
+    assert.strictEqual(countV2, 1, "Video 2 (mit Transkript) muss sichtbar sein");
+  });
+});
+
+test("Zusammenfassen bei unvollständig geladenem Listenobjekt öffnet Modal nach Detail-Fetch", async () => {
+  await withApp(async (page, mock) => {
+    await page.waitForSelector('.video-item[data-id="1"]');
+    await page.waitForSelector('.video-item[data-id="2"]');
+
+    // Video 1 auswählen (schnell)
+    await page.locator('.video-item[data-id="1"]').click();
+    await mock.waitForPending();
+
+    // get_video_detail für Video 2 auf 300 ms verzögern
+    await mock.setDelays({
+      get_video_detail: { 2: 300 },
+    });
+
+    // Video 2 anklicken und sofort #summarizeBtn klicken
+    await page.locator('.video-item[data-id="2"]').click();
+    await page.locator('#summarizeBtn').click();
+
+    // Warten bis alle Aufrufe beantwortet sind
+    await mock.waitForPending();
+
+    // Erwartung nach Abschluss aller Aufrufe:
+    // 1. #summaryModal ist sichtbar
+    const isModalVisible = await page.locator("#summaryModal").isVisible();
+    assert.strictEqual(isModalVisible, true, "#summaryModal muss geöffnet/sichtbar sein");
+
+    // 2. Statustext enthält nicht "Kein Transkript"
+    const statusText = await page.locator("#statusText").textContent();
+    assert.ok(
+      !statusText?.includes("Kein Transkript"),
+      `Status darf kein Transkript-Fehler melden, war: "${statusText}"`,
+    );
+  });
+});

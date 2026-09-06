@@ -36,9 +36,9 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 - [ ] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
   - [x] 1: Race Conditions beim Videowechsel und Transkript-Neuladen beheben (Etappe 1).
-  - [ ] 2: Gemeinsamen KI-Konfigurationszustand verwenden und Speicheränderungen bei Schreibfehlern verhindern (Etappe 2).
+  - [x] 2: Gemeinsamen KI-Konfigurationszustand verwenden und Speicheränderungen bei Schreibfehlern verhindern (Etappe 2).
   - [x] 3: Unvollständig beendete KI-Streams erkennen (Etappe 1).
-  - [ ] 4: Schlanke Video-Listenobjekte und gesammelte Sammlungsabfragen einführen (Etappe 2).
+  - [x] 4: Schlanke Video-Listenobjekte und gesammelte Sammlungsabfragen einführen (Etappe 2).
   - [x] 5: Standardmodell genauso wie explizite Modellauswahl validieren (Etappe 1).
   - [ ] Modulgrenzen in `src/main.ts` und `commands.rs` refactoren; gezielte Regressionstests ergänzen (Etappe 3).
 - Collections/playlists roadmap:
@@ -53,8 +53,6 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 - Replace emoji trash buttons with a consistent icon approach when the
   frontend icon strategy is decided.
 - vitest/jsdom setup for the settings UI like folio.
-- Review whether automation API responses should return compact video objects
-  to avoid huge payloads from thumbnails/transcripts.
 - Add Windows and macOS packaging notes once tested on those platforms.
 - Add release checklist once app behavior stabilizes.
 
@@ -67,6 +65,13 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-06: Etappe 2 umgesetzt (`SummaryTarget` entkoppelt
+  `summarize_video_impl` von den Konfigurationsspeichern, Setter in
+  `AiConfigService`/`AuthStore` übernehmen erst nach erfolgreichem Save,
+  Sammlungszuordnungen in einer Abfrage, schlanke Listenobjekte mit
+  `has_transcript`/`has_summary`; `openSummaryDialog` hydriert schlanke Objekte
+  nach). `cargo fmt`, `cargo test` (94 bestanden, 1 Netzwerktest ignoriert),
+  `npm run build` und `npm run test:ui` (5 bestanden) grün. Kein Dev-Server aktiv.
 - 2026-09-06: Etappe 1 umgesetzt (Race Conditions, Standardmodell-Validierung,
   Stream-Abschluss, UI-Testharness, gleiche Guards in deleteActiveVideo und
   updateActiveVideoCollections). `cargo fmt`, `cargo test` (87 bestanden, 1

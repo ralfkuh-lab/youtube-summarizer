@@ -728,10 +728,39 @@ pub async fn refresh_transcript_impl(paths: &AppPaths, id: i64) -> AppResult<Vid
     )
 }
 
+#[derive(Debug, Clone)]
+pub struct SummaryTarget {
+    pub provider_label: String,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+}
+
+pub fn provider_label(ai: &AiConfig, catalog: &Catalog, provider_id: &str) -> String {
+    ai.provider
+        .get(provider_id)
+        .and_then(|p| p.name.clone())
+        .or_else(|| catalog.get(provider_id).and_then(|p| p.name.clone()))
+        .unwrap_or_else(|| provider_id.to_string())
+}
+
+pub fn resolve_summary_target(
+    ai: &AiConfig,
+    catalog: &Catalog,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+) -> AppResult<(AiModelRef, String)> {
+    let selected = resolve_summary_model(ai, provider_id, model_id)?;
+    let base_url = provider_base_url(ai, catalog, &selected.provider)?;
+    Ok((selected, base_url))
+}
+
 #[tauri::command]
 pub async fn summarize_video(
     app: AppHandle,
     paths: State<'_, AppPaths>,
+    cfg: State<'_, std::sync::Mutex<AiConfigService>>,
+    auth: State<'_, std::sync::Mutex<AuthStore>>,
     id: i64,
     system_prompt: String,
     provider_id: Option<String>,
@@ -740,6 +769,19 @@ pub async fn summarize_video(
     options: Option<String>,
     http: State<'_, reqwest::Client>,
 ) -> AppResult<Video> {
+    let target = {
+        let ai = ai_config_data_from_state(&cfg)?;
+        let catalog = ai_catalog::load(paths.inner()).catalog;
+        let (selected, base_url) = resolve_summary_target(&ai, &catalog, provider_id, model_id)?;
+        let key = lock_ai_auth_from_state(&auth)?.get_key(&selected.provider);
+        let provider_label = provider_label(&ai, &catalog, &selected.provider);
+        SummaryTarget {
+            provider_label,
+            model: selected.model,
+            base_url,
+            api_key: key,
+        }
+    };
     let mut last_emit = None;
     let mut emit_error_logged = false;
     summarize_video_impl(
@@ -747,8 +789,7 @@ pub async fn summarize_video(
         &http,
         id,
         system_prompt,
-        provider_id,
-        model_id,
+        target,
         timestamps,
         options,
         |accumulated| {
@@ -782,8 +823,7 @@ pub async fn summarize_video_impl(
     http: &reqwest::Client,
     id: i64,
     system_prompt: String,
-    provider_id: Option<String>,
-    model_id: Option<String>,
+    target: SummaryTarget,
     timestamps: Option<bool>,
     options: Option<String>,
     on_delta: impl FnMut(&str),
@@ -807,13 +847,6 @@ pub async fn summarize_video_impl(
         .as_ref()
         .and_then(|chapters| serde_json::to_string(chapters).ok());
 
-    let ai = AiConfigService::load(paths).data();
-    let selected = resolve_summary_model(&ai, provider_id, model_id)?;
-    // resolve
-    let catalog = ai_catalog::load(paths).catalog;
-    let base_url = provider_base_url(&ai, &catalog, &selected.provider)?;
-    let key = AuthStore::load(paths).get_key(&selected.provider);
-
     let (sys, user_content) = build_summary_prompts(
         &system_prompt,
         &video.title,
@@ -827,9 +860,9 @@ pub async fn summarize_video_impl(
 
     let raw = ai_client::chat_stream(
         http,
-        &base_url,
-        key.as_deref(),
-        &selected.model,
+        &target.base_url,
+        target.api_key.as_deref(),
+        &target.model,
         &messages,
         on_delta,
     )
@@ -838,19 +871,12 @@ pub async fn summarize_video_impl(
 
     let summary = strip_wrapping_code_fence(&raw);
 
-    let provider_label = ai
-        .provider
-        .get(&selected.provider)
-        .and_then(|p| p.name.clone())
-        .or_else(|| catalog.get(&selected.provider).and_then(|p| p.name.clone()))
-        .unwrap_or_else(|| selected.provider.clone());
-
     storage::update_summary(
         paths,
         id,
         &summary,
-        Some(&provider_label),
-        Some(&selected.model),
+        Some(&target.provider_label),
+        Some(&target.model),
         options.as_deref(),
     )
 }
@@ -1115,10 +1141,11 @@ fn http_client() -> AppResult<Client> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_summary_prompts, resolve_summary_model, strip_wrapping_code_fence,
-        untrusted_delimiters, wrap_untrusted, DEFAULT_SYSTEM_PROMPT, UNTRUSTED_DATA_NOTE,
+        build_summary_prompts, provider_label, resolve_summary_model, resolve_summary_target,
+        strip_wrapping_code_fence, untrusted_delimiters, wrap_untrusted, DEFAULT_SYSTEM_PROMPT,
+        UNTRUSTED_DATA_NOTE,
     };
-    use crate::ai::types::{AiConfig, AiModelRef, AiProviderConfig};
+    use crate::ai::types::{AiConfig, AiModelRef, AiProviderConfig, Catalog, CatalogProvider};
 
     fn config_with_enabled_model() -> AiConfig {
         let mut config = AiConfig::default();
@@ -1228,6 +1255,64 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.model, "fast");
+    }
+
+    #[test]
+    fn resolve_summary_target_resolves_model_and_catalog_endpoint() {
+        let config = config_with_enabled_model();
+        let mut catalog = Catalog::default();
+        catalog.insert(
+            "openrouter".into(),
+            CatalogProvider {
+                id: "openrouter".into(),
+                name: Some("OpenRouter".into()),
+                api: Some("https://openrouter.ai/api/v1".into()),
+                env: None,
+                doc: None,
+                models: std::collections::BTreeMap::new(),
+            },
+        );
+
+        let (selected, base_url) = resolve_summary_target(&config, &catalog, None, None).unwrap();
+        assert_eq!(selected.provider, "openrouter");
+        assert_eq!(selected.model, "fast");
+        assert_eq!(base_url, "https://openrouter.ai/api/v1");
+
+        let label = provider_label(&config, &catalog, &selected.provider);
+        assert_eq!(label, "OpenRouter");
+    }
+
+    #[test]
+    fn resolve_summary_target_uses_custom_base_url() {
+        let mut config = config_with_enabled_model();
+        config.provider.insert(
+            "my-custom".into(),
+            AiProviderConfig {
+                enabled: true,
+                custom: true,
+                options: Some(crate::ai::types::AiProviderOptions {
+                    base_url: "http://localhost:11434/v1".into(),
+                }),
+                whitelist: vec!["llama3".into()],
+                name: Some("Custom Ollama".into()),
+                ..Default::default()
+            },
+        );
+        let catalog = Catalog::default();
+
+        let (selected, base_url) = resolve_summary_target(
+            &config,
+            &catalog,
+            Some("my-custom".into()),
+            Some("llama3".into()),
+        )
+        .unwrap();
+        assert_eq!(selected.provider, "my-custom");
+        assert_eq!(selected.model, "llama3");
+        assert_eq!(base_url, "http://localhost:11434/v1");
+
+        let label = provider_label(&config, &catalog, &selected.provider);
+        assert_eq!(label, "Custom Ollama");
     }
 
     #[test]

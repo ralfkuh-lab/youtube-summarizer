@@ -72,12 +72,18 @@ impl AiConfigService {
         if !enabled && !self.data.provider.contains_key(&provider_id) {
             return Ok(());
         }
-        let provider = self.data.provider.entry(provider_id).or_default();
-        if provider.enabled == enabled {
+        if self
+            .data
+            .provider
+            .get(&provider_id)
+            .is_some_and(|p| p.enabled == enabled)
+        {
             return Ok(());
         }
+        let mut next = self.data.clone();
+        let provider = next.provider.entry(provider_id).or_default();
         provider.enabled = enabled;
-        self.save()
+        self.commit(next)
     }
 
     pub fn model_toggle(
@@ -91,7 +97,8 @@ impl AiConfigService {
         if !on && !self.data.provider.contains_key(&provider_id) {
             return Ok(());
         }
-        let whitelist = &mut self.data.provider.entry(provider_id).or_default().whitelist;
+        let mut next = self.data.clone();
+        let whitelist = &mut next.provider.entry(provider_id).or_default().whitelist;
         let before = whitelist.clone();
         if on {
             let mut found = false;
@@ -112,7 +119,7 @@ impl AiConfigService {
         if *whitelist == before {
             return Ok(());
         }
-        self.save()
+        self.commit(next)
     }
 
     pub fn custom_upsert(
@@ -137,21 +144,21 @@ impl AiConfigService {
             return Err(AiConfigError::NotCustom(definition.id));
         }
 
-        let provider =
-            self.data
-                .provider
-                .entry(definition.id)
-                .or_insert_with(|| AiProviderConfig {
-                    enabled: true,
-                    custom: true,
-                    ..AiProviderConfig::default()
-                });
+        let mut next = self.data.clone();
+        let provider = next
+            .provider
+            .entry(definition.id)
+            .or_insert_with(|| AiProviderConfig {
+                enabled: true,
+                custom: true,
+                ..AiProviderConfig::default()
+            });
         provider.name = Some(definition.name);
         provider.custom = true;
         provider.options = Some(AiProviderOptions {
             base_url: definition.base_url,
         });
-        self.save()
+        self.commit(next)
     }
 
     pub fn custom_delete(&mut self, id: &str) -> Result<(), AiConfigError> {
@@ -162,18 +169,18 @@ impl AiConfigService {
         if !provider.custom {
             return Err(AiConfigError::NotCustom(id.to_string()));
         }
-        self.data.provider.remove(id);
-        if self
-            .data
+        let mut next = self.data.clone();
+        next.provider.remove(id);
+        if next
             .default_model
             .as_ref()
             .is_some_and(|default| default.provider == id)
         {
-            self.data.default_model = None;
+            next.default_model = None;
         }
         // Der zugehoerige Auth-Eintrag bleibt bewusst bestehen: auth.json
         // ist ein separater Store und wird nur ueber Auth-Commands veraendert.
-        self.save()
+        self.commit(next)
     }
 
     pub fn custom_models_replace(
@@ -182,14 +189,14 @@ impl AiConfigService {
         model_ids: impl IntoIterator<Item = String>,
     ) -> Result<(), AiConfigError> {
         validate_slug(id)?;
-        let Some(provider) = self.data.provider.get_mut(id) else {
+        let Some(provider) = self.data.provider.get(id) else {
             return Err(AiConfigError::NotCustom(id.to_string()));
         };
         if !provider.custom {
             return Err(AiConfigError::NotCustom(id.to_string()));
         }
 
-        let existing = provider.models.clone();
+        let existing = &provider.models;
         let models = model_ids
             .into_iter()
             .map(|model_id| {
@@ -197,11 +204,14 @@ impl AiConfigService {
                 (model_id, configured)
             })
             .collect::<BTreeMap<String, AiConfiguredModel>>();
-        if models == existing {
+        if &models == existing {
             return Ok(());
         }
-        provider.models = models;
-        self.save()
+        let mut next = self.data.clone();
+        if let Some(p) = next.provider.get_mut(id) {
+            p.models = models;
+        }
+        self.commit(next)
     }
 
     pub fn default_model_set(
@@ -209,7 +219,7 @@ impl AiConfigService {
         provider_id: Option<String>,
         model_id: Option<String>,
     ) -> Result<(), AiConfigError> {
-        let next = match (provider_id, model_id) {
+        let next_model = match (provider_id, model_id) {
             (None, None) => None,
             (Some(provider), Some(model)) => {
                 validate_nonempty_id(&provider)?;
@@ -218,15 +228,17 @@ impl AiConfigService {
             }
             _ => return Err(AiConfigError::IncompleteDefaultModel),
         };
-        if self.data.default_model == next {
+        if self.data.default_model == next_model {
             return Ok(());
         }
-        self.data.default_model = next;
-        self.save()
+        let mut next = self.data.clone();
+        next.default_model = next_model;
+        self.commit(next)
     }
 
-    fn save(&self) -> Result<(), AiConfigError> {
-        save_json_atomic(&self.path, &self.data)?;
+    fn commit(&mut self, next: AiConfig) -> Result<(), AiConfigError> {
+        save_json_atomic(&self.path, &next)?;
+        self.data = next;
         Ok(())
     }
 }
@@ -435,6 +447,34 @@ mod tests {
             Some("model"),
             json.pointer("/defaultModel/model")
                 .and_then(serde_json::Value::as_str)
+        );
+    }
+
+    #[test]
+    fn setter_failure_preserves_state_and_retry_fails_again() {
+        let temp = TempDir::new().unwrap();
+        let regular_file = temp.path().join("not_a_dir");
+        std::fs::write(&regular_file, "blocking file").unwrap();
+        let unwriteable_path = regular_file.join("ai.json");
+
+        let mut service = AiConfigService::load_from(unwriteable_path);
+        assert!(service.data().provider.is_empty());
+
+        let err1 = service.provider_enable("openrouter".into(), true);
+        assert!(err1.is_err(), "Setter must fail when path is unwriteable");
+        assert!(
+            service.data().provider.is_empty(),
+            "Memory state must remain unchanged after write failure"
+        );
+
+        let err2 = service.provider_enable("openrouter".into(), true);
+        assert!(
+            err2.is_err(),
+            "Repeated setter call must fail again and not succeed silently"
+        );
+        assert!(
+            service.data().provider.is_empty(),
+            "Memory state must still be unchanged"
         );
     }
 }
