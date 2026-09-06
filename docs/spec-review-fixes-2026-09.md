@@ -307,18 +307,91 @@ erledigt markieren), `AGENTS.md` nur bei geänderten Kommandos.
 
 ---
 
-## Etappe 3: Modulgrenzen (Ausblick, Detail folgt vor dem Start)
+## Etappe 3: Modulgrenzen
 
-Wird nach Abnahme der Etappen 1 und 2 detailliert. Zielbild:
+Reines Verschieben ohne Verhaltensänderung. Sicherheitsnetz: `cargo test`,
+`npm run build` (tsc mit strikten Typen) und `npm run test:ui`. Vor dem
+Start `git diff --stat` leer, danach müssen alle drei Gates unverändert grün
+sein. Kein Feature, kein Bugfix, keine Umbenennung von Nutzertexten in dieser
+Etappe; wer beim Verschieben einen Fehler entdeckt, notiert ihn in der
+Zusammenfassung statt ihn nebenbei zu fixen.
 
-- `src/main.ts` (rund 2.100 Zeilen) in `types.ts`, `state.ts` (Videos,
-  Collections, aktives Video, busy), `library.ts` (Liste, Filter,
-  Sammlungen), `detail.ts` (Detailansicht, Transkript, Kapitel,
-  Beschreibung), `summary-dialog.ts` (Presets, Module, Historie, Streaming,
-  Mermaid) und ein schlankes `main.ts` (Template, Bootstrap, Verdrahtung).
-- `src-tauri/src/commands.rs`: Migration in ein eigenes Modul, die
-  Zusammenfassungslogik (Prompt-Aufbau, Modellauflösung, Code-Fence-Strip,
-  `summarize_video_impl`) nach `summarize.rs`; `commands.rs` behält nur die
-  `#[tauri::command]`-Wrapper.
-- Reines Verschieben ohne Verhaltensänderung; Sicherheitsnetz sind
-  `cargo test`, `npm run build` und `npm run test:ui`.
+### 3.1 Frontend: `src/main.ts` aufteilen
+
+Vorbild ist das bestehende Muster in `src/ai-config.ts`: ein Modul hält
+seinen Zustand selbst, bekommt Abhängigkeiten über eine `init…()`-Funktion
+und bindet seine Events in einer `bind…Events()`-Funktion, die `main.ts`
+nach dem Rendern des Templates aufruft.
+
+Zwei Fallstricke, die die Aufteilung zwingend beachten muss:
+
+1. **Keine DOM-Zugriffe auf Modulebene.** `import` wird gehoistet; der
+   Modulrumpf eines importierten Moduls läuft, **bevor** `main.ts` das
+   Template in `#app` schreibt. Alle `$("#…")`-Konstanten (heute Zeilen
+   440 ff. in `main.ts`) wandern deshalb entweder in Funktionsrümpfe oder in
+   eine `init…()`-Funktion des jeweiligen Moduls, die die Elemente in
+   modul-lokale `let`-Variablen schreibt.
+2. **Geteilter veränderlicher Zustand.** Ein importiertes `let` ist im
+   Importeur nur lesbar. Der gemeinsame Zustand (`videos`, `collections`,
+   `activeVideoId`, `activeCollectionId`, `activeTab`, `busy`,
+   `videoSearchQuery`, `videoStatusFilter`, `streamingVideoId`,
+   `summaryRenderGen`) wandert in ein exportiertes Objekt
+   `state` in `src/state.ts`; Zugriffe werden zu `state.videos` usw. Zustand,
+   den nur ein Modul benutzt (Preset-Editor, Mermaid-Loader, Summary-Historie),
+   bleibt modul-lokal in diesem Modul.
+
+Zielstruktur (Funktionsnamen wie heute in `main.ts`):
+
+| Datei | Inhalt |
+|---|---|
+| `src/types.ts` | `Chapter`, `TranscriptSnippet`, `Video`, `Collection`, `TabName`, `SummaryRecord`, `SummaryPreset`, `SummaryModules`, `VideoStatusFilter`, `SummarySettings` |
+| `src/template.ts` | `export const appTemplate = \`…\`` (heutiger `app.innerHTML`-String, unverändert) |
+| `src/state.ts` | `state`-Objekt (siehe oben), `getActiveVideo()`, `setBusy()`, `setStatus()`, `initState({ statusEl })` für die DOM-Elemente, die `setBusy`/`setStatus` anfassen |
+| `src/utils.ts` | `formatDate`, `normalizeSearch`, `isVideoStatusFilter`, `compareCollections`, `capitalize`, `coerceBool` |
+| `src/library.ts` | Liste und Sammlungen: `renderVideoList`, `renderVideoFilters`, `getFilteredVideos`, `matchesActiveCollection`, `matchesVideoStatusFilter`, `matchesVideoSearch`, `renderVideoStatusChip`, `addVideo`, `selectVideo`, `deleteActiveVideo`, `renderCollectionList`, `renderCollectionItem`, `openCollectionDialog`, `saveCollection`, `deleteCollection`, `loadCollections`; `initLibrary()`, `bindLibraryEvents()` |
+| `src/detail.ts` | Detailansicht: `showDetail`, `renderVideoCollections`, `updateActiveVideoCollections`, `transcriptErrorHint`, `renderTranscript`, `renderChapters`, `updateDetailSummaryMeta`, `seekVideo`, `buildYouTubeEmbedUrl`, `switchTab`, `detailParagraph`, `renderDescriptionHtml`, `renderDescriptionTextFragment`, `refreshActiveTranscript`, `hasPlayableVideoCodec`, `updateVideoCodecNotice`; `initDetail()`, `bindDetailEvents()` |
+| `src/summary-view.ts` | Zusammenfassungs-Tab und Historie: `stripWrappingCodeFence`, `markdownToHtml`, `timestampSeconds`, `linkifySummaryTimestamps`, `replaceTimestampsInTextNode`, `getMermaid`, `removeMermaidArtifacts`, `renderMermaidBlocks`, `renderSummaryMarkdown`, `hideSummaryHistoryBar`, `formatSummaryHistoryTime`, `summaryHistoryLabel`, `fillSummaryHistorySelect`, `renderSummaryTab`, `showSummaryVersion`, `deleteDisplayedSummary`; `bindSummaryViewEvents()` |
+| `src/summary-dialog.ts` | Dialog, Einstellungen, Presets, Start: `openSummaryDialog`, `defaultSummarySettings`, `parseSummaryModules`, `parseSummarySettings`, `readSummaryModules`, `applySummarySettings`, `loadSummarySettings`, `saveSummarySettings`, `parseModelValue`, `startSummary`, `selectedPresetId`, `selectedPresetPrompt`, `buildSummaryPrompt`, `updateSummaryPromptEditedBadge`, `recomposeSummaryPrompt`, `onSummaryPresetChange`, `loadSummaryPresets`, `fillPresetPicker`, `openPresetManager`, `renderPresetList`, `renderPresetRow`, `slugFromName`, `setPresetEditError`, `openPresetEditDialog`, `onPresetNameInput`, `savePresetEdit`, `deletePreset`; `bindSummaryDialogEvents()` |
+| `src/main.ts` | Imports, `marked.setOptions`, Template rendern, `init…()`-Aufrufe, `bindEvents()` als Verdrahtung der `bind…Events()`, `isModalOpen`, `bindEscapeToCloseModals`, `loadInitialData` |
+
+Regeln:
+
+- `marked`, `DOMPurify` und `mermaid` werden nur dort importiert, wo sie
+  benutzt werden (`summary-view.ts`).
+- Zyklische Imports zwischen Feature-Modulen (etwa `library.selectVideo` →
+  `detail.showDetail` → `library.renderVideoList`) sind erlaubt, solange auf
+  Modulebene nichts aus dem Zyklus ausgewertet wird; genau deshalb Regel 1.
+- `bindEvents()` in `main.ts` bleibt die einzige Stelle, die
+  `addEventListener` für die Kopfzeile (URL-Eingabe, Hinzufügen, Suche,
+  Filter, Einstellungen) setzt; Feature-Module binden nur ihre eigenen
+  Elemente.
+- Keine `export default`, benannte Exporte wie in `ai-config.ts`.
+- `main.ts` soll danach unter 250 Zeilen liegen; kein Feature-Modul über
+  600 Zeilen.
+- `tests/ui/` bleibt unverändert grün; DOM-IDs und Klassen ändern sich nicht.
+
+### 3.2 Backend: `commands.rs` entlasten
+
+- `src-tauri/src/ai/migration.rs`: `ensure_migrated()` samt Helfern
+  (`map_old_provider_id`, `strip_chat_suffix`) und deren Tests. Aufrufer
+  (`lib.rs` bzw. wo heute `commands::ensure_migrated` benutzt wird) anpassen;
+  Sichtbarkeit `pub(crate)`.
+- `src-tauri/src/summarize.rs`: `SummaryTarget`, `resolve_summary_target`,
+  `resolve_summary_model`, `build_summary_prompts`,
+  `strip_wrapping_code_fence`, `summarize_video_impl` und deren Tests.
+  `provider_base_url` bleibt in `commands.rs`, falls es dort auch von den
+  Custom-Model-Commands gebraucht wird; sonst mitwandern.
+- `commands.rs` behält die `#[tauri::command]`-Funktionen, die
+  State-Helfer (`ai_config_data_from_state`, `mutate_ai_config_state`,
+  `lock_ai_auth_from_state`) und die Custom-Model-Helfer.
+- `automation.rs` ruft `summarize::summarize_video_impl` bzw.
+  `summarize::resolve_summary_target` auf.
+- `lib.rs`: neue Module registrieren. `cargo fmt` und `cargo test` grün,
+  Testanzahl unverändert.
+
+### 3.3 Dokumentation
+
+- `AGENTS.md`, Abschnitt „Important Files": die neuen Frontend-Module und
+  `summarize.rs`/`ai/migration.rs` aufnehmen, `src/main.ts` als Bootstrap
+  beschreiben.
+- `TODO.md`: Etappe 3 abhaken, „Last Verified State" ergänzen.
