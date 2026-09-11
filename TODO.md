@@ -53,7 +53,16 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 - Replace emoji trash buttons with a consistent icon approach when the
   frontend icon strategy is decided.
 - vitest/jsdom setup for the settings UI like folio.
-- Add Windows and macOS packaging notes once tested on those platforms.
+- Windows-Umgebung (Befunde vom 2026-09-11, Release-Build und Tests dort erfolgreich, noch nichts umgesetzt):
+  - UI-Test-Harness (`tests/ui/harness.mjs`) ist auf `/usr/bin/chromium` verdrahtet; unter Windows
+    ohne `CHROMIUM_PATH` schlagen alle 5 Tests fehl. Fallback auf die Standardpfade von Chrome/Edge ergänzen.
+  - `.gitattributes` mit `* text=auto eol=lf` anlegen; ohne sie zeigt Git unter Windows `src-tauri/Cargo.toml`
+    dauerhaft als geändert (nur CRLF/LF).
+  - `src-tauri/gen/schemas/windows-schema.json` (vom Build generiert, analog zu `linux-schema.json`) einchecken
+    und den lokalen Shortcut `/youtube-summarizer-setup.lnk` in `.gitignore` aufnehmen (Vorbild: Linux-Symlinks).
+  - Windows-Absatz in `AGENTS.md`: Installer liegen unter `src-tauri/target/release/bundle/{nsis,msi}/`,
+    UI-Tests brauchen `CHROMIUM_PATH`; Voraussetzungen Node >= 20, Rust, Tauri-CLI.
+- Add Windows and macOS packaging notes once tested on those platforms (Windows: siehe Befunde oben; macOS noch ungetestet).
 - Add release checklist once app behavior stabilizes.
 
 ## Known Notes
@@ -65,6 +74,10 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-11 (Windows 11): `origin/main` per Fast-Forward auf 80bd721 gezogen, `npm run build`,
+  `npm run tauri -- build` (NSIS-Setup 5,4 MB und MSI 7,3 MB) und `cargo test` (92 bestanden,
+  1 Netzwerktest ignoriert) grün. `npm run test:ui` nur mit
+  `CHROMIUM_PATH` auf das lokale Chrome grün (5 bestanden), siehe Windows-TODOs. Kein Dev-Server aktiv.
 - 2026-09-06: Etappe 3 umgesetzt (Reines Refactoring der Modulgrenzen ohne
   Verhaltensänderung). Backend: `migration.rs` für Alt-Konfig-Migration,
   `summarize.rs` für Zusammenfassungslogik und Tests aus `commands.rs`
