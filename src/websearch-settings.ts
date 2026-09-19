@@ -13,6 +13,7 @@ export type WebSearchConfig = {
 };
 
 const EMPTY_CONFIG: WebSearchConfig = { enabled: false, searxngUrl: "" };
+const EMPTY_URL_HINT = "Bitte zuerst eine SearXNG-URL eintragen";
 
 let config: WebSearchConfig = { ...EMPTY_CONFIG };
 const listeners: Array<() => void> = [];
@@ -74,6 +75,7 @@ async function saveFromInputs() {
     });
     setError(null);
     renderConfig();
+    updateEmptyUrlHint();
     notify();
     setStatus("Websuche gespeichert");
   } catch (error) {
@@ -82,7 +84,14 @@ async function saveFromInputs() {
 }
 
 async function testConnection() {
-  const url = $<HTMLInputElement>("#webSearchUrl").value;
+  const field = $<HTMLInputElement>("#webSearchUrl");
+  const url = field.value.trim();
+  if (!url) {
+    // Leeres Feld: kein Backend-Aufruf, Fokus ins Feld.
+    setTestResult(EMPTY_URL_HINT, false);
+    field.focus();
+    return;
+  }
   setTestResult("Teste…", true);
   try {
     const count = await invoke<number>("web_search_test", { url });
@@ -92,13 +101,23 @@ async function testConnection() {
   }
 }
 
+/// Hinweis, wenn aktiviert wird, ohne dass eine URL eingetragen ist.
+function updateEmptyUrlHint() {
+  const enabled = $<HTMLInputElement>("#webSearchEnabled").checked;
+  const empty = !$<HTMLInputElement>("#webSearchUrl").value.trim();
+  setError(enabled && empty ? EMPTY_URL_HINT : null);
+}
+
 export function bindWebSearchSettingsEvents() {
   const tab = document.querySelector<HTMLButtonElement>("#settings-tab-websuche");
   tab?.addEventListener("click", () => {
     activateSettingsTab("websuche");
     void loadWebSearchConfig();
   });
-  $("#webSearchEnabled").addEventListener("change", () => void saveFromInputs());
+  $("#webSearchEnabled").addEventListener("change", () => {
+    updateEmptyUrlHint();
+    void saveFromInputs();
+  });
   $("#webSearchUrl").addEventListener("change", () => void saveFromInputs());
   $("#webSearchTest").addEventListener("click", () => void testConnection());
   // Nach dem Schliessen der Einstellungen den Chat-Schalter neu bewerten.

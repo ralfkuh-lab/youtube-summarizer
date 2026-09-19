@@ -939,9 +939,9 @@ test("U28: Ein Tool-Label mit HTML erscheint als Text", async () => {
           status: "start",
         },
       );
-      await page.waitForSelector("#chatMessages .chat-tool-step");
+      await page.waitForSelector("#chatMessages .chat-tool-live-step");
 
-      const text = await page.locator("#chatMessages .chat-tool-step").first().textContent();
+      const text = await page.locator("#chatMessages .chat-tool-live-step").first().textContent();
       assert.ok(text?.includes("<img src=x onerror=alert(1)>"), `Label als Text erwartet: "${text}"`);
       assert.strictEqual(await page.locator("#chatMessages img").count(), 0);
 
@@ -957,17 +957,22 @@ test("U29: Gespeicherte Tool-Schritte erscheinen eingeklappt", async () => {
       await openChat(page, 2);
       await mock.waitForPending();
 
-      const details = page.locator("#chatMessages .chat-row--assistant details.chat-tool");
-      assert.strictEqual(await details.count(), 1, "genau ein Tool-Block");
+      // F3: je Schritt ein <details> plus eine Gruppenzeile.
+      const steps = page.locator("#chatMessages details.chat-tool-step");
+      assert.strictEqual(await steps.count(), 2, "ein Block je Schritt");
       assert.strictEqual(
-        (await details.locator("summary").textContent())?.trim(),
-        "Websuche: 2 Schritte",
+        (await page.locator("#chatMessages .chat-tool-group").textContent())?.trim(),
+        "Recherche · 2 Schritte",
       );
+      const heads = await steps.locator("summary").allTextContents();
+      assert.strictEqual(heads[0].trim(), "Sucht: x");
+      // Fehler-Schritt (F3): Fehlertext in der Kopfzeile.
+      assert.strictEqual(heads[1].trim(), "Liest: example.com – Fehler: Zeitüberschreitung");
       // Delimiter-Zeilen sind entfernt (C9).
-      const body = await details.locator(".chat-tool-body").allTextContents();
-      assert.deepEqual(body, ["Treffer", "Fehler: Zeitüberschreitung"]);
-      const heads = await details.locator(".chat-tool-step-head").allTextContents();
-      assert.deepEqual(heads, ["Sucht: x", "Liest: example.com"]);
+      assert.strictEqual(
+        (await steps.nth(0).locator(".chat-tool-body").textContent())?.trim(),
+        "Treffer",
+      );
       assert.strictEqual(await page.locator("#chatMessages img").count(), 0);
 
       // Die Assistant-Nachricht mit Tool-Aufrufen und leerem Text ist keine leere Blase.
@@ -1057,7 +1062,7 @@ test("U31: Ein Tool-Event mit fremder requestId wird ignoriert", async () => {
         label: "echte Suche",
         status: "start",
       });
-      await page.waitForSelector("#chatMessages .chat-tool-step");
+      await page.waitForSelector("#chatMessages .chat-tool-live-step");
 
       await page.evaluate((payload) => window.__tauriMock.emit("ai:chat_tool", payload), {
         requestId: "fremde-anfrage",
@@ -1066,7 +1071,7 @@ test("U31: Ein Tool-Event mit fremder requestId wird ignoriert", async () => {
         label: "FREMD",
         status: "ok",
       });
-      const steps = await page.locator("#chatMessages .chat-tool-step").allTextContents();
+      const steps = await page.locator("#chatMessages .chat-tool-live-step").allTextContents();
       assert.deepEqual(steps, ["Sucht: echte Suche"]);
 
       await mock.waitForPending();
@@ -1093,16 +1098,16 @@ test("U32: Tool-Status aktualisiert die offene Zeile", async () => {
 
       await emit({ requestId, videoId: 2, kind: "search", label: "rust sse", status: "start" });
       await emit({ requestId, videoId: 2, kind: "search", label: "rust sse", status: "ok" });
-      const single = await page.locator("#chatMessages .chat-tool-step").all();
+      const single = await page.locator("#chatMessages .chat-tool-live-step").all();
       assert.strictEqual(single.length, 1, "ok darf keine zweite Zeile erzeugen");
       assert.strictEqual(
         await single[0].getAttribute("class"),
-        "chat-tool-step chat-tool-step--ok",
+        "chat-tool-live-step chat-tool-live-step--ok",
       );
       assert.strictEqual((await single[0].textContent())?.trim(), "Sucht: rust sse");
 
       await emit({ requestId, videoId: 2, kind: "fetch", label: "example.com/a", status: "start" });
-      const both = await page.locator("#chatMessages .chat-tool-step").allTextContents();
+      const both = await page.locator("#chatMessages .chat-tool-live-step").allTextContents();
       assert.deepStrictEqual(both, ["Sucht: rust sse", "Liest: example.com/a"]);
 
       await mock.waitForPending();
@@ -1117,23 +1122,29 @@ test("U33: Tool-Schritte stehen unter ihrer Assistant-Nachricht", async () => {
       await openChat(page, 2);
       await mock.waitForPending();
 
-      const nodes = await page
-        .locator("#chatMessages > .chat-row")
-        .evaluateAll((rows) =>
-          rows.map((row) =>
-            row.classList.contains("chat-row--user")
-              ? `user:${row.querySelector(".chat-bubble")?.textContent ?? ""}`
-              : `${row.querySelector(".chat-bubble")?.textContent ?? "<leer>"}|${
-                  row.querySelector("details.chat-tool summary")?.textContent ?? "-"
-                }`,
-          ),
-        );
+      const nodes = await page.locator("#chatMessages > *").evaluateAll((children) =>
+        children.map((child) => {
+          if (child.classList.contains("chat-row--user")) {
+            return `user:${child.querySelector(".chat-bubble")?.textContent ?? ""}`;
+          }
+          if (child.classList.contains("chat-tool-steps")) {
+            const group = child.querySelector(".chat-tool-group")?.textContent ?? "-";
+            const heads = [...child.querySelectorAll("details.chat-tool-step summary")].map(
+              (summary) => summary.textContent,
+            );
+            return `${group}|${heads.join(",")}`;
+          }
+          return `${child.querySelector(".chat-bubble")?.textContent ?? "<leer>"}`;
+        }),
+      );
 
       assert.deepStrictEqual(nodes, [
         "user:Frage mit Tools",
-        "Ich suche nach Quellen.\n|Websuche: 2 Schritte",
-        "Ich lese eine Seite.\n|Websuche: 1 Schritte",
-        "Fazit\n|-",
+        "Ich suche nach Quellen.\n",
+        "Recherche · 2 Schritte|Sucht: a,Sucht: b",
+        "Ich lese eine Seite.\n",
+        "Recherche · 1 Schritt|Liest: example.com/pfad",
+        "Fazit\n",
       ]);
     },
     {
@@ -1178,19 +1189,20 @@ test("U34: Tool-Schritte haben lesbare Kopfzeilen und sauberen Inhalt", async ()
       await openChat(page, 2);
       await mock.waitForPending();
 
-      const heads = await page.locator("#chatMessages .chat-tool-step-head").allTextContents();
+      const steps = page.locator("#chatMessages details.chat-tool-step");
+      const heads = (await steps.locator("summary").allTextContents()).map((text) => text.trim());
       assert.deepStrictEqual(heads, [
         "Sucht: <img src=x onerror=alert(1)>",
         "Liest: example.com/pfad",
         "unbekannt",
       ]);
 
-      const bodies = await page.locator("#chatMessages .chat-tool-body").allTextContents();
-      assert.strictEqual(bodies[0], "Treffer A");
-      assert.strictEqual(bodies[1], "Seiteninhalt");
+      const bodies = await steps.locator(".chat-tool-body").allTextContents();
+      assert.strictEqual(bodies[0].trim(), "Treffer A");
+      assert.strictEqual(bodies[1].trim(), "Seiteninhalt");
       // Delimiter-Zeilen sind entfernt, lange Inhalte gekuerzt.
       assert.ok(!bodies[2].includes("=== WEB RESULT"), bodies[2]);
-      assert.ok(bodies[2].endsWith("…"), "langer Inhalt muss gekuerzt sein");
+      assert.ok(bodies[2].endsWith("…"), "langer Inhalt muss gekürzt sein");
       assert.ok(bodies[2].length <= 1501, `zu lang: ${bodies[2].length}`);
       assert.strictEqual(await page.locator("#chatMessages img").count(), 0);
     },
@@ -1251,7 +1263,7 @@ test("U35: Emoji-Labels werden nicht zerschnitten", async () => {
       await openChat(page, 2);
       await mock.waitForPending();
 
-      const head = (await page.locator("#chatMessages .chat-tool-step-head").first().textContent()) ?? "";
+      const head = (await page.locator("#chatMessages details.chat-tool-step summary").first().textContent()) ?? "";
       const chars = Array.from(head);
       assert.strictEqual(chars.length, 121, `120 Codepunkte + Auslassung erwartet: ${chars.length}`);
       assert.ok(head.startsWith("Sucht: "));
@@ -1666,5 +1678,272 @@ test("U45: Das Popover öffnet unter dem Kontext-Button und bleibt im Fenster", 
       assert.ok(box.y >= button.y + button.height - 4, "unter dem Button");
     },
     { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+// ------------------------- F3: Tool-Schritte einzeln aufklappbar -----------
+
+test("U47: Zehn Schritte ohne Text bilden eine Gruppe", async () => {
+  const messages = [{ role: "user", content: "Frage" }];
+  for (let turn = 0; turn < 5; turn += 1) {
+    messages.push({
+      role: "assistant",
+      content: "",
+      toolCalls: [
+        {
+          id: `t${turn}a`,
+          type: "function",
+          function: { name: "web_search", arguments: `{"query":"q${turn}a"}` },
+        },
+        {
+          id: `t${turn}b`,
+          type: "function",
+          function: { name: "fetch_page", arguments: `{"url":"https://example.com/${turn}"}` },
+        },
+      ],
+    });
+    messages.push({ role: "tool", content: "Ergebnis A", toolCallId: `t${turn}a` });
+    messages.push({ role: "tool", content: "Ergebnis B", toolCallId: `t${turn}b` });
+  }
+  messages.push({ role: "assistant", content: "Fazit" });
+
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const groups = page.locator("#chatMessages .chat-tool-group");
+      assert.strictEqual(await groups.count(), 1, "genau eine Gruppenzeile");
+      assert.strictEqual((await groups.textContent())?.trim(), "Recherche · 10 Schritte");
+      const steps = page.locator("#chatMessages details.chat-tool-step");
+      assert.strictEqual(await steps.count(), 10, "zehn aufklappbare Schritte");
+      assert.strictEqual(
+        (await steps.first().locator("summary").textContent())?.trim(),
+        "Sucht: q0a",
+      );
+    },
+    {
+      fixtures: {
+        chatSeed: { 2: [{ title: "Viele Schritte", messages }] },
+      },
+    },
+  );
+});
+
+test("U48: Fehler-Schritte haben keinen aufklappbaren Körper", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const errorStep = page.locator("#chatMessages details.chat-tool-step--error");
+      assert.strictEqual(await errorStep.count(), 1);
+      const summary = (await errorStep.locator("summary").textContent()) ?? "";
+      assert.ok(
+        summary.includes("– Fehler: Zeitüberschreitung"),
+        `Fehlertext in der Kopfzeile erwartet: "${summary}"`,
+      );
+      assert.strictEqual(
+        await errorStep.locator(".chat-tool-body").count(),
+        0,
+        "kein Körper beim Fehler-Schritt",
+      );
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "Fehlerschritt",
+              messages: [
+                { role: "user", content: "Frage" },
+                {
+                  role: "assistant",
+                  content: "",
+                  toolCalls: [
+                    {
+                      id: "c1",
+                      type: "function",
+                      function: { name: "fetch_page", arguments: '{"url":"https://example.com/x"}' },
+                    },
+                  ],
+                },
+                { role: "tool", content: "Fehler: Zeitüberschreitung", toolCallId: "c1" },
+                { role: "assistant", content: "Antwort" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  );
+});
+
+test("U49: Label mit HTML erscheint als Text, title enthält das volle Label", async () => {
+  const longQuery = `<img src=x onerror=alert(1)> ${"x".repeat(200)}`;
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const summary = page.locator("#chatMessages details.chat-tool-step summary").first();
+      const text = (await summary.textContent()) ?? "";
+      assert.ok(text.startsWith("Sucht: <img src=x onerror=alert(1)>"), text);
+      const title = (await summary.getAttribute("title")) ?? "";
+      assert.ok(title.includes("x".repeat(200)), "title enthält das volle Label");
+      assert.ok(title.length > text.length, "title ist vollständiger als der sichtbare Text");
+      assert.strictEqual(await page.locator("#chatMessages img").count(), 0);
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "HTML-Label",
+              messages: [
+                { role: "user", content: "Frage" },
+                {
+                  role: "assistant",
+                  content: "",
+                  toolCalls: [
+                    {
+                      id: "c1",
+                      type: "function",
+                      function: { name: "web_search", arguments: JSON.stringify({ query: longQuery }) },
+                    },
+                  ],
+                },
+                { role: "tool", content: "Treffer", toolCallId: "c1" },
+                { role: "assistant", content: "Antwort" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  );
+});
+
+// ------------------- F2: Websuche-Einstellungen mit leerem Feld ------------
+
+async function openWebSearchSettings(page, mock) {
+  await page.locator("#settingsBtn").click();
+  await page.locator("#settings-tab-websuche").click();
+  await mock.waitForPending();
+}
+
+test("U45: Verbindung testen mit leerem Feld ruft kein Backend auf", async () => {
+  await withApp(async (page, mock) => {
+    await openWebSearchSettings(page, mock);
+    await page.locator("#webSearchUrl").fill("");
+    await page.locator("#webSearchTest").click();
+    await mock.waitForPending();
+
+    assert.strictEqual(
+      (await page.locator("#webSearchTestResult").textContent())?.trim(),
+      "Bitte zuerst eine SearXNG-URL eintragen",
+    );
+    const calls = await page.evaluate(() =>
+      window.__tauriMock.calls.filter((call) => call.cmd === "web_search_test").length,
+    );
+    assert.strictEqual(calls, 0, "kein web_search_test-Aufruf");
+    assert.strictEqual(
+      await page.evaluate(() => document.activeElement?.id),
+      "webSearchUrl",
+      "Fokus muss im URL-Feld stehen",
+    );
+    // Der Platzhalter sieht nicht wie ein Wert aus.
+    assert.strictEqual(
+      await page.locator("#webSearchUrl").getAttribute("placeholder"),
+      "z. B. http://127.0.0.1:8080",
+    );
+  });
+});
+
+test("U46: Websuche aktivieren ohne URL zeigt den Hinweis", async () => {
+  await withApp(async (page, mock) => {
+    await openWebSearchSettings(page, mock);
+    await page.locator("#webSearchUrl").fill("");
+    await page.locator("#webSearchEnabled").check();
+    await mock.waitForPending();
+
+    assert.strictEqual(await page.locator("#webSearchError").isVisible(), true);
+    assert.strictEqual(
+      (await page.locator("#webSearchError").textContent())?.trim(),
+      "Bitte zuerst eine SearXNG-URL eintragen",
+    );
+    // Speichern bleibt erlaubt (der Mock-Aufruf ist erfolgt).
+    const saves = await page.evaluate(() =>
+      window.__tauriMock.calls.filter((call) => call.cmd === "web_search_config_set").length,
+    );
+    assert.ok(saves >= 1, "die Konfiguration wird gespeichert");
+  });
+});
+
+// ------------------- N2: Aufklapp-Marker der Tool-Schritte -----------------
+
+test("U50: Normale Tool-Schritte zeigen den Aufklapp-Zeiger, Fehler nicht", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const normal = page.locator("#chatMessages details.chat-tool-step:not(.chat-tool-step--error)");
+      assert.ok((await normal.count()) >= 1, "mindestens ein normaler Schritt");
+      const normalCursor = await normal
+        .first()
+        .locator("summary")
+        .evaluate((summary) => getComputedStyle(summary).cursor);
+      assert.strictEqual(normalCursor, "pointer");
+
+      const errorStep = page.locator("#chatMessages details.chat-tool-step--error");
+      assert.strictEqual(await errorStep.count(), 1);
+      const errorCursor = await errorStep
+        .locator("summary")
+        .evaluate((summary) => getComputedStyle(summary).cursor);
+      assert.strictEqual(errorCursor, "default", "Fehler-Schritt ist nicht aufklappbar");
+      const marker = await errorStep
+        .locator("summary")
+        .evaluate((summary) => getComputedStyle(summary).listStyleType);
+      assert.strictEqual(marker, "none", "kein Marker beim Fehler-Schritt");
+
+      // Der normale Schritt laesst sich aufklappen, der Fehler-Schritt hat keinen Koerper.
+      await normal.first().locator("summary").click();
+      assert.strictEqual(await normal.first().getAttribute("open"), "");
+      assert.strictEqual(await errorStep.locator(".chat-tool-body").count(), 0);
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "Marker",
+              messages: [
+                { role: "user", content: "Frage" },
+                {
+                  role: "assistant",
+                  content: "",
+                  toolCalls: [
+                    {
+                      id: "c1",
+                      type: "function",
+                      function: { name: "web_search", arguments: '{"query":"x"}' },
+                    },
+                    {
+                      id: "c2",
+                      type: "function",
+                      function: { name: "fetch_page", arguments: '{"url":"https://example.com/a"}' },
+                    },
+                  ],
+                },
+                { role: "tool", content: "Treffer", toolCallId: "c1" },
+                { role: "tool", content: "Fehler: Zeitüberschreitung", toolCallId: "c2" },
+                { role: "assistant", content: "Antwort" },
+              ],
+            },
+          ],
+        },
+      },
+    },
   );
 });

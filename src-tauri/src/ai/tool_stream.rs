@@ -53,12 +53,48 @@ pub async fn chat_stream_with_tools_cancellable(
     model: &str,
     messages: &[ChatMessage],
     tools: &[Value],
+    on_delta: impl FnMut(&str),
+    is_cancelled: impl FnMut() -> bool,
+) -> Result<ChatTurn, ChatError> {
+    chat_stream_with_tools_and_choice(
+        http,
+        base_url,
+        api_key,
+        model,
+        messages,
+        tools,
+        None,
+        on_delta,
+        is_cancelled,
+    )
+    .await
+}
+
+/// Wie `chat_stream_with_tools_cancellable`, zusaetzlich mit `tool_choice`
+/// (`"none"` fuer die Schlussanfrage der Websuche).
+#[allow(clippy::too_many_arguments)]
+pub async fn chat_stream_with_tools_and_choice(
+    http: &Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    messages: &[ChatMessage],
+    tools: &[Value],
+    tool_choice: Option<&str>,
     mut on_delta: impl FnMut(&str),
     mut is_cancelled: impl FnMut() -> bool,
 ) -> Result<ChatTurn, ChatError> {
     let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
-    let response =
-        client::send_chat_request(http, base_url, api_key, model, messages, Some(tools)).await?;
+    let response = client::send_chat_request_with_choice(
+        http,
+        base_url,
+        api_key,
+        model,
+        messages,
+        Some(tools),
+        tool_choice,
+    )
+    .await?;
 
     // JSON-Fallback (kein SSE): auch hier kann das Modell Tool-Aufrufe liefern.
     if !client::response_content_type(&response).starts_with("text/event-stream") {

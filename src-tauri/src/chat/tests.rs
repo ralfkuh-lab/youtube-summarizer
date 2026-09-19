@@ -1,6 +1,7 @@
 //! Referenzfaelle P1-P10 (`build_chat_messages`/Prompts) und D1-D12 (Backend)
 //! aus docs/spec-video-chat.md, Etappe 1a.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -12,8 +13,8 @@ use serde_json::json;
 use tempfile::TempDir;
 
 use super::{
-    build_chat_messages, chat_send_impl, chat_system_prompt, chat_title, tool_error_text,
-    web_search_runtime, ChatRuns, CHAT_SYSTEM_PROMPT, MAX_TOOL_CALLS_PER_ROUND,
+    build_chat_messages, chat_send_impl, chat_system_prompt, chat_title, looks_like_tool_markup,
+    tool_error_text, web_search_runtime, ChatRuns, CHAT_SYSTEM_PROMPT, MAX_TOOL_CALLS_PER_ROUND,
     WEB_SEARCH_PROMPT_ADDENDUM,
 };
 use crate::ai::client::ChatError;
@@ -1039,6 +1040,7 @@ struct ScriptServer {
     addr: SocketAddr,
     requests: Arc<AtomicUsize>,
     bodies: Arc<Mutex<Vec<String>>>,
+    errors: Arc<Mutex<HashMap<usize, String>>>,
 }
 
 impl ScriptServer {
@@ -1050,21 +1052,33 @@ impl ScriptServer {
         let queue = Arc::new(Mutex::new(std::collections::VecDeque::from(script)));
         let counter = requests.clone();
         let recorded = bodies.clone();
+        let errors: Arc<Mutex<HashMap<usize, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        let handler_errors = errors.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
                 let index = counter.fetch_add(1, Ordering::SeqCst);
                 let recorded = recorded.clone();
                 let queue = queue.clone();
+                let errors = handler_errors.clone();
                 std::thread::spawn(move || {
                     let body = read_request(&mut stream);
                     recorded.lock().unwrap().push(body);
+                    let error = recorded_error(&errors, index);
+                    if let Some(status) = error {
+                        respond(
+                            &mut stream,
+                            &status,
+                            "application/json",
+                            "{\"error\":{\"message\":\"tool_choice nicht unterstuetzt\"}}",
+                        );
+                        return;
+                    }
                     let next = queue
                         .lock()
                         .unwrap()
                         .pop_front()
                         .unwrap_or_else(|| sse_text("Antwort"));
-                    let _ = index;
                     respond(&mut stream, "200 OK", "text/event-stream", &next);
                 });
             }
@@ -1073,7 +1087,18 @@ impl ScriptServer {
             addr,
             requests,
             bodies,
+            errors,
         }
+    }
+
+    /// Laesst den Request mit dem gegebenen Index (0-basiert) mit einem
+    /// HTTP-Fehler antworten (z. B. `400 Bad Request`).
+    fn with_error_on_request(self, index: usize, status: &str) -> Self {
+        self.errors
+            .lock()
+            .unwrap()
+            .insert(index, status.to_string());
+        self
     }
 
     fn target(&self) -> SummaryTarget {
@@ -1152,6 +1177,14 @@ fn tool_call_stream(name: &str, arguments: &str, id: &str) -> String {
     ])
 }
 
+/// Stream ohne Text (nur Abschluss): fuer die Schlussanfrage.
+fn empty_stream() -> String {
+    sse(&[
+        json!({"choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+        "[DONE]".to_string(),
+    ])
+}
+
 fn text_stream(text: &str) -> String {
     sse(&[
         json!({"choices":[{"delta":{"content":text}}]}).to_string(),
@@ -1209,9 +1242,19 @@ async fn l1_five_tool_rounds_then_final_answer_without_tools() {
         bodies[..5].iter().all(|body| body.contains("\"tools\"")),
         "die ersten fuenf Anfragen senden tools"
     );
+    // Schlussanfrage (F1): weiter mit tools, aber tool_choice "none".
     assert!(
-        server.body(5).get("tools").is_none(),
-        "die Schlussanfrage kommt ohne tools"
+        server.body(5).get("tools").is_some(),
+        "tools bleiben gesetzt"
+    );
+    assert_eq!(server.body(5)["tool_choice"], "none");
+    assert_eq!(
+        server.body(5)["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"],
+        crate::chat_prompt::FINAL_ROUND_REQUEST
     );
     // user + 5x (assistant + tool) + finale Antwort
     assert_eq!(result.messages.len(), 12);
@@ -1926,11 +1969,9 @@ async fn c6_final_round_without_text_reports_a_clear_message() {
             &format!("call_{round}"),
         ));
     }
-    script.push(tool_call_stream(
-        "web_search",
-        "{\"query\":\"x\"}",
-        "call_final",
-    ));
+    // Schlussanfrage und Wiederholung liefern leeren Text.
+    script.push(empty_stream());
+    script.push(empty_stream());
     let server = ScriptServer::start(script);
     let http = reqwest::Client::new();
     let runs = ChatRuns::default();
@@ -1954,7 +1995,8 @@ async fn c6_final_round_without_text_reports_a_clear_message() {
         error,
         "Das Modell hat nach der Recherche keine Antwort geliefert – bitte erneut versuchen"
     );
-    assert_eq!(server.requests(), 6);
+    // Fuenf Tool-Runden, Schlussanfrage und eine Wiederholung.
+    assert_eq!(server.requests(), 7);
     assert_eq!(count_rows(&paths, "chats"), 0);
     assert_eq!(count_rows(&paths, "chat_messages"), 0);
 }
@@ -2484,4 +2526,286 @@ fn x10b_chat_context_set_stores_and_reads_options() {
         storage::set_chat_context(&paths, 9999, &ChatContextOptions::default()).unwrap_err(),
         "Chat wurde gelöscht"
     );
+}
+
+// ------------------------------- F1: Schlussanfrage und Tool-Markup ---------
+
+const DSML_MARKUP: &str = "< | DSML | calls> < | DSML | invoke name=\"fetch_page\"> < | DSML | parameter name=\"url\" string=\"true\">https://www.reddit.com/r/rust</ | DSML | parameter> </ | DSML | invoke> </ | DSML | calls>";
+
+fn recorded_error(errors: &Arc<Mutex<HashMap<usize, String>>>, index: usize) -> Option<String> {
+    errors.lock().unwrap().get(&index).cloned()
+}
+
+fn five_tool_rounds() -> Vec<String> {
+    (0..5)
+        .map(|round| {
+            tool_call_stream(
+                "web_search",
+                &format!("{{\"query\":\"q{round}\"}}"),
+                &format!("call_{round}"),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn l13_final_round_markup_triggers_one_retry() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let mut script = five_tool_rounds();
+    script.push(text_stream(DSML_MARKUP));
+    script.push(text_stream("Fazit"));
+    let server = ScriptServer::start(script);
+    let http = reqwest::Client::new();
+    let runs = ChatRuns::default();
+    let events: ToolEvents = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+
+    let result = send_tool_turn(
+        &runs,
+        &paths,
+        &http,
+        &server,
+        video.id,
+        None,
+        Some(runtime),
+        &events,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        server.requests(),
+        7,
+        "5 Runden + Schlussanfrage + Wiederholung"
+    );
+    assert_eq!(result.messages.last().unwrap().content, "Fazit");
+    assert_eq!(server.body(5)["tool_choice"], "none");
+    assert_eq!(server.body(6)["tool_choice"], "none");
+    for index in [5, 6] {
+        let messages = server.body(index)["messages"].as_array().unwrap().clone();
+        assert_eq!(
+            messages.last().unwrap()["content"],
+            crate::chat_prompt::FINAL_ROUND_REQUEST
+        );
+        // Die Abschluss-Nachricht wird nicht gespeichert.
+        assert!(
+            result
+                .messages
+                .iter()
+                .all(|message| message.content != crate::chat_prompt::FINAL_ROUND_REQUEST),
+            "Abschluss-Nachricht darf nicht im Verlauf stehen"
+        );
+    }
+    // Der DSML-Text wurde nicht gespeichert.
+    assert!(
+        result
+            .messages
+            .iter()
+            .all(|message| !message.content.contains("DSML")),
+        "Markup darf nicht gespeichert werden"
+    );
+}
+
+#[tokio::test]
+async fn l14_retry_markup_is_an_error_without_saving() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let mut script = five_tool_rounds();
+    script.push(text_stream(DSML_MARKUP));
+    script.push(text_stream("<tool_call>fetch_page</tool_call>"));
+    let server = ScriptServer::start(script);
+    let http = reqwest::Client::new();
+    let runs = ChatRuns::default();
+    let events: ToolEvents = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+
+    let error = send_tool_turn(
+        &runs,
+        &paths,
+        &http,
+        &server,
+        video.id,
+        None,
+        Some(runtime),
+        &events,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        "Das Modell hat nach der Recherche keine Antwort geliefert – bitte erneut versuchen"
+    );
+    assert_eq!(server.requests(), 7);
+    assert_eq!(count_rows(&paths, "chats"), 0);
+    assert_eq!(count_rows(&paths, "chat_messages"), 0);
+}
+
+#[tokio::test]
+async fn l15_tool_choice_400_falls_back_without_tools() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let mut script = five_tool_rounds();
+    // Die Schlussanfrage (Index 5) antwortet mit HTTP 400, verbraucht also kein
+    // Skript-Element; der Rueckfall (Index 6) liefert die Antwort.
+    script.push(text_stream("Antwort ohne tool_choice"));
+    let server = ScriptServer::start(script);
+    // Der Server antwortet auf die sechste Anfrage mit 400.
+    let http = reqwest::Client::new();
+    let runs = ChatRuns::default();
+    let events: ToolEvents = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+    let server = server.with_error_on_request(5, "400 Bad Request");
+
+    let result = send_tool_turn(
+        &runs,
+        &paths,
+        &http,
+        &server,
+        video.id,
+        None,
+        Some(runtime),
+        &events,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(server.requests(), 7, "5 Runden + 400 + Rueckfall");
+    assert_eq!(
+        result.messages.last().unwrap().content,
+        "Antwort ohne tool_choice"
+    );
+    // Der Rueckfall (Index 6) sendet kein tool_choice und keine tools.
+    assert!(
+        server.body(6).get("tools").is_none(),
+        "Rueckfall ohne tools"
+    );
+    assert!(server.body(6).get("tool_choice").is_none());
+}
+
+#[tokio::test]
+async fn l16_last_round_note_only_on_the_last_tool_message() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let mut script = five_tool_rounds();
+    script.push(text_stream("Fazit"));
+    let server = ScriptServer::start(script);
+    let http = reqwest::Client::new();
+    let runs = ChatRuns::default();
+    let events: ToolEvents = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+
+    let result = send_tool_turn(
+        &runs,
+        &paths,
+        &http,
+        &server,
+        video.id,
+        None,
+        Some(runtime),
+        &events,
+    )
+    .await
+    .unwrap();
+
+    let tools: Vec<&str> = result
+        .messages
+        .iter()
+        .filter(|message| message.role == "tool")
+        .map(|message| message.content.as_str())
+        .collect();
+    assert_eq!(tools.len(), 5);
+    for content in &tools[..4] {
+        assert!(
+            !content.contains(crate::chat_prompt::LAST_ROUND_NOTE),
+            "{content}"
+        );
+    }
+    assert!(
+        tools[4].ends_with(crate::chat_prompt::LAST_ROUND_NOTE),
+        "{}",
+        tools[4]
+    );
+    // Die Schlusszeile steht ausserhalb des WEB-RESULT-Blocks.
+    assert!(tools[4].contains("=== END WEB RESULT 4 ==="));
+    assert!(
+        tools[4].find("=== END WEB RESULT 4 ===").unwrap()
+            < tools[4].find(crate::chat_prompt::LAST_ROUND_NOTE).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn l17_markup_in_an_earlier_round_triggers_the_final_request() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let server = ScriptServer::start(vec![
+        tool_call_stream("web_search", "{\"query\":\"q0\"}", "call_0"),
+        // Zweite Runde: kein tool_calls, aber Tool-Markup als Text.
+        text_stream(DSML_MARKUP),
+        text_stream("Antwort nach Wiederholung"),
+    ]);
+    let http = reqwest::Client::new();
+    let runs = ChatRuns::default();
+    let events: ToolEvents = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+
+    let result = send_tool_turn(
+        &runs,
+        &paths,
+        &http,
+        &server,
+        video.id,
+        None,
+        Some(runtime),
+        &events,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(server.requests(), 3, "Runde 1, Runde 2, Wiederholung");
+    assert_eq!(
+        result.messages.last().unwrap().content,
+        "Antwort nach Wiederholung"
+    );
+    assert_eq!(server.body(2)["tool_choice"], "none");
+    assert!(result
+        .messages
+        .iter()
+        .all(|message| !message.content.contains("DSML")));
+}
+
+#[test]
+fn l18_looks_like_tool_markup_matches_the_reference_cases() {
+    // Positiv: Text beginnt mit dem Muster (Leerraum und Gross-/Klein egal).
+    for text in [
+        DSML_MARKUP,
+        "< | DSML | calls>",
+        "<tool_call>{\"name\":\"x\"}</tool_call>",
+        "<|tool▁calls>",
+        "<|tool_calls>",
+        "<function_calls><invoke name=\"web_search\"></function_calls>",
+        "<invoke name=\"web_search\">",
+        "  <TOOL_CALL>  ",
+        "Ich hole die Seite. < | DSML | calls> < | DSML | invoke name=\"fetch_page\">",
+    ] {
+        assert!(looks_like_tool_markup(text), "positiv erwartet: {text}");
+    }
+    // Positiv: reines JSON-Objekt mit name und arguments.
+    assert!(looks_like_tool_markup(
+        "{\"name\":\"web_search\",\"arguments\":\"{}\"}"
+    ));
+
+    // Negativ: normale Antworten, blosse Erwaehnungen und Zitate in Code.
+    for text in [
+        "",
+        "   ",
+        "Das Video erklaert DSML als Abkuerzung.",
+        "Die Antwort ist 42.",
+        "```json\n{\"foo\":\"bar\"}\n```",
+        "{\"name\":\"x\"}",
+        "Die Funktion invoke(name) wird aufgerufen.",
+        // N1: Zitat in Inline-Code bzw. Codeblock ist kein Markup.
+        "Ein Aufruf sieht so aus: `<tool_call>{\"name\":\"x\"}</tool_call>` und mehr Text.",
+        "So funktioniert es:\n\n```\n<tool_call>{\"name\":\"x\"}</tool_call>\n```\n\nEnde der Erklaerung.",
+        // N1: langer Erklaertext, Muster erst nach 500 Zeichen Prosa.
+        &format!("{} <invoke name=\"x\">", "Prosa ".repeat(90)),
+    ] {
+        assert!(!looks_like_tool_markup(text), "negativ erwartet: {text}");
+    }
 }

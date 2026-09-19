@@ -149,6 +149,8 @@ struct ChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [Value]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -276,6 +278,20 @@ pub(crate) async fn send_chat_request(
     messages: &[ChatMessage],
     tools: Option<&[Value]>,
 ) -> Result<reqwest::Response, ChatError> {
+    send_chat_request_with_choice(http, base_url, api_key, model, messages, tools, None).await
+}
+
+/// Wie `send_chat_request`, zusaetzlich mit `tool_choice` (z. B. `"none"` fuer
+/// die Schlussanfrage der Websuche).
+pub(crate) async fn send_chat_request_with_choice(
+    http: &Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    messages: &[ChatMessage],
+    tools: Option<&[Value]>,
+    tool_choice: Option<&str>,
+) -> Result<reqwest::Response, ChatError> {
     let endpoint = chat_url(base_url)?;
     let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
     // Ohne Werkzeuge kein `tools`-Feld: manche Provider antworten auf
@@ -286,6 +302,7 @@ pub(crate) async fn send_chat_request(
         messages,
         stream: true,
         tools,
+        tool_choice,
     });
     if let Some(key) = api_key {
         request = request.bearer_auth(key);
@@ -512,6 +529,7 @@ mod tests {
             messages: &messages,
             stream: false,
             tools: None,
+            tool_choice: None,
         })
         .unwrap();
         assert_eq!("test-model", value["model"]);

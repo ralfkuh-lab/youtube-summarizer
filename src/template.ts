@@ -77,7 +77,7 @@ export const appTemplate = `
             <div class="chat-toolbar">
               <select id="chatSelect" aria-label="Chat-Verlauf"></select>
               <button id="chatContextBtn" class="inline-action chat-context-btn" title="Kontext wählen" aria-haspopup="true" aria-expanded="false">
-                Kontext: <span id="chatContextLabel"></span>
+                <span id="chatContextLabel"></span>
               </button>
               <div id="chatContextMenu" class="chat-context-menu" hidden>
                 <label class="chat-context-choice">
@@ -205,7 +205,7 @@ export const appTemplate = `
             </label>
             <div class="settings-row">
               <label for="webSearchUrl">SearXNG-URL</label>
-              <input type="url" id="webSearchUrl" class="settings-input" placeholder="http://127.0.0.1:8080" autocomplete="off" spellcheck="false" />
+              <input type="url" id="webSearchUrl" class="settings-input" placeholder="z. B. http://127.0.0.1:8080" autocomplete="off" spellcheck="false" />
             </div>
             <div class="settings-ai-toolbar">
               <button type="button" id="webSearchTest" class="settings-ai-button">Verbindung testen</button>

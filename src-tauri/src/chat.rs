@@ -10,9 +10,15 @@ pub use crate::chat_runs::ChatRuns;
 
 use crate::ai::catalog as ai_catalog;
 use crate::ai::client as ai_client;
+use crate::ai::client::ChatMessage;
 use crate::ai::config::AiConfigService;
 use crate::ai::tool_stream;
-use crate::chat_prompt::{build_messages_from_context, chat_title, ChatContext, ExtraParts};
+use crate::chat_final::final_round_request;
+pub use crate::chat_final::looks_like_tool_markup;
+use crate::chat_prompt::{
+    build_messages_from_context, chat_title, ChatContext, ExtraParts, FINAL_ROUND_REQUEST,
+    LAST_ROUND_NOTE,
+};
 use crate::models::{Chat, ChatContextOptions, ChatMessageRecord, ChatTurnResult, NewChatMessage};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::summarize::{self, SummaryTarget};
@@ -212,8 +218,9 @@ pub async fn chat_send_impl(
             &round_messages,
             tools.is_some(),
         );
-        // In der Schlussrunde (und ohne Websuche) bleibt der strenge Pfad:
-        // Tool-Aufrufe werden dort nicht ausgewertet.
+        // Ab der sechsten Anfrage ist es die Schlussanfrage: sie sendet weiter
+        // `tools`, aber `tool_choice: "none"` und die nicht gespeicherte
+        // Abschluss-Nachricht; Tool-Aufrufe werden dort nicht ausgewertet.
         let with_tools = tools.is_some() && round < MAX_TOOL_ROUNDS;
         let turn = if with_tools {
             let definitions = websearch::tool_definitions();
@@ -229,8 +236,51 @@ pub async fn chat_send_impl(
             )
             .await
             .map_err(|error| error.to_string())?
+        } else if tools.is_some() {
+            // Schlussanfrage der Websuche.
+            let mut final_messages = messages.clone();
+            final_messages.push(ChatMessage::user(FINAL_ROUND_REQUEST));
+            let definitions = websearch::tool_definitions();
+            let turn = final_round_request(
+                http,
+                &target,
+                &final_messages,
+                &definitions,
+                &mut on_delta,
+                &mut is_cancelled,
+            )
+            .await?;
+
+            // Tool-Aufrufe der Schlussanfrage werden ignoriert; es zaehlt der
+            // Text. Sicherheitsnetz: leerer Text oder Tool-Markup ist keine
+            // Antwort - genau ein Wiederholungsversuch, danach der Fehlertext.
+            let answer_text = turn.content.clone();
+            let usable = |text: &str| !text.trim().is_empty() && !looks_like_tool_markup(text);
+            let text = if usable(&answer_text) {
+                answer_text
+            } else {
+                let retry = final_round_request(
+                    http,
+                    &target,
+                    &final_messages,
+                    &definitions,
+                    &mut on_delta,
+                    &mut is_cancelled,
+                )
+                .await?;
+                if usable(&retry.content) {
+                    retry.content
+                } else {
+                    return Err(EMPTY_FINAL_ANSWER_MESSAGE.to_string());
+                }
+            };
+            tool_stream::ChatTurn {
+                content: text,
+                tool_calls: Vec::new(),
+            }
         } else {
-            let result = ai_client::chat_stream_cancellable(
+            // Ohne Websuche bleibt der strenge Pfad (ein Request).
+            let text = ai_client::chat_stream_cancellable(
                 http,
                 &target.base_url,
                 target.api_key.as_deref(),
@@ -239,24 +289,45 @@ pub async fn chat_send_impl(
                 &mut on_delta,
                 &mut is_cancelled,
             )
-            .await;
-            let text = match result {
-                Ok(text) => text,
-                // Nur im Websuche-Lauf: die Schlussanfrage ohne Werkzeuge muss
-                // eine Antwort liefern.
-                Err(ai_client::ChatError::MissingChoice) if tools.is_some() => {
-                    return Err(EMPTY_FINAL_ANSWER_MESSAGE.to_string())
-                }
-                Err(error) => return Err(error.to_string()),
-            };
+            .await
+            .map_err(|error| error.to_string())?;
             tool_stream::ChatTurn {
                 content: text,
                 tool_calls: Vec::new(),
             }
         };
 
-        if turn.tool_calls.is_empty() {
+        // Die Schlussanfrage (Websuche ab Runde 5) ist die Antwort.
+        if tools.is_some() && round >= MAX_TOOL_ROUNDS {
             break turn.content;
+        }
+
+        if turn.tool_calls.is_empty() {
+            let content = turn.content;
+            // Markup in einer regulaeren Runde (ohne tool_calls): nicht speichern,
+            // sondern einmalig die Schlussanfrage stellen.
+            if tools.is_some() && looks_like_tool_markup(&content) {
+                let mut final_messages = messages.clone();
+                final_messages.push(ChatMessage::user(FINAL_ROUND_REQUEST));
+                let definitions = websearch::tool_definitions();
+                let retry = final_round_request(
+                    http,
+                    &target,
+                    &final_messages,
+                    &definitions,
+                    &mut on_delta,
+                    &mut is_cancelled,
+                )
+                .await?;
+                if retry.tool_calls.is_empty()
+                    && !looks_like_tool_markup(&retry.content)
+                    && !retry.content.trim().is_empty()
+                {
+                    break retry.content;
+                }
+                return Err(EMPTY_FINAL_ANSWER_MESSAGE.to_string());
+            }
+            break content;
         }
         round += 1;
 
@@ -326,6 +397,15 @@ pub async fn chat_send_impl(
                         }
                     }
                 }
+            };
+            // In der letzten erlaubten Runde bekommt die letzte Tool-Nachricht
+            // die feste Schlusszeile (ausserhalb des WEB-RESULT-Blocks).
+            let is_last_round = round >= MAX_TOOL_ROUNDS;
+            let is_last_call = index + 1 == turn.tool_calls.len();
+            let content = if is_last_round && is_last_call {
+                format!("{content}\n\n{LAST_ROUND_NOTE}")
+            } else {
+                content
             };
             let tool_message = NewChatMessage {
                 role: "tool".to_string(),

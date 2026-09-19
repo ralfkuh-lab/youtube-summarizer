@@ -72,6 +72,31 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Nachbesserung zum Praxistest-Paket (N1/N2): `looks_like_tool_markup` entfernt
+  vorab Markdown-Codeblöcke und Inline-Code und erkennt Markup nur noch am Textanfang, als
+  reines `name`/`arguments`-JSON oder bei `|DSML|` mit < 200 Zeichen Vorspann (keine
+  Fehlalarme mehr bei Erklärtexten über Tool-Calling); Aufklapp-Marker der Tool-Schritte
+  sichtbar (▶/▼, Pointer, Hover; Fehler-Schritte ohne Marker/Pointer). Tests: L18 erweitert,
+  U50 neu. Gates: `cargo fmt --check` sauber, `cargo test` (222 bestanden, 4 ignoriert),
+  `npm run build`, `npm run test:ui` (58 bestanden) und `npm run tauri -- build` grün.
+  Mutationsbelege M13/M14 im Bericht `.herd/impl-2c-bericht.md` (Abschnitt „Nachbesserung“).
+  Installation per `sudo dpkg -i youtube-summarizer.deb` steht beim Maintainer aus.
+
+- 2026-09-19: Korrekturpaket aus dem ersten Praxistest (F0–F3): Kontext-Button ohne
+  doppeltes Präfix, Schlussanfrage der Websuche mit `tool_choice: "none"` + nicht
+  gespeicherter Abschluss-Nachricht (Rückfall ohne `tools` bei 400/422) und
+  Sicherheitsnetz `looks_like_tool_markup` (genau eine Wiederholung, sonst
+  `Das Modell hat nach der Recherche keine Antwort geliefert …`), Budget im
+  `WEB_SEARCH_PROMPT_ADDENDUM` und Schlusszeile an der letzten Tool-Nachricht der Runde 5;
+  Tool-Schritte als je ein `<details>` mit Label im `<summary>` plus Gruppenzeile
+  `Recherche · N Schritte`; Websuche-Einstellungen mit Platzhalter „z. B. …“ und
+  Hinweis „Bitte zuerst eine SearXNG-URL eintragen“ statt Backend-Fehler. Neue Tests
+  L13–L18, U45–U49. Gates: `cargo fmt --check` sauber, `cargo test` (222 bestanden,
+  4 ignoriert, ohne Warnungen), `npm run build`, `npm run test:ui` (57 bestanden) und
+  `npm run tauri -- build` grün. Mutationsbeleg M13 (ohne Markup-Erkennung) → L13/L14/L17
+  rot. Bericht: `.herd/impl-2c-bericht.md`. Installation per
+  `sudo dpkg -i youtube-summarizer.deb` steht beim Maintainer aus.
+
 - 2026-09-19: Korrekturen Etappe 3 (E1–E3): Versionen im Kontext-Popover sind jetzt
   **Checkboxen** (Mehrfachauswahl bis 5, „Neueste“/„Keine“ als Radios, letzte Checkbox
   abgewählt → „Neueste“; Hinweis „Höchstens 5 Zusammenfassungen“), kompakte

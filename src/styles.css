@@ -1705,18 +1705,18 @@ select option:hover {
   color: var(--muted);
 }
 
-.chat-tool-step--start::before {
+.chat-tool-live-step--start::before {
   content: "…";
   margin-right: 4px;
 }
 
-.chat-tool-step--ok::before {
+.chat-tool-live-step--ok::before {
   content: "✓";
   margin-right: 4px;
   color: var(--accent);
 }
 
-.chat-tool-step--error::before {
+.chat-tool-live-step--error::before {
   content: "!";
   margin-right: 4px;
   color: var(--danger);
@@ -1739,13 +1739,46 @@ select option:hover {
   white-space: pre-wrap;
 }
 
-.chat-tool-step-detail + .chat-tool-step-detail {
-  margin-top: 6px;
+.chat-tool-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
 }
 
-.chat-tool-step-head {
-  font-weight: 600;
+.chat-tool-group {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.chat-tool-step > summary {
+  /* Einzeilig mit Ellipsis; das volle Label steht im title. Der Marker zeigt,
+     dass der Schritt aufklappbar ist. */
+  display: list-item;
+  list-style-position: inside;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.chat-tool-step > summary:hover {
   color: var(--text);
+}
+
+.chat-tool-step[open] > summary {
+  color: var(--text);
+}
+
+/* Fehler-Schritte haben keinen Koerper: kein Marker, kein Pointer. */
+.chat-tool-step--error > summary {
+  display: block;
+  list-style: none;
+  cursor: default;
+  color: var(--danger);
 }
 
 /* --- Kontext-Wähler im Chat --------------------------------------------- */

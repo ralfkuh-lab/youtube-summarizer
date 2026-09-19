@@ -106,15 +106,16 @@ function truncate(value: string, max: number): string {
   return chars.length > max ? `${chars.slice(0, max).join("")}…` : value;
 }
 
-/// Kopfzeile eines Schritts: gleiche Regel wie das Event-Label.
+/// Kopfzeile eines Schritts: gleiche Regel wie das Event-Label (voll, ohne
+/// Kuerzung - die Anzeige kuerzt per CSS, der `title` zeigt alles).
 function stepHeadline(call: ToolCallInfo | undefined): string {
   if (!call) return "Werkzeug";
   const args = parseArguments(call.arguments);
   if (call.name === "web_search" && typeof args.query === "string") {
-    return truncate(`Sucht: ${args.query}`, 120);
+    return `Sucht: ${args.query}`;
   }
   if (call.name === "fetch_page" && typeof args.url === "string") {
-    return truncate(`Liest: ${hostAndPath(args.url)}`, 120);
+    return `Liest: ${hostAndPath(args.url)}`;
   }
   return call.name || "Werkzeug";
 }
@@ -127,30 +128,80 @@ function cleanToolContent(content: string): string {
   return truncate(lines.join("\n").trim(), 1500);
 }
 
-/// Eingeklappte Werkzeug-Schritte des gespeicherten Verlaufs.
-export function buildToolSteps(
-  messages: ChatMessageRecord[],
-  calls: Map<string, ToolCallInfo>,
+/// Ein aufklappbarer Bereich pro Werkzeug-Schritt (F3): `<summary>` ist das
+/// Label, der aufgeklappte Bereich enthaelt nur das Ergebnis dieses Schritts.
+/// Fehler-Schritte tragen den Fehlertext in der Kopfzeile und keinen Koerper.
+export function buildToolStep(
+  message: ChatMessageRecord,
+  call: ToolCallInfo | undefined,
 ): HTMLDetailsElement {
   const details = document.createElement("details");
-  details.className = "chat-tool";
+  details.className = "chat-tool chat-tool-step";
   const summary = document.createElement("summary");
-  summary.textContent = `Websuche: ${messages.length} Schritte`;
+  const isError = message.content.trimStart().startsWith("Fehler:");
+  const headline = stepHeadline(call);
+  const full = isError ? `${headline} – ${errorText(message.content)}` : headline;
+  // Anzeige gekuerzt, vollstaendiges Label im title.
+  summary.textContent = truncate(full, 120);
+  summary.title = full;
+  if (isError) details.classList.add("chat-tool-step--error");
   details.append(summary);
-  for (const message of messages) {
-    const step = document.createElement("div");
-    step.className = "chat-tool-step-detail";
-    const head = document.createElement("div");
-    head.className = "chat-tool-step-head";
-    head.textContent = stepHeadline(calls.get(message.toolCallId ?? ""));
+  if (!isError) {
     const body = document.createElement("div");
     body.className = "chat-tool-body";
     // Nur Text: Werkzeug-Ausgaben sind untrusted.
     body.textContent = cleanToolContent(message.content);
-    step.append(head, body);
-    details.append(step);
+    details.append(body);
   }
   return details;
+}
+
+/// Haengt Schritte an die letzte Gruppe an (oder legt eine neue an). Die
+/// Gruppenzeile wird auf die Gesamtzahl aktualisiert.
+function appendStepsToGroup(
+  root: HTMLElement,
+  steps: ChatMessageRecord[],
+  calls: Map<string, ToolCallInfo>,
+) {
+  let group = root.lastElementChild;
+  if (!group || !group.classList.contains("chat-tool-steps")) {
+    group = document.createElement("div");
+    group.className = "chat-tool-steps";
+    group.append(buildToolGroup(0));
+    root.append(group);
+  }
+  for (const message of steps) {
+    group.append(buildToolStep(message, calls.get(message.toolCallId ?? "")));
+  }
+  const details = group.querySelectorAll("details.chat-tool-step").length;
+  group.querySelector(".chat-tool-group")?.replaceWith(buildToolGroup(details));
+}
+
+/// Feste Gruppenzeile vor einer zusammenhaengenden Folge von Schritten.
+export function buildToolGroup(count: number): HTMLParagraphElement {
+  const group = document.createElement("p");
+  group.className = "chat-tool-group";
+  group.textContent = `Recherche · ${count} ${count === 1 ? "Schritt" : "Schritte"}`;
+  return group;
+}
+
+/// Fehlertext fuer die Kopfzeile (ohne Delimiter, gekuerzt).
+function errorText(content: string): string {
+  return cleanToolContent(content);
+}
+
+/// Alle Schritte einer Folge als Liste (mit Gruppenzeile).
+export function buildToolSteps(
+  messages: ChatMessageRecord[],
+  calls: Map<string, ToolCallInfo>,
+): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "chat-tool-steps";
+  wrapper.append(buildToolGroup(messages.length));
+  for (const message of messages) {
+    wrapper.append(buildToolStep(message, calls.get(message.toolCallId ?? "")));
+  }
+  return wrapper;
 }
 
 export function removeProvisionalMessages(requestId: string) {
@@ -163,11 +214,11 @@ export function removeProvisionalMessages(requestId: string) {
 export function buildToolActivity(run: ChatRun): HTMLDivElement | null {
   if (!run.tools.length) return null;
   const list = document.createElement("div");
-  list.className = "chat-tool-activity";
+  list.className = "chat-tool-activity chat-tool-steps";
   list.dataset.toolActivity = run.requestId;
   for (const step of run.tools) {
     const line = document.createElement("div");
-    line.className = `chat-tool-step chat-tool-step--${step.status}`;
+    line.className = `chat-tool-live-step chat-tool-live-step--${step.status}`;
     const prefix = step.kind === "search" ? "Sucht" : step.kind === "fetch" ? "Liest" : "";
     line.textContent = prefix ? `${prefix}: ${step.label}` : step.label;
     list.append(line);
@@ -254,25 +305,23 @@ export async function renderChatMessages(messages: ChatMessageRecord[], gen: num
         next += 1;
       }
       const hasText = !!message.content.trim();
-      if (hasText || steps.length) {
+      if (hasText) {
+        // Text-Blase: die Schritte dieses Turns folgen als neue Gruppe darunter.
         const { row, bubble } = buildAssistantMessage(
           message.provider ?? null,
           message.model ?? null,
         );
-        if (!hasText) {
-          // Assistant mit Tool-Aufrufen und leerem Text ist keine Blase.
-          bubble.remove();
-        }
-        if (steps.length) row.append(buildToolSteps(steps, callsById));
         root.append(row);
-        if (hasText) {
-          await renderMarkdownInto(bubble, message.content, {
-            mermaid: true,
-            gen,
-            stripFence: false,
-            target: "chat",
-          });
-        }
+        await renderMarkdownInto(bubble, message.content, {
+          mermaid: true,
+          gen,
+          stripFence: false,
+          target: "chat",
+        });
+        if (steps.length) root.append(buildToolSteps(steps, callsById));
+      } else if (steps.length) {
+        // Ohne sichtbare Blase: an die laufende Gruppe anhaengen.
+        appendStepsToGroup(root, steps, callsById);
       }
       index = next;
       continue;
@@ -283,7 +332,7 @@ export async function renderChatMessages(messages: ChatMessageRecord[], gen: num
       orphans.push(messages[index]);
       index += 1;
     }
-    if (orphans.length) root.append(buildToolSteps(orphans, new Map()));
+    if (orphans.length) appendStepsToGroup(root, orphans, new Map());
   }
   if (gen === state.chatRenderGen && wasAtBottom) scrollChatToBottom(true);
 }

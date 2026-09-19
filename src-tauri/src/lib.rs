@@ -2,6 +2,7 @@ mod ai;
 #[cfg(debug_assertions)]
 mod automation;
 mod chat;
+mod chat_final;
 mod chat_prompt;
 mod chat_runs;
 mod commands;
