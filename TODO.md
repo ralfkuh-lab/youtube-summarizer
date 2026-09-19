@@ -53,16 +53,7 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 - Replace emoji trash buttons with a consistent icon approach when the
   frontend icon strategy is decided.
 - vitest/jsdom setup for the settings UI like folio.
-- Windows-Umgebung (Befunde vom 2026-09-11, Release-Build und Tests dort erfolgreich, noch nichts umgesetzt):
-  - UI-Test-Harness (`tests/ui/harness.mjs`) ist auf `/usr/bin/chromium` verdrahtet; unter Windows
-    ohne `CHROMIUM_PATH` schlagen alle 5 Tests fehl. Fallback auf die Standardpfade von Chrome/Edge ergänzen.
-  - `.gitattributes` mit `* text=auto eol=lf` anlegen; ohne sie zeigt Git unter Windows `src-tauri/Cargo.toml`
-    dauerhaft als geändert (nur CRLF/LF).
-  - `src-tauri/gen/schemas/windows-schema.json` (vom Build generiert, analog zu `linux-schema.json`) einchecken
-    und den lokalen Shortcut `/youtube-summarizer-setup.lnk` in `.gitignore` aufnehmen (Vorbild: Linux-Symlinks).
-  - Windows-Absatz in `AGENTS.md`: Installer liegen unter `src-tauri/target/release/bundle/{nsis,msi}/`,
-    UI-Tests brauchen `CHROMIUM_PATH`; Voraussetzungen Node >= 20, Rust, Tauri-CLI.
-- Add Windows and macOS packaging notes once tested on those platforms (Windows: siehe Befunde oben; macOS noch ungetestet).
+- Add macOS packaging notes once tested there (Windows: siehe Abschnitt „Windows“ in `AGENTS.md`).
 - Add release checklist once app behavior stabilizes.
 
 ## Known Notes
@@ -74,6 +65,15 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Windows-Befunde vom 2026-09-11 umgesetzt (auf Linux, unter Windows
+  noch nicht gegengeprüft): UI-Harness sucht Chrome/Edge/Chromium pro Plattform
+  (`CHROMIUM_PATH` hat Vorrang) und weicht bei belegtem Vite-Port aus, daher läuft
+  `test:ui` wieder parallel ohne `--test-concurrency=1`; `.gitattributes` mit
+  `* text=auto eol=lf` (Renormalisierung ohne Änderungen); `.lnk`-Shortcut ignoriert;
+  Windows-Abschnitt in `AGENTS.md`. Abweichend vom Befund wird
+  `src-tauri/gen/schemas/` nicht mehr versioniert statt `windows-schema.json`
+  einzuchecken: Die Dateien erzeugt jeder Build neu, das Tauri-Template ignoriert
+  sie ebenfalls. `npm run test:ui` dreimal in Folge grün (6 bestanden).
 - 2026-09-19: Mermaid-Flowcharts zeigten leere Kästen: Mermaid legt Labels als
   HTML in `<foreignObject>` ab, das SVG-Profil von DOMPurify entfernt diese.
   Fix in `getMermaid()` (`src/summary-view.ts`): `htmlLabels: false` (native

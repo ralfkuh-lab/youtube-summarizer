@@ -34,7 +34,7 @@ npm run test:ui
 npm run tauri dev
 ```
 
-UI-Tests mit `npm run test:ui` nutzen das System-Chromium (`/usr/bin/chromium`), überschreibbar per `CHROMIUM_PATH`.
+UI-Tests mit `npm run test:ui` suchen einen installierten Chromium-basierten Browser (Linux: Chromium/Chrome, Windows und macOS: Chrome, Edge, Chromium), überschreibbar per `CHROMIUM_PATH`. Jede Testdatei startet einen eigenen Vite-Server ab Port 5199 und weicht bei belegtem Port aus; `UI_TEST_PORT` erzwingt einen festen Port.
 
 Use these from `src-tauri/`:
 
@@ -58,6 +58,13 @@ cargo test fetches_transcript_from_innertube_caption_url -- --ignored
 - After finishing a feature, run `npm run tauri -- build` so the project-root symlinks (`youtube-summarizer-release`, `youtube-summarizer.deb`) point to current artifacts.
 - On the maintainer's Linux machine the app is installed as a deb package (dpkg name `you-tube-summarizer`, binary at `/usr/bin/youtube-summarizer`, since 2026-08-25; the earlier `~/.local/bin` plain-copy install no longer exists). After a release build, the installed app is updated with `sudo dpkg -i youtube-summarizer.deb` (project-root symlink). Agents cannot run sudo — ask the maintainer to run it. The user-local desktop entry wraps the launch in `mullvad-exclude`.
 - If testing the running app, use the dev-only automation API printed by `npm run tauri dev`.
+
+## Windows
+
+- Prerequisites: Node >= 20, Rust (MSVC toolchain) and the Tauri CLI from `npm install`.
+- `npm run tauri -- build` writes the installers to `src-tauri/target/release/bundle/nsis/` and `src-tauri/target/release/bundle/msi/`. A local shortcut `youtube-summarizer-setup.lnk` in the project root is ignored by git, like the Linux symlinks.
+- `.gitattributes` forces LF line endings; do not commit CRLF files.
+- `src-tauri/gen/schemas/` is generated per platform on every build and is not tracked.
 
 ## Current Architecture
 

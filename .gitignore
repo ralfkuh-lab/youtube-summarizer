@@ -19,3 +19,8 @@ Thumbs.db
 /youtube-summarizer.deb
 # Local convenience symlink to the release binary
 /youtube-summarizer-release
+# Local convenience shortcut to the built Windows installer
+/youtube-summarizer-setup.lnk
+
+# Tauri regenerates these on every build, one platform-specific file per OS
+/src-tauri/gen/schemas/

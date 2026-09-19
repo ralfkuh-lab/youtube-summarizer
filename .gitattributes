@@ -1,0 +1,2 @@
+# Einheitlich LF im Arbeitsverzeichnis, damit Windows-Checkouts keine reinen CRLF-Diffs zeigen
+* text=auto eol=lf
