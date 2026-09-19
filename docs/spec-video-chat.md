@@ -296,8 +296,13 @@ für das neue Video neu auf bzw. leeren ihn), `summary-view.ts`.
   Fehler immer, bei inaktivem Video mit Präfix `Chat zu „<Titel>“:`. Solange
   für das aktive Video eine Anfrage läuft, ist `#chatInput` deaktiviert. Eine
   fehlgeschlagene Frage geht bei passendem Kontext zurück ins Eingabefeld,
-  sonst als Entwurf (`state.chatDrafts`, je Video + Chat) und erscheint beim
-  nächsten Anzeigen dieses Chats im leeren Eingabefeld.
+  sonst in den Entwurf dieses Chats (einem vorhandenen Entwurf vorangestellt).
+  Ungesendeter Text gehört zum Chat: beim Chat- und Videowechsel wird er als
+  Entwurf (`state.chatDrafts`, je Video + Chat) gemerkt, das Feld geleert und
+  der Entwurf des Ziel-Chats eingesetzt; gelöscht wird er erst beim
+  erfolgreichen Senden. Wird ein Lauf im Hintergrund fertig und hat der
+  Benutzer für das Video nichts anderes gewählt, folgt die Auswahl dem neuen
+  Chat. Nach Abschluss im sichtbaren Kontext erhält `#chatInput` den Fokus.
 - CSS: eigene Klassen (`chat-row…`, `chat-bubble`); `.chat-message` gehört dem
   Modell-Testchat der Einstellungen.
 - **Race-Regeln:** Ergebnisse und Events werden nur dann ins DOM übernommen,
@@ -332,6 +337,9 @@ für das neue Video neu auf bzw. leeren ihn), `summary-view.ts`.
 | U19 | Chat A senden, zu Chat B wechseln, Send schlägt fehl | Eingabe bleibt leer; zurück in Chat A steht die Frage im Eingabefeld |
 | U20 | während laufender Anfrage | `#chatInput` deaktiviert, „Stopp“ aktiv |
 | U21 | Antwort mit zwei Absätzen | `<p>` in der Blase ohne eigenen Hintergrund |
+| U22 | in Chat A tippen, „Neuer Chat“, zurück zu A | neuer Chat startet leer; in A steht der Text wieder |
+| U23 | in Video 2 tippen, Video 3, zurück | Video 3 leer; Video 2 zeigt den Text wieder |
+| U24 | neuer Chat senden, anderes Video, Ablauf abwarten, zurück | Auswahl auf dem neuen Chat, Runde genau einmal |
 
 U7 zusätzlich: nach „Stopp“ keine Blasen, Frage wieder im Eingabefeld, Status
 enthält `abgebrochen` (der Mock lässt das abgebrochene `chat_send` scheitern).

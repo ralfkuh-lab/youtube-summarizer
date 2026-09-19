@@ -3,7 +3,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::time::Duration;
 
@@ -979,20 +979,17 @@ fn k2_request_id_with_only_whitespace_is_invalid() {
 #[tokio::test]
 async fn d14_cancel_after_stream_end_is_not_saved() {
     let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
-    // Die Antwort kommt als JSON-Fallback: der Client fragt das Abbruch-Flag
-    // dabei nicht selbst ab, sodass genau die Pruefung nach dem Stream greift.
-    let finished = Arc::new(AtomicBool::new(false));
-    let server = TestServer::start({
-        let finished = finished.clone();
-        move |_index, stream| {
-            respond(
-                stream,
-                "200 OK",
-                "application/json",
-                r#"{"choices":[{"message":{"content":"Antwort"},"finish_reason":"stop"}]}"#,
-            );
-            finished.store(true, Ordering::SeqCst);
-        }
+    // Die Antwort kommt als JSON-Fallback: auf diesem Pfad ruft der Client das
+    // Abbruch-Flag nicht selbst ab (er liest den Body und liefert den Text
+    // zurueck), sodass genau die Pruefung nach dem Stream greift - ohne
+    // Abhaengigkeit vom Timing des Server-Handlers.
+    let server = TestServer::start(|_index, stream| {
+        respond(
+            stream,
+            "200 OK",
+            "application/json",
+            r#"{"choices":[{"message":{"content":"Antwort"},"finish_reason":"stop"}]}"#,
+        );
     });
     let http = reqwest::Client::new();
     let runs = ChatRuns::default();
@@ -1005,14 +1002,14 @@ async fn d14_cancel_after_stream_end_is_not_saved() {
         None,
         "Frage".to_string(),
         target_for(&server),
-        || finished.load(Ordering::SeqCst),
+        || true,
         |_| {},
     )
     .await;
     drop(guard);
 
     assert_eq!(result.unwrap_err(), "KI-Antwort abgebrochen");
-    assert_eq!(server.requests(), 1);
+    assert_eq!(server.requests(), 1, "die Anfrage fand statt");
     assert_eq!(count_rows(&paths, "chats"), 0);
     assert_eq!(count_rows(&paths, "chat_messages"), 0);
     assert!(runs.is_empty());

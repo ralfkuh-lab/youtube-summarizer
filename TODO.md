@@ -34,6 +34,11 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Next TODOs
 
+- [ ] Video-Chat ([Spec](docs/spec-video-chat.md)):
+  - [x] Etappe 1: Chat über ein Video (Backend, Chat-Tab, Tests), reviewt von Grok und Gemini (Codex fiel wegen Limit aus).
+  - [ ] Manuell in der installierten App prüfen: Live-Streaming, „Stopp“, Video-/Chatwechsel während einer Anfrage (bisher nur per UI-Tests mit Mock und per Automation-API belegt).
+  - [ ] Etappe 2a: Tool-Calling im Client, `websearch.rs` mit Adresssperren (Mutationsnachweise laut Spec).
+  - [ ] Etappe 2b: Tool-Schleife, `websearch.json`, Einstellungs-Tab „Websuche“, Tool-Aktivität im Chat. `src/chat.ts` hat 585 Zeilen — vor 2b Auswahl-/Entwurfslogik auslagern.
 - [x] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
   - [x] 1: Race Conditions beim Videowechsel und Transkript-Neuladen beheben (Etappe 1).
   - [x] 2: Gemeinsamen KI-Konfigurationszustand verwenden und Speicheränderungen bei Schreibfehlern verhindern (Etappe 2).
@@ -64,6 +69,29 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 - The app is installed as a deb package (`sudo dpkg -i youtube-summarizer.deb`), see AGENTS.md.
 
 ## Last Verified State
+
+- 2026-09-19: Abnahme Etappe 1 Video-Chat. Nativer Durchlauf mit `npm run tauri dev`
+  (isoliertes `XDG_DATA_HOME` mit Kopie von DB und Konfiguration, danach gelöscht) über
+  die Automation-API gegen OpenRouter `deepseek/deepseek-v4.1-flash`: Antwort mit
+  Zeitstempeln aus dem Transkript, Folgerunde kennt den Verlauf, Fehlerwortlaute für
+  fremde Chat-ID und leere Frage, nach Neustart Chat mit 4 Nachrichten vorhanden.
+  Nicht nativ geprüft: Chat-Tab selbst (Streaming-Events, Stopp). Dev-App beendet.
+- 2026-09-19: Video-Chat Korrekturpaket 2 (Nachprüfung zu Etappe 1): Entwürfe gehören
+  jetzt zum verlassenen Chat (`stashChatDraft`/`restoreChatDraft`, kein Löschen beim
+  Einsetzen, Voranstellen bei Fehlschlag im unsichtbaren Kontext), die Chat-Auswahl folgt
+  auch einem im Hintergrund fertig gewordenen Chat (N3), Fokus kehrt nach Abschluss in
+  `#chatInput` zurück (N4), `forgetChatState`/`deleteChat` räumen Auswahl und Entwürfe auf
+  (N2), D14 kommt ohne Timing aus (N5). Neue UI-Fälle U22–U24, U1 prüft den Fokus.
+  Gates: `cargo fmt --check` sauber, `cargo test` (124 bestanden, 1 ignoriert),
+  `npm run build` und `npm run test:ui` (30 bestanden) grün, `npm run tauri -- build`
+  erfolgreich. Mutationsbelege im Bericht: `.herd/impl-1-korrekturen-2-bericht.md`.
+  Kein Dev-Server oder Tauri-Prozess gestartet; `sudo dpkg -i youtube-summarizer.deb`
+  steht weiterhin beim Maintainer aus.
+- 2026-09-19: Video-Chat Korrekturpaket 1 (Reviews Grok/Gemini): chatSelection,
+  Render-Zähler nur für den sichtbaren Chat, Status/Entwürfe/Input-Sperre, eigene
+  CSS-Klassen (`chat-row…`), Listener-Rejection abgefangen, Abbruchprüfung vor dem
+  Speichern (R1), camelCase im Automation-Body (R2), U15–U21 und verschärfte Tests.
+  Bericht: `.herd/impl-1-korrekturen-bericht.md`.
 
 - 2026-09-19: Video-Chat Etappe 1 komplett. Korrekturen an 1a (K1: `ChatTurnResult.messages`
   ist jetzt der vollständige Verlauf nach der Runde; K2: `request_id` aus reinem Whitespace

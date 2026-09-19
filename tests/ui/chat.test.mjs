@@ -44,6 +44,13 @@ test("U1: Frage senden zeigt Frage und Antwort, leert die Eingabe und wählt den
 
     assert.strictEqual(await page.locator("#chatInput").inputValue(), "", "#chatInput muss leer sein");
 
+    await page.waitForFunction(() => document.activeElement?.id === "chatInput");
+    assert.strictEqual(
+      await page.evaluate(() => document.activeElement?.id),
+      "chatInput",
+      "Nach dem Abschluss muss die Eingabe den Fokus haben",
+    );
+
     const options = await page.locator("#chatSelect option").allTextContents();
     assert.ok(
       options.some((label) => label.includes("Was ist das für ein Video?")),
@@ -703,5 +710,127 @@ test("U21: Absätze in der Assistentenblase haben keinen eigenen Hintergrund", a
       );
     },
     { fixtures: { chat: { answer: "Erster Absatz.\n\nZweiter Absatz." } } },
+  );
+});
+
+test("U22: Ungesendeter Text bleibt beim Chatwechsel an seinem Chat", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      await page.locator("#chatInput").fill("nur für A");
+      await page.locator("#chatNew").click();
+      await mock.waitForPending();
+      assert.strictEqual(
+        await page.locator("#chatInput").inputValue(),
+        "",
+        "Der neue Chat muss mit leerem Feld starten",
+      );
+
+      await page.locator("#chatSelect").selectOption({ index: 1 });
+      await mock.waitForPending();
+      assert.strictEqual(
+        await page.locator("#chatInput").inputValue(),
+        "nur für A",
+        "Der Entwurf muss beim Zurückwechseln wieder erscheinen",
+      );
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "Chat A",
+              messages: [
+                { role: "user", content: "Frage A" },
+                { role: "assistant", content: "Antwort A" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  );
+});
+
+test("U23: Ungesendeter Text überlebt einen Videowechsel nicht im falschen Video", async () => {
+  await withApp(async (page, mock) => {
+    await openChat(page, 2);
+    await mock.waitForPending();
+
+    await page.locator("#chatInput").fill("Entwurf V2");
+    await page.locator('.video-item[data-id="3"]').click();
+    await page.locator('.tab[data-tab="chat"]').click();
+    await mock.waitForPending();
+    assert.strictEqual(
+      await page.locator("#chatInput").inputValue(),
+      "",
+      "Im anderen Video darf der Entwurf nicht auftauchen",
+    );
+
+    await page.locator('.video-item[data-id="2"]').click();
+    await page.locator('.tab[data-tab="chat"]').click();
+    await mock.waitForPending();
+    assert.strictEqual(
+      await page.locator("#chatInput").inputValue(),
+      "Entwurf V2",
+      "Zurück in Video 2 muss der Entwurf wieder im Feld stehen",
+    );
+  });
+});
+
+test("U24: Die Auswahl folgt dem im Hintergrund fertig gewordenen Chat", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await page.locator("#chatNew").click();
+      await sendQuestion(page, "Hintergrundfrage");
+      await page.waitForFunction(() =>
+        window.__tauriMock.calls.some((call) => call.cmd === "chat_send"),
+      );
+
+      await page.locator('.video-item[data-id="3"]').click();
+      await mock.waitForPending();
+
+      await page.locator('.video-item[data-id="2"]').click();
+      await page.locator('.tab[data-tab="chat"]').click();
+      await mock.waitForPending();
+
+      const options = await page.locator("#chatSelect option").allTextContents();
+      assert.ok(
+        options.some((label) => label.includes("Hintergrundfrage")),
+        `#chatSelect muss den neuen Chat enthalten: ${JSON.stringify(options)}`,
+      );
+      assert.notStrictEqual(
+        await page.locator("#chatSelect").inputValue(),
+        "",
+        "#chatSelect muss auf dem im Hintergrund fertig gewordenen Chat stehen",
+      );
+      const userTexts = await page.locator("#chatMessages .chat-row--user .chat-bubble").allTextContents();
+      assert.deepEqual(userTexts, ["Hintergrundfrage"], "Die Frage darf genau einmal erscheinen");
+      assert.strictEqual(
+        await page.locator("#chatMessages .chat-row--assistant .chat-bubble").count(),
+        1,
+        "Die Antwort darf genau einmal erscheinen",
+      );
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "Alter Chat",
+              messages: [
+                { role: "user", content: "Alte Frage" },
+                { role: "assistant", content: "Alte Antwort" },
+              ],
+            },
+          ],
+        },
+      },
+      delays: { chat_send: { 2: 300 } },
+    },
   );
 });

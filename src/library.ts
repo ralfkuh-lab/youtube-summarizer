@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { clearDetail, renderVideoCollections, showDetail } from "./detail";
+import { forgetChatState } from "./chat";
 import { $, confirmDialog, errorMessage, escapeHtml, hideModal, showModal } from "./dom-utils";
 import { getActiveVideo, setBusy, setStatus, state } from "./state";
 import type { Collection, Video } from "./types";
@@ -167,6 +168,7 @@ export async function deleteActiveVideo() {
   setBusy(true, "Video wird gelöscht...");
   try {
     await invoke<void>("delete_video", { id });
+    forgetChatState(id);
     state.videos = state.videos.filter((video) => video.id !== id);
     await loadCollections();
     renderVideoList();

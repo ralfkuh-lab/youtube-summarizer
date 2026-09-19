@@ -258,7 +258,6 @@ async function loadActiveChatMessages(video: Video, gen: number) {
     await renderStreamingAnswer(run, false, gen);
   }
   updateChatControls(video);
-  applyChatDraft(video.id, chatId);
 }
 
 /// Uebernimmt die gemerkte Chat-Wahl eines Videos, wenn sie noch gueltig ist.
@@ -279,8 +278,9 @@ function resolveChatSelection(videoId: number): number | null {
 export async function renderChatTab(video: Video) {
   const gen = ++state.chatRenderGen;
   if (lastChatVideoId !== video.id) {
+    // Beim Videowechsel gehoert der getippte Text noch zum verlassenen Chat.
+    stashChatDraft(lastChatVideoId, state.activeChatId);
     lastChatVideoId = video.id;
-    clearChatInput();
   }
   chatList = [];
   fillChatSelect();
@@ -289,6 +289,7 @@ export async function renderChatTab(video: Video) {
   if (gen !== state.chatRenderGen || getActiveVideo()?.id !== video.id) return;
   state.activeChatId = resolveChatSelection(video.id);
   fillChatSelect();
+  restoreChatDraft(video.id, state.activeChatId);
   await loadActiveChatMessages(video, gen);
 }
 
@@ -309,9 +310,11 @@ function selectChat(chatId: number | null) {
   // Jede explizite Wahl wird gemerkt, auch wenn sie schon aktiv ist.
   if (video) state.chatSelection.set(video.id, chatId);
   if (state.activeChatId === chatId) return;
+  stashChatDraft(video?.id ?? null, state.activeChatId);
   state.activeChatId = chatId;
   fillChatSelect();
   if (!video) return;
+  restoreChatDraft(video.id, chatId);
   const gen = ++state.chatRenderGen;
   updateChatControls(video);
   void loadActiveChatMessages(video, gen);
@@ -344,6 +347,7 @@ async function deleteChat() {
   }
   if (getActiveVideo()?.id !== video.id) return;
   state.chatSelection.delete(video.id);
+  state.chatDrafts.delete(chatContextKey(video.id, chatId));
   const gen = ++state.chatRenderGen;
   await refreshChatList(video.id, gen);
   if (gen !== state.chatRenderGen || getActiveVideo()?.id !== video.id) return;
@@ -375,17 +379,40 @@ function clearChatInput() {
   resizeChatInput();
 }
 
-/// Ein Entwurf wird nur in ein leeres Eingabefeld zurueckgeschrieben und danach
-/// geloescht, damit ein Chatwechsel getippten Text nicht ueberschreibt.
-function applyChatDraft(videoId: number, chatId: number | null) {
-  const input = $<HTMLTextAreaElement>("#chatInput");
-  if (input.value.trim() !== "") return;
-  const key = chatContextKey(videoId, chatId);
-  const draft = state.chatDrafts.get(key);
+/// Ein Entwurf wird beim Anzeigen eines Chats eingesetzt und bleibt erhalten;
+/// geloescht wird er beim erfolgreichen Senden aus diesem Chat oder wenn der
+/// Benutzer das Feld leert und den Chat verlaesst.
+function restoreChatDraft(videoId: number, chatId: number | null) {
+  const draft = state.chatDrafts.get(chatContextKey(videoId, chatId));
   if (draft === undefined) return;
-  state.chatDrafts.delete(key);
+  const input = $<HTMLTextAreaElement>("#chatInput");
   input.value = draft;
   resizeChatInput();
+}
+
+/// Merkt den nichtleeren Inhalt des Eingabefelds beim Verlassen eines Chats
+/// und leert das Feld; ein leeres Feld entfernt den Entwurf dieses Chats.
+function stashChatDraft(videoId: number | null, chatId: number | null) {
+  if (videoId === null) return;
+  const input = $<HTMLTextAreaElement>("#chatInput");
+  const value = input.value;
+  const key = chatContextKey(videoId, chatId);
+  if (value.trim() === "") {
+    state.chatDrafts.delete(key);
+  } else {
+    state.chatDrafts.set(key, value);
+  }
+  input.value = "";
+  resizeChatInput();
+}
+
+/// Vergisst Auswahl und Entwuerfe eines geloeschten Videos.
+export function forgetChatState(videoId: number) {
+  state.chatSelection.delete(videoId);
+  const prefix = `${videoId}:`;
+  for (const key of [...state.chatDrafts.keys()]) {
+    if (key.startsWith(prefix)) state.chatDrafts.delete(key);
+  }
 }
 
 async function sendChatMessage() {
@@ -410,6 +437,8 @@ async function sendChatMessage() {
   const videoId = video.id;
   const runChatId = run.chatId;
   const isActiveVideo = () => getActiveVideo()?.id === videoId;
+  const isVisibleContext = () => isActiveVideo() && state.activeChatId === runChatId;
+  let focusInput = false;
   try {
     const result = await invoke<ChatTurnResult>("chat_send", {
       videoId,
@@ -420,17 +449,26 @@ async function sendChatMessage() {
       requestId,
     });
     state.chatRuns.delete(videoId);
-    if (isActiveVideo() && state.activeChatId === runChatId) {
+    // N3: Die Auswahl folgt dem fertig gewordenen Chat, solange der Benutzer
+    // nicht inzwischen explizit einen anderen Chat gewaehlt hat.
+    const remembered = state.chatSelection.has(videoId)
+      ? (state.chatSelection.get(videoId) ?? null)
+      : runChatId;
+    if (remembered === runChatId) {
+      state.chatSelection.set(videoId, result.chat.id);
+    }
+    // Der Text ist abgeschickt; fuer diesen Chat gibt es keinen Entwurf mehr.
+    state.chatDrafts.delete(chatContextKey(videoId, runChatId));
+    if (isVisibleContext()) {
       // Frische Generation: der Sendezeitpunkt kann lange zurueckliegen.
       const gen = ++state.chatRenderGen;
       state.activeChatId = result.chat.id;
-      state.chatSelection.set(videoId, result.chat.id);
       await refreshChatList(videoId, gen);
       if (gen === state.chatRenderGen) {
         fillChatSelect();
         await renderChatMessages(result.messages, gen);
-        applyChatDraft(videoId, result.chat.id);
       }
+      focusInput = true;
     } else if (isActiveVideo()) {
       // Gleiches Video, aber ein anderer Chat sichtbar: nur die Liste
       // nachziehen, den sichtbaren Verlauf nicht anfassen.
@@ -440,15 +478,20 @@ async function sendChatMessage() {
   } catch (error) {
     state.chatRuns.delete(videoId);
     removeProvisionalMessages(requestId);
-    if (isActiveVideo() && state.activeChatId === runChatId) {
+    if (isVisibleContext()) {
       restoreQuestion(text);
+      focusInput = true;
     } else {
-      state.chatDrafts.set(chatContextKey(videoId, runChatId), text);
+      // Die Frage gehoert in ihren Chat; ein vorhandener Entwurf bleibt erhalten.
+      const key = chatContextKey(videoId, runChatId);
+      const existing = state.chatDrafts.get(key);
+      state.chatDrafts.set(key, existing ? `${text}\n\n${existing}` : text);
     }
     const message = errorMessage(error);
     setStatus(isActiveVideo() ? message : `Chat zu „${video.title}“: ${message}`);
   } finally {
     updateChatControls(getActiveVideo());
+    if (focusInput) $<HTMLTextAreaElement>("#chatInput").focus();
   }
 }
 
