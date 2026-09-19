@@ -56,7 +56,7 @@ cargo test fetches_transcript_from_innertube_caption_url -- --ignored
 - Prefer existing patterns in the app over introducing new frameworks.
 - When changing transcript, AI or storage behavior, run `npm run build` and `cargo test`.
 - After finishing a feature, run `npm run tauri -- build` so the project-root symlinks (`youtube-summarizer-release`, `youtube-summarizer.deb`) point to current artifacts.
-- On the maintainer's Linux machine the app is installed as a deb package (dpkg name `you-tube-summarizer`, binary at `/usr/bin/youtube-summarizer`, since 2026-08-25; the earlier `~/.local/bin` plain-copy install no longer exists). After a release build, the installed app is updated with `sudo dpkg -i youtube-summarizer.deb` (project-root symlink). Agents cannot run sudo — ask the maintainer to run it. The user-local desktop entry wraps the launch in `mullvad-exclude`.
+- On the maintainer's Linux machine the app is installed as a deb package (dpkg name `you-tube-summarizer`, binary at `/usr/bin/youtube-summarizer`, since 2026-08-25; the earlier `~/.local/bin` plain-copy install no longer exists). After a release build, the installed app is updated with `sudo dpkg -i youtube-summarizer.deb` (project-root symlink). Agents cannot run sudo — ask the maintainer to run it. The app launches through the packaged desktop entry; the former user-local `mullvad-exclude` wrapper was removed on 2026-09-19, so with an active VPN YouTube may answer `LOGIN_REQUIRED`.
 - If testing the running app, use the dev-only automation API printed by `npm run tauri dev`.
 
 ## Windows
