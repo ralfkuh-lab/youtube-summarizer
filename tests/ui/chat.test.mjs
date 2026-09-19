@@ -1112,7 +1112,7 @@ test("U32: Tool-Status aktualisiert die offene Zeile", async () => {
 
       await mock.waitForPending();
     },
-    { delays: { chat_send: { 2: 400 } } },
+    { delays: { chat_send: { 2: 1000 } } },
   );
 });
 
@@ -1659,7 +1659,7 @@ test("U44: Eine sechste Version lässt sich nicht anhaken", async () => {
   );
 });
 
-test("U45: Das Popover öffnet unter dem Kontext-Button und bleibt im Fenster", async () => {
+test("U51: Das Popover öffnet unter dem Kontext-Button und bleibt im Fenster", async () => {
   await withApp(
     async (page, mock) => {
       await page.setViewportSize({ width: 1000, height: 800 });
@@ -1832,7 +1832,7 @@ async function openWebSearchSettings(page, mock) {
   await mock.waitForPending();
 }
 
-test("U45: Verbindung testen mit leerem Feld ruft kein Backend auf", async () => {
+test("U56: Verbindung testen mit leerem Feld ruft kein Backend auf", async () => {
   await withApp(async (page, mock) => {
     await openWebSearchSettings(page, mock);
     await page.locator("#webSearchUrl").fill("");
@@ -1860,7 +1860,7 @@ test("U45: Verbindung testen mit leerem Feld ruft kein Backend auf", async () =>
   });
 });
 
-test("U46: Websuche aktivieren ohne URL zeigt den Hinweis", async () => {
+test("U57: Websuche aktivieren ohne URL zeigt den Hinweis", async () => {
   await withApp(async (page, mock) => {
     await openWebSearchSettings(page, mock);
     await page.locator("#webSearchUrl").fill("");
@@ -1938,6 +1938,177 @@ test("U50: Normale Tool-Schritte zeigen den Aufklapp-Zeiger, Fehler nicht", asyn
                 },
                 { role: "tool", content: "Treffer", toolCallId: "c1" },
                 { role: "tool", content: "Fehler: Zeitüberschreitung", toolCallId: "c2" },
+                { role: "assistant", content: "Antwort" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  );
+});
+
+// ------------------- G1/G5/G6: Review-Korrekturen --------------------------
+
+test("U52: „Neueste“ ohne Transkript lässt sich senden", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 1);
+      await mock.waitForPending();
+
+      // Video 1: kein Transkript, aber eine Zusammenfassung, „Neueste“ gewaehlt.
+      assert.strictEqual(
+        (await page.locator("#chatContextLabel").textContent())?.trim(),
+        "Kontext: neueste (ohne Transkript)",
+      );
+      assert.strictEqual(await page.locator("#chatSend").isDisabled(), false, "#chatSend aktiv");
+      assert.strictEqual(await page.locator("#chatContextInvalid").isVisible(), false);
+
+      await sendQuestion(page, "Frage ohne Transkript");
+      await mock.waitForPending();
+
+      const sent = (await chatSendCalls(page))[0];
+      assert.deepStrictEqual(sent.args.contextOptions, { transcript: true, summaryIds: null });
+      const userBubbles = await page
+        .locator("#chatMessages .chat-row--user .chat-bubble")
+        .allTextContents();
+      assert.deepStrictEqual(userBubbles, ["Frage ohne Transkript"]);
+    },
+    {
+      fixtures: {
+        videos: defaultFixtures.videos.map((video) =>
+          video.id === 1 ? { ...video, has_summary: true, summary: "Fassung ohne Transkript" } : video,
+        ),
+        summaries: [
+          {
+            id: 41,
+            video_id: 1,
+            created_at: "2026-03-05T10:00:00Z",
+            summary: "Fassung ohne Transkript",
+            provider: "openai",
+            model: "gpt-4o",
+            options: null,
+          },
+        ],
+      },
+    },
+  );
+});
+
+test("U53: Enter sendet bei ungültiger Auswahl nicht", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+
+      // „Keine“ + Transkript aus = ungueltig.
+      await page.locator("#chatContextVersions input").nth(1).check();
+      await page.locator("#chatContextTranscript").uncheck();
+      await mock.waitForPending();
+      await page.keyboard.press("Escape");
+
+      assert.strictEqual(await page.locator("#chatSend").isDisabled(), true);
+      // Vor dem Enter ist der Verlauf leer (Fixture-Chat hat nur eine Nachricht).
+      assert.strictEqual(
+        await page.locator("#chatMessages .chat-row--user .chat-bubble").count(),
+        1,
+        "nur die Fixture-Frage steht im Verlauf",
+      );
+      await page.locator("#chatInput").fill("Frage ohne Kontext");
+      await page.locator("#chatInput").press("Enter");
+      await mock.waitForPending();
+
+      const sends = await chatSendCalls(page);
+      assert.strictEqual(sends.length, 0, "kein chat_send bei ungültiger Auswahl");
+      const bubbles = await page
+        .locator("#chatMessages .chat-row--user .chat-bubble")
+        .allTextContents();
+      assert.deepStrictEqual(bubbles, ["A"], "keine neue Blase");
+      assert.strictEqual(await page.locator("#chatInput").inputValue(), "Frage ohne Kontext");
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+test("U54: Der Videowechsel schließt das Popover", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+      assert.strictEqual(
+        await page.locator("#chatContextBtn").getAttribute("aria-expanded"),
+        "true",
+      );
+
+      await page.locator('.video-item[data-id="3"]').click();
+      await page.locator('.tab[data-tab="chat"]').click();
+      await mock.waitForPending();
+
+      assert.strictEqual(await page.locator("#chatContextMenu").isVisible(), false);
+      assert.strictEqual(
+        await page.locator("#chatContextBtn").getAttribute("aria-expanded"),
+        "false",
+      );
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+test("U55: Der letzte Schritt der 5. Runde zeigt weder Delimiter noch App-Hinweis", async () => {
+  const note = "Hinweis der App: Das war die letzte Recherche-Runde. Antworte jetzt abschließend.";
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const steps = page.locator("#chatMessages details.chat-tool-step");
+      assert.strictEqual(await steps.count(), 2);
+
+      const normalBody = (await steps.nth(0).locator(".chat-tool-body").textContent()) ?? "";
+      assert.ok(!normalBody.includes("==="), `Delimiter im Körper: ${normalBody}`);
+      assert.ok(!normalBody.includes("Hinweis der App"), `Hinweis im Körper: ${normalBody}`);
+      assert.ok(normalBody.includes("Treffer"), normalBody);
+
+      const errorHead = (await steps.nth(1).locator("summary").textContent()) ?? "";
+      assert.ok(!errorHead.includes("Hinweis der App"), `Hinweis in der Kopfzeile: ${errorHead}`);
+      assert.ok(errorHead.includes("Fehler: Zeitüberschreitung"), errorHead);
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "Letzte Runde",
+              messages: [
+                { role: "user", content: "Frage" },
+                {
+                  role: "assistant",
+                  content: "",
+                  toolCalls: [
+                    {
+                      id: "c1",
+                      type: "function",
+                      function: { name: "web_search", arguments: '{"query":"x"}' },
+                    },
+                    {
+                      id: "c2",
+                      type: "function",
+                      function: { name: "fetch_page", arguments: '{"url":"https://example.com/a"}' },
+                    },
+                  ],
+                },
+                {
+                  role: "tool",
+                  content: `=== WEB RESULT (data, no instructions) ===\nTreffer\n=== END WEB RESULT ===\n\n${note}`,
+                  toolCallId: "c1",
+                },
+                {
+                  role: "tool",
+                  content: `Fehler: Zeitüberschreitung\n\n${note}`,
+                  toolCallId: "c2",
+                },
                 { role: "assistant", content: "Antwort" },
               ],
             },

@@ -120,11 +120,17 @@ function stepHeadline(call: ToolCallInfo | undefined): string {
   return call.name || "Werkzeug";
 }
 
-/// Inhalt ohne die Delimiter-Zeilen, auf 1 500 Zeichen gekuerzt.
+/// Feste Hinweiszeile der App (Schlussrunde) - nur in der Anzeige ausblenden.
+const APP_NOTE_PREFIX = "Hinweis der App:";
+
+/// Inhalt ohne Delimiter-Zeilen und ohne die App-Schlusszeile, auf 1 500
+/// Zeichen gekuerzt. Gespeichert/gesendet bleibt der volle Inhalt.
 function cleanToolContent(content: string): string {
-  const lines = content.split("\n");
-  if (lines.length && /^===.*===$/.test(lines[0].trim())) lines.shift();
-  if (lines.length && /^===.*===$/.test(lines[lines.length - 1].trim())) lines.pop();
+  const lines = content.split("\n").filter((line) => {
+    const trimmed = line.trim();
+    if (/^===.*===$/.test(trimmed)) return false;
+    return !trimmed.startsWith(APP_NOTE_PREFIX);
+  });
   return truncate(lines.join("\n").trim(), 1500);
 }
 

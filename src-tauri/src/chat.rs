@@ -13,8 +13,8 @@ use crate::ai::client as ai_client;
 use crate::ai::client::ChatMessage;
 use crate::ai::config::AiConfigService;
 use crate::ai::tool_stream;
-use crate::chat_final::final_round_request;
 pub use crate::chat_final::looks_like_tool_markup;
+use crate::chat_final::{final_round_request, RequestBudget, MAX_PROVIDER_REQUESTS};
 use crate::chat_prompt::{
     build_messages_from_context, chat_title, ChatContext, ExtraParts, FINAL_ROUND_REQUEST,
     LAST_ROUND_NOTE,
@@ -204,6 +204,10 @@ pub async fn chat_send_impl(
     let raw_parts = context.raw_parts();
     let mut round_messages: Vec<NewChatMessage> = Vec::new();
     let mut round = 0usize;
+    // Hartes Budget ueber alle Provider-Aufrufe dieser Frage.
+    let mut budget = RequestBudget::new(MAX_PROVIDER_REQUESTS);
+    // Wird nach dem ersten 400/422 gemerkt: danach direkt die Rueckfallform.
+    let mut tool_choice_supported = true;
 
     let answer = loop {
         if is_cancelled() {
@@ -223,6 +227,7 @@ pub async fn chat_send_impl(
         // Abschluss-Nachricht; Tool-Aufrufe werden dort nicht ausgewertet.
         let with_tools = tools.is_some() && round < MAX_TOOL_ROUNDS;
         let turn = if with_tools {
+            budget.take()?;
             let definitions = websearch::tool_definitions();
             tool_stream::chat_stream_with_tools_cancellable(
                 http,
@@ -246,6 +251,8 @@ pub async fn chat_send_impl(
                 &target,
                 &final_messages,
                 &definitions,
+                &mut tool_choice_supported,
+                &mut budget,
                 &mut on_delta,
                 &mut is_cancelled,
             )
@@ -264,6 +271,8 @@ pub async fn chat_send_impl(
                     &target,
                     &final_messages,
                     &definitions,
+                    &mut tool_choice_supported,
+                    &mut budget,
                     &mut on_delta,
                     &mut is_cancelled,
                 )
@@ -280,6 +289,7 @@ pub async fn chat_send_impl(
             }
         } else {
             // Ohne Websuche bleibt der strenge Pfad (ein Request).
+            budget.take()?;
             let text = ai_client::chat_stream_cancellable(
                 http,
                 &target.base_url,
@@ -315,6 +325,8 @@ pub async fn chat_send_impl(
                     &target,
                     &final_messages,
                     &definitions,
+                    &mut tool_choice_supported,
+                    &mut budget,
                     &mut on_delta,
                     &mut is_cancelled,
                 )

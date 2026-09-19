@@ -19,6 +19,7 @@ use super::{
 };
 use crate::ai::client::ChatError;
 use crate::ai::client::ChatMessage;
+use crate::chat_final::{RequestBudget, MAX_PROVIDER_REQUESTS};
 use crate::chat_prompt::{build_messages_from_context, ChatContext, NO_TRANSCRIPT_ADDENDUM};
 use crate::models::{Chapter, ChatContextOptions, ChatTurnResult, NewChatMessage, NewVideo, Video};
 use crate::storage::{self, AppPaths};
@@ -2040,6 +2041,21 @@ async fn d4_messages_are_rebuilt_without_transcript_copies() {
 
 // ------------------------------------------- Etappe 3: Kontext-Waehler -----
 
+/// Weitere Zusammenfassungs-Version hinzufuegen (fuer die Limit-Tests).
+fn add_summary(paths: &AppPaths, video_id: i64, text: &str) -> i64 {
+    storage::update_summary(
+        paths,
+        video_id,
+        text,
+        Some("Testanbieter"),
+        Some("modell-x"),
+        None,
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    storage::get_summaries(paths, video_id).unwrap()[0].id
+}
+
 /// Video mit drei Zusammenfassungs-Versionen (aelteste zuerst zurueckgegeben).
 fn video_with_summaries(
     transcript: Option<&str>,
@@ -2271,19 +2287,42 @@ fn x7_foreign_and_deleted_ids_are_dropped_silently() {
 
 #[test]
 fn x8_more_than_five_summaries_are_rejected() {
-    let (_temp, _paths, video, summaries) =
+    let (_temp, paths, video, _summaries) =
         video_with_summaries(Some(&transcript_json(&["Hallo"])));
+    // Sechs tatsaechlich vorhandene Versionen.
+    for index in 0..3 {
+        add_summary(&paths, video.id, &format!("Zusatz {index}"));
+    }
+    let summaries = storage::get_summaries(&paths, video.id).unwrap();
+    assert_eq!(summaries.len(), 6);
+    let ids: Vec<i64> = summaries.iter().map(|summary| summary.id).collect();
+
+    let error = messages_for(&video, &summaries, &options(true, Some(ids))).unwrap_err();
+    assert_eq!(error, "Höchstens 5 Zusammenfassungen im Kontext");
+
+    // Genau fuenf sind erlaubt.
+    let five = summaries[..5].iter().map(|summary| summary.id).collect();
+    let messages = messages_for(&video, &summaries, &options(true, Some(five))).unwrap();
+    let content = text(&messages[1]);
+    assert_eq!(content.matches("=== SUMMARY").count(), 5, "{content}");
+}
+
+#[test]
+fn x8b_foreign_ids_do_not_count_towards_the_limit() {
+    let (_temp, paths, video, summaries) = video_with_summaries(Some(&transcript_json(&["Hallo"])));
+    // Sechs IDs, davon drei fremd/geloescht: nur drei Bloecke, kein Fehler.
     let ids = vec![
         summaries[0].id,
         summaries[1].id,
         summaries[2].id,
-        10,
-        11,
-        12,
+        9998,
+        9999,
+        10000,
     ];
-    let error = messages_for(&video, &summaries, &options(true, Some(ids))).unwrap_err();
-
-    assert_eq!(error, "Höchstens 5 Zusammenfassungen im Kontext");
+    let messages = messages_for(&video, &summaries, &options(true, Some(ids))).unwrap();
+    let content = text(&messages[1]);
+    assert_eq!(content.matches("=== SUMMARY").count(), 3, "{content}");
+    let _ = paths;
 }
 
 #[test]
@@ -2808,4 +2847,237 @@ fn l18_looks_like_tool_markup_matches_the_reference_cases() {
     ] {
         assert!(!looks_like_tool_markup(text), "negativ erwartet: {text}");
     }
+}
+
+// ------------------------- Review-Korrekturen (G2-G4, G7) ------------------
+
+#[test]
+fn g2_multibyte_text_before_dsml_is_handled() {
+    // Multibyte vor dem Muster darf weder panisch werden noch die Grenze
+    // verzerren (Skalare, nicht Bytes).
+    assert!(looks_like_tool_markup("💡💡💡💡💡 |DSML|"));
+    assert!(looks_like_tool_markup(
+        "Ich prüfe das. Äußerst wichtig: |DSML| calls"
+    ));
+    assert!(looks_like_tool_markup(&format!(
+        "{}|DSML|",
+        "ä".repeat(199)
+    )));
+    assert!(!looks_like_tool_markup(&format!(
+        "{}|DSML|",
+        "ä".repeat(250)
+    )));
+    // Emoji vor dem Muster: 199 Skalare bleiben erlaubt.
+    assert!(looks_like_tool_markup(&format!(
+        "{}|DSML|",
+        "🙂".repeat(199)
+    )));
+    assert!(!looks_like_tool_markup(&format!(
+        "{}|DSML|",
+        "🙂".repeat(250)
+    )));
+}
+
+#[test]
+fn g2_fuzz_looks_like_tool_markup_never_panics() {
+    // Einfacher deterministischer Fuzz: keine Panik bei beliebigem Text.
+    let alphabet = [
+        "a",
+        "Z",
+        " ",
+        "\n",
+        "ä",
+        "ö",
+        "ü",
+        "ß",
+        "🙂",
+        "💡",
+        "`",
+        "```",
+        "<",
+        ">",
+        "|",
+        "=",
+        "\"",
+        "{",
+        "}",
+        "name",
+        "arguments",
+        "DSML",
+        "tool_call",
+        "invoke",
+    ];
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    for _ in 0..4000 {
+        let mut text = String::new();
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let length = (seed >> 33) % 24;
+        for _ in 0..length {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            text.push_str(alphabet[(seed >> 33) as usize % alphabet.len()]);
+        }
+        // Nur die Panikfreiheit ist zugesichert.
+        let _ = looks_like_tool_markup(&text);
+    }
+}
+
+#[test]
+fn g3_unclosed_code_does_not_swallow_the_rest() {
+    // Ungeschlossener Zaun/Backtick ist kein Code: Markup dahinter zaehlt.
+    assert!(looks_like_tool_markup(
+        "Kurzer Satz.\n```\n< | DSML | calls>"
+    ));
+    assert!(looks_like_tool_markup("` <tool_call>x</tool_call>"));
+    assert!(looks_like_tool_markup(
+        "```\n<tool_call>{\"name\":\"x\"}</tool_call>"
+    ));
+    // Geschlossene Zitate bleiben negativ.
+    assert!(!looks_like_tool_markup(
+        "Ein Aufruf sieht so aus: `<tool_call>{\"name\":\"x\"}</tool_call>` und mehr Text."
+    ));
+    assert!(!looks_like_tool_markup(
+        "So funktioniert es:\n\n```\n<tool_call>{\"name\":\"x\"}</tool_call>\n```\n\nEnde der Erklaerung."
+    ));
+}
+
+#[test]
+fn g4_request_budget_counts_every_provider_call() {
+    let mut budget = RequestBudget::new(MAX_PROVIDER_REQUESTS);
+    assert_eq!(budget.remaining(), 7);
+    for _ in 0..7 {
+        budget.take().unwrap();
+    }
+    assert_eq!(budget.remaining(), 0);
+    assert_eq!(
+        budget.take().unwrap_err(),
+        "Das Modell hat nach der Recherche keine Antwort geliefert – bitte erneut versuchen"
+    );
+}
+
+#[tokio::test]
+async fn l19_budget_exhausted_after_fallback_markup_is_an_error() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let mut script = five_tool_rounds();
+    // 7. Request (Rueckfall nach 400) liefert Markup; danach ist das Budget leer.
+    script.push(text_stream(DSML_MARKUP));
+    let server = ScriptServer::start(script);
+    let http = reqwest::Client::new();
+    let runs = ChatRuns::default();
+    let events: ToolEvents = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+    let server = server.with_error_on_request(5, "400 Bad Request");
+
+    let error = send_tool_turn(
+        &runs,
+        &paths,
+        &http,
+        &server,
+        video.id,
+        None,
+        Some(runtime),
+        &events,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        "Das Modell hat nach der Recherche keine Antwort geliefert – bitte erneut versuchen"
+    );
+    assert_eq!(server.requests(), 7, "hartes Maximum von 7 Requests");
+    assert_eq!(count_rows(&paths, "chats"), 0);
+    assert_eq!(count_rows(&paths, "chat_messages"), 0);
+}
+
+#[tokio::test]
+async fn l20_fallback_answer_is_saved_within_budget() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let mut script = five_tool_rounds();
+    script.push(text_stream("Fazit"));
+    let server = ScriptServer::start(script);
+    let http = reqwest::Client::new();
+    let runs = ChatRuns::default();
+    let events: ToolEvents = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+    let server = server.with_error_on_request(5, "400 Bad Request");
+
+    let result = send_tool_turn(
+        &runs,
+        &paths,
+        &http,
+        &server,
+        video.id,
+        None,
+        Some(runtime),
+        &events,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(server.requests(), 7);
+    assert_eq!(result.messages.last().unwrap().content, "Fazit");
+    // Der Rueckfall wird gemerkt: kein zweiter Versuch mit tool_choice.
+    assert!(server.body(6).get("tools").is_none());
+    assert!(server.body(6).get("tool_choice").is_none());
+}
+
+#[tokio::test]
+async fn g4_fallback_is_remembered_for_later_final_rounds() {
+    // Direkter Test der Schlussanfrage: der erste Aufruf laeuft mit
+    // `tool_choice` und erhaelt 400, danach ist die Rueckfallform gemerkt und
+    // der zweite Aufruf geht direkt ohne `tools`/`tool_choice` heraus.
+    let server = ScriptServer::start(vec![
+        text_stream("Erste Antwort"),
+        text_stream("Zweite Antwort"),
+    ]);
+    let server = server.with_error_on_request(0, "400 Bad Request");
+    let http = reqwest::Client::new();
+    let target = server.target();
+    let tools = websearch::tool_definitions();
+    let messages = vec![ChatMessage::user("Frage")];
+    let mut budget = RequestBudget::new(MAX_PROVIDER_REQUESTS);
+    let mut tool_choice_supported = true;
+    let mut on_delta = |_: &str| {};
+    let mut is_cancelled = || false;
+
+    let first = crate::chat_final::final_round_request(
+        &http,
+        &target,
+        &messages,
+        &tools,
+        &mut tool_choice_supported,
+        &mut budget,
+        &mut on_delta,
+        &mut is_cancelled,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.content, "Erste Antwort");
+    assert!(!tool_choice_supported);
+    assert!(
+        server.body(1).get("tools").is_none(),
+        "Rueckfall ohne tools"
+    );
+
+    let second = crate::chat_final::final_round_request(
+        &http,
+        &target,
+        &messages,
+        &tools,
+        &mut tool_choice_supported,
+        &mut budget,
+        &mut on_delta,
+        &mut is_cancelled,
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.content, "Zweite Antwort");
+    assert!(server.body(2).get("tools").is_none());
+    assert!(server.body(2).get("tool_choice").is_none());
+    assert_eq!(server.requests(), 3, "kein zweiter Fehlversuch");
+    assert_eq!(budget.remaining(), MAX_PROVIDER_REQUESTS - 3);
 }

@@ -142,19 +142,13 @@ impl ChatContext {
         summaries: &[Summary],
         options: &ChatContextOptions,
     ) -> AppResult<Self> {
-        if let Some(ids) = &options.summary_ids {
-            if ids.len() > MAX_CONTEXT_SUMMARIES {
-                return Err(TOO_MANY_SUMMARIES_ERROR.to_string());
-            }
-        }
-
         let transcript_text = video
             .transcript
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .map(youtube::transcript_to_text_with_timestamps);
 
-        let mut selected: Vec<&Summary> = match &options.summary_ids {
+        let selected: Vec<&Summary> = match &options.summary_ids {
             // Neueste: get_summaries liefert created_at DESC.
             None => summaries.iter().take(1).collect(),
             Some(ids) => {
@@ -170,7 +164,11 @@ impl ChatContext {
                 chosen
             }
         };
-        selected.truncate(MAX_CONTEXT_SUMMARIES);
+        // Das Limit gilt fuer die tatsaechlich vorhandenen Versionen: fremde
+        // oder geloeschte IDs sind vorher entfallen.
+        if selected.len() > MAX_CONTEXT_SUMMARIES {
+            return Err(TOO_MANY_SUMMARIES_ERROR.to_string());
+        }
 
         let with_transcript = options.transcript && transcript_text.is_some();
         if !with_transcript && selected.is_empty() {

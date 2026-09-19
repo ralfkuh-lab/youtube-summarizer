@@ -31,8 +31,9 @@ import {
   bindChatContextEvents,
   closeChatContextMenu,
   getChatContextOptions,
+  isChatContextValid,
   refreshChatContextButton,
-  setChatContextHasTranscript,
+  setChatContextAvailability,
   setChatContextVersions,
 } from "./chat-context";
 import {
@@ -132,7 +133,7 @@ function updateChatControls(video: Video | null) {
   $<HTMLButtonElement>("#chatDelete").disabled =
     !!run || state.activeChatId === null || !usable;
   $<HTMLSelectElement>("#chatModel").disabled = !!run;
-  setChatContextHasTranscript(hasTranscript);
+  setChatContextAvailability(hasTranscript, hasSummary);
   refreshChatContextButton();
 }
 
@@ -206,6 +207,7 @@ async function loadActiveChatMessages(video: Video, gen: number) {
 
 /// Baut den Chat-Tab fuer ein Video neu auf (auch beim Aktivieren des Tabs).
 export async function renderChatTab(video: Video) {
+  closeChatContextMenu();
   const gen = ++state.chatRenderGen;
   if (lastChatVideoId !== video.id) {
     // Beim Videowechsel gehoert der getippte Text noch zum verlassenen Chat.
@@ -225,6 +227,7 @@ export async function renderChatTab(video: Video) {
 
 /// Leert den Chat-Tab beim Schliessen der Detailansicht.
 export function resetChat() {
+  closeChatContextMenu();
   state.activeChatId = null;
   setChatList([]);
   lastChatVideoId = null;
@@ -339,6 +342,9 @@ async function sendChatMessage() {
   if (!text) return;
   // Synchroner In-flight-Guard: ein zweites Enter darf nichts senden.
   if (state.chatRuns.has(video.id)) return;
+  // Dieselbe Bedingung wie der Senden-Button: Enter ist keine Hintertuer.
+  if (!isChatContextValid()) return;
+  closeChatContextMenu();
 
   const requestId = crypto.randomUUID();
   const run: ChatRun = {

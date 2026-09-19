@@ -18,6 +18,8 @@ const lastUsed = new Map<number, ChatContextOptions>();
 let options: ChatContextOptions = { ...DEFAULT_OPTIONS };
 let versions: SummaryRecord[] = [];
 let hasTranscript = false;
+/// Hat das Video mindestens eine Zusammenfassung (fuer „Neueste“ ohne Transkript)?
+let hasSummary = false;
 let open = false;
 
 export function getChatContextOptions(): ChatContextOptions {
@@ -35,6 +37,7 @@ export function setChatContextOptions(next: ChatContextOptions) {
 
 export function setChatContextVersions(summaries: SummaryRecord[]) {
   versions = summaries;
+  hasSummary = hasSummary || summaries.length > 0;
   renderMenu();
 }
 
@@ -43,11 +46,23 @@ export function setChatContextHasTranscript(value: boolean) {
   renderMenu();
 }
 
+/// Video-Zustand fuer die Gueltigkeitspruefung: Transkript und mindestens eine
+/// Zusammenfassung.
+export function setChatContextAvailability(transcript: boolean, summary: boolean) {
+  hasTranscript = transcript;
+  hasSummary = summary;
+  renderMenu();
+}
+
 /// Die Auswahl ist nur dann ungueltig, wenn weder Transkript noch eine
 /// Zusammenfassung im Kontext landet.
+/// G1: gueltig, wenn ein Transkript mitgeht, „Neueste“ mit vorhandener
+/// Zusammenfassung gewaehlt ist oder mindestens eine Version angehakt ist.
+/// `summaryIds: []` ohne Transkript bleibt ungueltig.
 export function isChatContextValid(): boolean {
   if (options.transcript && hasTranscript) return true;
-  return (options.summaryIds ?? []).length > 0;
+  if (options.summaryIds === null) return hasSummary || versions.length > 0;
+  return options.summaryIds.length > 0;
 }
 
 function labelFor(row: SummaryRecord): string {
@@ -265,6 +280,8 @@ export function toggleChatContextMenu(force?: boolean) {
   if (!menu) return;
   open = force ?? !open;
   menu.hidden = !open;
+  const button = document.querySelector<HTMLButtonElement>("#chatContextBtn");
+  if (button) button.setAttribute("aria-expanded", open ? "true" : "false");
   if (!open) return;
   renderMenu();
   positionMenu();

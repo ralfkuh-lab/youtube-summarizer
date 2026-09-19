@@ -38,7 +38,8 @@ tab, and detail tooltip on the 'T' status chip) — spec:
   - [x] Etappe 1: Chat über ein Video (Backend, Chat-Tab, Tests).
   - [x] Etappe 2a/2b: Websuche per Tool-Calling (SearXNG + Seitenabruf mit Adresssperre, Tool-Schleife, Einstellungs-Tab „Websuche“, Tool-Aktivität im Chat). Reviewt von Grok, Gemini und Opus (Codex fiel wegen Limit aus).
   - [ ] Manuell in der installierten App prüfen: Live-Streaming, Tool-Aktivität während der Anfrage, „Stopp“, Video-/Chatwechsel während einer Anfrage (bisher nur per UI-Tests mit Mock und per Automation-API belegt).
-  - [ ] Etappe 3: Kontext-Wähler (Transkript an/aus, Auswahl der Zusammenfassungs-Versionen pro Chat).
+  - [x] Etappe 3: Kontext-Wähler (Transkript an/aus, Mehrfachauswahl der Zusammenfassungs-Versionen pro Chat; Chat auch für Videos ohne Transkript, wenn eine Zusammenfassung existiert). Dazu das Paket aus dem ersten Praxistest: Schlussrunde speichert keine rohe Tool-Syntax mehr (Budget-Ansage, `tool_choice: none`, eine Wiederholung, höchstens 7 Provider-Anfragen), ein aufklappbarer Bereich je Recherche-Schritt, verständliche Websuche-Einstellungen. Reviewt von Grok und Gemini.
+  - [ ] Live-Anzeige während der Generierung: Zwischentexte des Modells erscheinen zwar schon, wirken aber abgeschnitten; nach Abschluss ist die Anzeige korrekt (Beobachtung des Maintainers vom 2026-09-19 mit Websuche). Vor der Umsetzung liefert der Maintainer Screenshots. Vermutete Richtung (ungeprüft): pro Provider-Anfrage beginnt der Stream-Text neu, und die 150-ms-Drossel von `ai:chat_stream` lässt das letzte Stück einer Zwischenrunde aus.
   - [ ] Später erwägen: Obergrenze für gespeicherte Tool-Ergebnisse (eine voll ausgereizte Recherche-Runde speichert ~240 000 Zeichen, die jede Folgefrage mitsendet); Checkbox „unterstützt Tool-Calling“ für Custom-Modelle (ohne Katalog-Flag bleibt die Websuche ausgegraut).
 - [ ] Video an lokalen Agenten übergeben ([Spec-Entwurf](docs/spec-agent-handoff.md)): Kontextdatei exportieren, Kommando in die Zwischenablage; Spec-Review läuft.
 - [x] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
@@ -71,6 +72,26 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 - The app is installed as a deb package (`sudo dpkg -i youtube-summarizer.deb`), see AGENTS.md.
 
 ## Last Verified State
+
+- 2026-09-19 (abends): Etappe 3 und Praxistest-Paket abgenommen. `cargo fmt --check`,
+  `cargo test` (230 bestanden, 4 ignoriert), `npm run build`, `npm run test:ui`
+  (62 bestanden), `npm run tauri -- build` grün. Kein nativer Durchlauf mit echtem Modell
+  nach diesen Paketen durch den Agenten; der Maintainer testet die installierte App
+  (Websuche funktioniert laut Rückmeldung; offen: abgeschnittene Live-Anzeige, siehe TODO).
+  Kein Dev-Server aktiv.
+- 2026-09-19: Korrekturpaket aus Review (Grok) und Kreuzreview (Gemini) zu Etappe 3
+  (G1–G7): `isChatContextValid` wertet „Neueste“ ohne Transkript als gültig, wenn eine
+  Zusammenfassung existiert (Enter prüft dieselbe Bedingung), `first_dsml_position` rechnet
+  Byte-Offsets in Unicode-Skalare um (keine Panik bei Multibyte-Text), ungeschlossene
+  Backticks/Zäune verschlucken den Rest nicht mehr, hartes Budget von 7 Provider-Requests pro
+  Frage mit gemerktem 400/422-Rückfall, Tool-Anzeige ohne Delimiter und App-Schlusszeile,
+  Popover schließt beim Videowechsel (`aria-expanded`), X8-Limit nach dem Aussortieren,
+  Testnummern eindeutig (U51/U56/U57), U32-Delay 1000 ms. Neue Tests L19/L20, g2/g3/g4, U52–U55.
+  Gates: `cargo fmt --check` sauber, `cargo test` (230 bestanden, 4 ignoriert, ohne Warnungen),
+  `npm run build`, `npm run test:ui` (62 bestanden) und `npm run tauri -- build` grün.
+  Mutationsbelege M-G2 (Panik) und M-G4 (8. Request) im Bericht
+  `.herd/impl-3-korrekturen-2-bericht.md`. Installation per
+  `sudo dpkg -i youtube-summarizer.deb` steht beim Maintainer aus.
 
 - 2026-09-19: Nachbesserung zum Praxistest-Paket (N1/N2): `looks_like_tool_markup` entfernt
   vorab Markdown-Codeblöcke und Inline-Code und erkennt Markup nur noch am Textanfang, als
