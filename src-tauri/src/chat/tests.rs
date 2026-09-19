@@ -17,6 +17,7 @@ use super::{
     WEB_SEARCH_PROMPT_ADDENDUM,
 };
 use crate::ai::client::ChatError;
+use crate::chat_prompt::{build_messages_from_context, ChatContext};
 use crate::models::{Chapter, ChatTurnResult, NewChatMessage, NewVideo, Video};
 use crate::storage::{self, AppPaths};
 use crate::summarize::{SummaryTarget, UNTRUSTED_DATA_NOTE};
@@ -1940,4 +1941,41 @@ async fn c6_final_round_without_text_reports_a_clear_message() {
     assert_eq!(server.requests(), 6);
     assert_eq!(count_rows(&paths, "chats"), 0);
     assert_eq!(count_rows(&paths, "chat_messages"), 0);
+}
+
+/// Zeitmessung zu D4 (Kostenhaelfte von C1): die rohen Kontextteile werden
+/// einmal je Aufruf vorgehalten und in der Schleife nur entliehen. Standardmaessig
+/// ignoriert; mit `cargo test -- --ignored d4_ --nocapture` ausfuehrbar.
+#[tokio::test]
+#[ignore]
+async fn d4_messages_are_rebuilt_without_transcript_copies() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let long_transcript = transcript_json(&[&"wort ".repeat(90_000)]);
+    storage::update_transcript(&paths, video.id, &long_transcript, None, None).unwrap();
+    let video = storage::get_video(&paths, video.id).unwrap().unwrap();
+
+    let context = ChatContext::new(&video).unwrap();
+    let raw_parts = context.raw_parts();
+    let history = vec![user("Frage")];
+    let round: Vec<NewChatMessage> = (0..20)
+        .map(|index| {
+            let mut message = NewChatMessage::assistant("");
+            message.role = "tool".to_string();
+            message.tool_call_id = Some(format!("call_{index}"));
+            message.content = "x".repeat(500);
+            message
+        })
+        .collect();
+
+    let started = std::time::Instant::now();
+    for _ in 0..20 {
+        let messages = build_messages_from_context(&context, &raw_parts, &history, &round, true);
+        assert_eq!(messages.len(), 22);
+    }
+    let elapsed = started.elapsed();
+    println!(
+        "D4: 20 Rebuilds mit {} kB Transkript: {elapsed:?}",
+        long_transcript.len() / 1024
+    );
+    assert!(elapsed < Duration::from_secs(5), "zu langsam: {elapsed:?}");
 }

@@ -1,6 +1,6 @@
 # Spec: Chat über ein Video, optional mit Webrecherche
 
-Stand: 2026-09-19, Revision 5 (Spec-Review sowie Reviews der Etappen 1, 2a und 2b eingearbeitet).
+Stand: 2026-09-19, Revision 6 (Reviews der Etappen 1, 2a und 2b eingearbeitet; Etappe 3 Kontext-Wähler ergänzt).
 
 ## Ziel
 
@@ -549,6 +549,109 @@ Labels und Inhalte **nur** per `textContent`.
 UI-Fälle: Schalter deaktiviert + Tooltip bei Modell ohne `tool_call`;
 `label` mit HTML erscheint als Text.
 
+## Etappe 3: Kontext-Wähler
+
+Bisher geht immer das vollständige Transkript und die **neueste**
+Zusammenfassung mit. Der Benutzer soll pro Chat wählen können, **welche
+Zusammenfassungen** (mehrere Versionen, auch keine) mitgesendet werden und ob
+das **Transkript** dabei ist (bei sehr langen Videos spart „nur
+Zusammenfassung“ viele Tokens). Titel, Datum, Beschreibung und Kapitel bleiben
+immer dabei.
+
+### Datenmodell
+
+Neue Spalte `chats.context_options TEXT` (JSON, per `ensure_column`-Muster wie
+bei `videos` nachgerüstet; `NULL` = Standard). Inhalt:
+`{ "transcript": bool, "summaryIds": [i64] | null }`. `summaryIds: null`
+bedeutet „neueste Zusammenfassung“ (dynamisch, bisheriges Verhalten), `[]`
+bedeutet „keine“. Standard für neue Chats: `{ "transcript": true,
+"summaryIds": null }`. `Chat` erhält das Feld `contextOptions` (immer
+aufgelöst, nie `null`).
+
+### Backend
+
+- `chat_send` erhält `context_options: Option<ChatContextOptions>`: bei neuem
+  Chat wird es gespeichert (fehlt es → Standard); bei bestehendem Chat
+  überschreibt ein mitgegebenes Objekt die gespeicherte Auswahl **in derselben
+  Transaktion wie die Runde** (Commit nach Erfolg gilt auch hier). Zusätzlich
+  `chat_context_set(chat_id, options)` für eine Änderung ohne Senden.
+- Auflösung beim Prompt-Bau: gewählte IDs, die nicht (mehr) zu diesem Video
+  gehören, entfallen stillschweigend. Reihenfolge der Blöcke: nach
+  `created_at` aufsteigend (älteste zuerst), unabhängig von der Reihenfolge in
+  `summaryIds`. Höchstens 5 Zusammenfassungen (mehr → Fehler
+  `Höchstens 5 Zusammenfassungen im Kontext`).
+- Blöcke: bei genau einer Zusammenfassung wie bisher `SUMMARY`; bei mehreren je
+  ein Block `SUMMARY`, dessen Inhalt mit einer Kopfzeile beginnt:
+  `Version vom <created_at, ISO-Datum> · <Modell oder Anbieter>` + Leerzeile +
+  Text. (Die Kopfzeile gehört zum untrusted Inhalt; die Delimiter-Suffixe
+  ` 1`, ` 2` … entstehen ohnehin, weil gleichnamige Blöcke kollidieren — dafür
+  muss `wrap_untrusted` bzw. der Aufrufer die bereits vergebenen Delimiter der
+  Geschwisterblöcke als belegt behandeln: **jeder Block bekommt einen eigenen,
+  im gesamten Prompt einmaligen Delimiter**.)
+- `transcript: false`: kein `TRANSCRIPT`-Block. Bleibt danach keine
+  Zusammenfassung übrig (keine gewählt, alle gelöscht, Video ohne
+  Zusammenfassung) → Fehler `Kein Kontext gewählt – bitte Transkript oder eine
+  Zusammenfassung aktivieren`, **vor** jeder Provider-Anfrage. Der Systemprompt
+  erhält dann den Zusatz `NO_TRANSCRIPT_ADDENDUM` (kein Transkript vorhanden,
+  nur Zusammenfassungen; keine Zeitstempel oder Zitate erfinden, auf die
+  Grenzen hinweisen), vor `UNTRUSTED_DATA_NOTE` (P6 gilt weiter).
+- `transcript: true` ohne vorhandenes Transkript: wie bisher der
+  Transkript-Fehler — **außer** es ist mindestens eine Zusammenfassung gewählt
+  und vorhanden; dann läuft der Chat ohne Transkript mit
+  `NO_TRANSCRIPT_ADDENDUM` (so wird der Chat auch für Videos ohne Transkript,
+  aber mit Zusammenfassung nutzbar; das Frontend aktiviert die Eingabe
+  entsprechend).
+
+### Referenzfälle (Unit-Tests, verbindlich)
+
+| # | Eingabe | Erwartung |
+|---|---|---|
+| X1 | Optionen Standard, Video mit 3 Versionen | genau ein SUMMARY-Block mit der **neuesten** (= `videos.summary`), TRANSCRIPT vorhanden (unverändert zu P1–P10) |
+| X2 | `summaryIds: [id_alt]` | SUMMARY-Block enthält die alte Version, nicht die neueste |
+| X3 | `summaryIds: [id3, id1]` | zwei SUMMARY-Blöcke, **älteste zuerst**, je mit Kopfzeile `Version vom …`; beide Delimiter verschieden und im Prompt einmalig |
+| X4 | `summaryIds: []` | kein SUMMARY-Block |
+| X5 | `transcript: false`, eine Version gewählt | kein TRANSCRIPT-Block; System enthält `NO_TRANSCRIPT_ADDENDUM` und endet mit `UNTRUSTED_DATA_NOTE` |
+| X6 | `transcript: false`, `summaryIds: []` | Fehlerwortlaut oben, 0 Provider-Requests, DB unverändert |
+| X7 | gewählte ID gehört zu anderem Video / wurde gelöscht | entfällt stillschweigend; war es die einzige und `transcript: false` → Fehler wie X6 |
+| X8 | 6 IDs | Fehler `Höchstens 5 Zusammenfassungen im Kontext` |
+| X9 | Video ohne Transkript, eine Zusammenfassung gewählt | Runde läuft, kein TRANSCRIPT-Block, `NO_TRANSCRIPT_ADDENDUM` |
+| X10 | bestehender Chat, `chat_send` mit neuen Optionen, Provider-Fehler | gespeicherte Optionen unverändert (Commit nach Erfolg) |
+| X11 | Zusammenfassungstext enthält `=== END SUMMARY 1 ===`, zwei Versionen gewählt | alle Delimiter kollisionsfrei (Suffixe weichen aus) |
+| X12 | alte DB ohne Spalte | Migration legt sie an; vorhandene Chats liefern Standardoptionen |
+
+**Mutationsnachweis:** X3/X11 rot, wenn Geschwisterblöcke denselben Delimiter
+erhalten können; X10 rot, wenn die Optionen vor der Provider-Anfrage
+gespeichert werden.
+
+### Frontend
+
+Button **„Kontext“** (`#chatContextBtn`) in der Chat-Kopfzeile mit kompakter
+Anzeige des Zustands (z. B. `Transkript + 1 Zusammenfassung`, `2
+Zusammenfassungen, ohne Transkript`). Klick öffnet ein Popover
+(`#chatContextMenu`): Checkbox „Transkript“ (deaktiviert mit Hinweis, wenn das
+Video keines hat), darunter „Zusammenfassungen“: Radio/Checkbox-Gruppe mit
+„Neueste (automatisch)“, „Keine“ und der Liste aller Versionen (Label wie im
+Verlauf der Zusammenfassung: Datum – Modell, zusätzlich Preset-Name aus
+`options.presetId`, falls vorhanden); die Auswahl einzelner Versionen hebt
+„Neueste“/„Keine“ auf und umgekehrt. Ungültige Kombination (nichts gewählt)
+zeigt den Hinweistext und deaktiviert „Senden“. Die Auswahl gilt für den
+angezeigten Chat, wird bei bestehendem Chat sofort per `chat_context_set`
+gespeichert, bei „Neuer Chat“ mit der ersten Frage mitgesendet (Vorbelegung:
+Auswahl des zuletzt benutzten Chats dieses Videos, sonst Standard). Während
+einer laufenden Anfrage ist der Button deaktiviert. Eingabe ist jetzt auch für
+Videos ohne Transkript aktiv, wenn eine Zusammenfassung existiert (U5 wird
+präzisiert: deaktiviert nur, wenn weder Transkript noch Zusammenfassung
+vorhanden ist). Schließen per Klick außerhalb und Escape. Alles per
+`textContent`.
+
+UI-Fälle: U35 Standardanzeige und Popover-Inhalt (3 Versionen im Mock); U36
+Version wählen → `chat_context_set` mit `summaryIds: [id]`, Anzeige
+aktualisiert; U37 „Keine“ + Transkript aus → Hinweis sichtbar, „Senden“
+deaktiviert; U38 neuer Chat sendet `contextOptions` mit `chat_send`; U39 Video
+ohne Transkript, mit Zusammenfassung → Eingabe aktiv, Transkript-Checkbox
+deaktiviert; U40 Chatwechsel zeigt die Optionen des jeweiligen Chats; U41
+Escape/Klick außerhalb schließt das Popover.
+
 ## Etappen und Gates
 
 | Etappe | Inhalt | Gate |
@@ -558,6 +661,7 @@ UI-Fälle: Schalter deaktiviert + Tooltip bei Modell ohne `tool_call`;
 | 1-Abnahme | Review (Grok), Kreuzreview, nativer Durchlauf mit `npm run tauri dev` über die Automation-API gegen ein echtes Modell; Neustart → Verlauf noch da | — |
 | 2a | `tool_stream.rs`, `ChatMessage`-Umbau, `websearch.rs`; Tests T1–T10, S1–S16. **Mutationsnachweis:** T4 rot, wenn `index` ignoriert wird; S4/S5/S6 rot, wenn nur `is_loopback()`/`is_private()` geprüft wird; S10 rot bei automatischen Redirects; S17 rot ohne `.no_proxy()`; S16 rot bei verschobener Präfixgrenze | `cargo test` grün |
 | 2b | Schleife (L1–L6), `websearch.json`, Einstellungs-Tab, Chat-UI für Tool-Aktivität | alle Gates |
+| 3 | Kontext-Wähler: Spalte `context_options`, Auflösung im Prompt-Bau, Popover; Tests X1–X12, U35–U41, Mutationsnachweis X3/X11/X10 | alle Gates, danach `npm run tauri -- build` |
 | 2-Abnahme | Review, Kreuzreview **plus zusätzlicher Reviewer** für Adressprüfung/Redirects, untrusted Tool-Ergebnisse, Commit-nach-Erfolg; nativer Durchlauf gegen das lokale SearXNG (`http://127.0.0.1:8080`, `format=json` aktiv) | — |
 
 Nach jeder Etappe `TODO.md` nachziehen; nach Etappe 1 und 2 jeweils

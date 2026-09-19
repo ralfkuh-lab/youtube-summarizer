@@ -1237,3 +1237,48 @@ test("U34: Tool-Schritte haben lesbare Kopfzeilen und sauberen Inhalt", async ()
     },
   );
 });
+
+test("U35: Emoji-Labels werden nicht zerschnitten", async () => {
+  const emojis = "🙂".repeat(200);
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const head = (await page.locator("#chatMessages .chat-tool-step-head").first().textContent()) ?? "";
+      const chars = Array.from(head);
+      assert.strictEqual(chars.length, 121, `120 Codepunkte + Auslassung erwartet: ${chars.length}`);
+      assert.ok(head.startsWith("Sucht: "));
+      assert.strictEqual(chars.slice(7, 120).join(""), "🙂".repeat(113));
+      assert.ok(head.endsWith("…"));
+      assert.ok(!head.includes("\uFFFD"), "kein Ersatzzeichen");
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "Chat mit Emoji-Suche",
+              messages: [
+                { role: "user", content: "Frage" },
+                {
+                  role: "assistant",
+                  content: "",
+                  toolCalls: [
+                    {
+                      id: "c1",
+                      type: "function",
+                      function: { name: "web_search", arguments: JSON.stringify({ query: emojis }) },
+                    },
+                  ],
+                },
+                { role: "tool", content: "Treffer", toolCallId: "c1" },
+                { role: "assistant", content: "Antwort" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  );
+});

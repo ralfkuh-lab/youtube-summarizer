@@ -85,7 +85,7 @@ impl ChatContext {
     }
 
     /// Alle rohen Kontextteile - die Pruefmenge fuer die Delimiter.
-    fn raw_parts(&self) -> Vec<String> {
+    pub(crate) fn raw_parts(&self) -> Vec<String> {
         let mut parts = vec![self.title.clone(), self.transcript.clone()];
         for value in [
             &self.published,
@@ -101,54 +101,70 @@ impl ChatContext {
         parts
     }
 
-    fn blocks(&self, extra_parts: &[&str]) -> String {
-        let own = self.raw_parts();
-        let mut parts: Vec<&str> = own.iter().map(String::as_str).collect();
-        parts.extend_from_slice(extra_parts);
-        let mut blocks: Vec<String> = vec![summarize::wrap_untrusted("TITLE", &self.title, &parts)];
+    /// `parts` enthaelt die rohen Kontextteile **und** die zusaetzlichen Teile
+    /// (Nachrichten); der Aufrufer haelt die Rohteile vor, damit hier nichts
+    /// geklont wird.
+    pub(crate) fn blocks(&self, parts: &[&str]) -> String {
+        let mut blocks: Vec<String> = vec![summarize::wrap_untrusted("TITLE", &self.title, parts)];
         if let Some(value) = self.published.as_deref() {
-            blocks.push(summarize::wrap_untrusted("PUBLISHED", value, &parts));
+            blocks.push(summarize::wrap_untrusted("PUBLISHED", value, parts));
         }
         if let Some(value) = self.description.as_deref() {
-            blocks.push(summarize::wrap_untrusted("DESCRIPTION", value, &parts));
+            blocks.push(summarize::wrap_untrusted("DESCRIPTION", value, parts));
         }
         if let Some(value) = self.chapters.as_deref() {
-            blocks.push(summarize::wrap_untrusted("CHAPTERS", value, &parts));
+            blocks.push(summarize::wrap_untrusted("CHAPTERS", value, parts));
         }
         blocks.push(summarize::wrap_untrusted(
             "TRANSCRIPT",
             &self.transcript,
-            &parts,
+            parts,
         ));
         if let Some(value) = self.summary.as_deref() {
-            blocks.push(summarize::wrap_untrusted("SUMMARY", value, &parts));
+            blocks.push(summarize::wrap_untrusted("SUMMARY", value, parts));
         }
         blocks.join("\n\n")
     }
 }
 
-/// Rohe Teile einer Nachricht (Inhalt, Tool-Aufrufe, Tool-Aufruf-ID).
-fn message_parts(message: &NewChatMessage) -> Vec<String> {
-    let mut parts = vec![message.content.clone()];
-    if let Some(tool_calls) = &message.tool_calls {
-        parts.push(tool_calls.to_string());
-    }
-    if let Some(tool_call_id) = &message.tool_call_id {
-        parts.push(tool_call_id.clone());
-    }
-    parts
+/// Rohe Kontextteile (vom Aufrufer einmal vorgehalten) plus die Nachrichten der
+/// Runde/des Verlaufs. Die Inhalte werden nur **entliehen**: in der Tool-Schleife
+/// entstehen keine Transkriptkopien.
+pub(crate) struct ExtraParts<'a> {
+    raw: &'a [String],
+    contents: Vec<&'a str>,
+    owned: Vec<String>,
 }
 
-/// Alle rohen Kontextteile plus alle uebergebenen Nachrichten.
-pub(crate) fn extra_parts<'a>(
-    context: &ChatContext,
-    messages: impl Iterator<Item = &'a NewChatMessage>,
-) -> Vec<String> {
-    let mut parts = context.raw_parts();
-    for message in messages {
-        parts.extend(message_parts(message));
+impl<'a> ExtraParts<'a> {
+    pub(crate) fn new(
+        raw: &'a [String],
+        messages: impl Iterator<Item = &'a NewChatMessage>,
+    ) -> Self {
+        let mut contents = Vec::new();
+        let mut owned = Vec::new();
+        for message in messages {
+            contents.push(message.content.as_str());
+            if let Some(tool_calls) = &message.tool_calls {
+                owned.push(tool_calls.to_string());
+            }
+            if let Some(tool_call_id) = &message.tool_call_id {
+                owned.push(tool_call_id.clone());
+            }
+        }
+        Self {
+            raw,
+            contents,
+            owned,
+        }
     }
-    parts
+
+    pub(crate) fn refs(&self) -> Vec<&str> {
+        let mut parts: Vec<&str> = self.raw.iter().map(String::as_str).collect();
+        parts.extend(self.contents.iter().copied());
+        parts.extend(self.owned.iter().map(String::as_str));
+        parts
+    }
 }
 
 fn trimmed(value: Option<&str>) -> Option<String> {
@@ -190,8 +206,10 @@ pub fn build_chat_messages_with(
     web_search: bool,
 ) -> AppResult<Vec<ChatMessage>> {
     let context = ChatContext::new(video)?;
+    let raw_parts = context.raw_parts();
     Ok(build_messages_from_context(
         &context,
+        &raw_parts,
         history,
         &[],
         web_search,
@@ -205,14 +223,14 @@ pub fn build_chat_messages_with(
 /// weil der Transkripttext teuer ist.
 pub fn build_messages_from_context(
     context: &ChatContext,
+    raw_parts: &[String],
     history: &[NewChatMessage],
     round: &[NewChatMessage],
     web_search: bool,
 ) -> Vec<ChatMessage> {
-    let mut parts: Vec<String> = history.iter().flat_map(message_parts).collect();
-    parts.extend(round.iter().flat_map(message_parts));
-    let extra: Vec<&str> = parts.iter().map(String::as_str).collect();
-    let context_block = context.blocks(&extra);
+    let extra = ExtraParts::new(raw_parts, history.iter().chain(round.iter()));
+    let refs = extra.refs();
+    let context_block = context.blocks(&refs);
 
     let mut messages = vec![ChatMessage::system(chat_system_prompt(web_search))];
     let mut context_placed = false;

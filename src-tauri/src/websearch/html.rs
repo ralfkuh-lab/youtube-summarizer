@@ -22,11 +22,28 @@ const BLOCK_ELEMENTS: &[&str] = &[
     "article",
 ];
 
-/// Elemente, deren Inhalt nicht in den Modellkontext gehoert (Rohtext und
-/// Seitengeruest). In HTML ist keines davon selbstschliessend.
+/// Elemente mit Rohtext-Inhalt (JavaScript/CSS): ohne Abschluss-Tag wird ihr
+/// Rest bis zum naechsten `<` verworfen.
+const RAW_TEXT_ELEMENTS: &[&str] = &["script", "style", "noscript"];
+
+/// Seitengeruest: Inhalt wird verworfen, wenn ein Abschluss-Tag folgt; ohne
+/// Abschluss-Tag bleibt der Inhalt erhalten.
+const FURNITURE_ELEMENTS: &[&str] = &[
+    "nav", "footer", "aside", "svg", "form", "button", "select", "template", "iframe",
+];
+
+/// Elemente, deren Inhalt nicht in den Modellkontext gehoert. In HTML ist keines
+/// davon selbstschliessend.
 const SKIPPED_ELEMENTS: &[&str] = &[
     "script", "style", "noscript", "nav", "footer", "aside", "svg", "form", "button", "select",
     "template", "iframe",
+];
+
+/// Reine Inline-Formatierungen trennen im Browser nicht: ihr Tag erzeugt kein
+/// Leerzeichen (sonst wuerden Woerter auseinandergerissen).
+const INLINE_ELEMENTS: &[&str] = &[
+    "b", "i", "em", "strong", "u", "s", "sub", "sup", "span", "code", "mark", "small", "font",
+    "abbr", "cite", "q", "time", "var", "kbd", "samp", "wbr",
 ];
 
 /// `script`/`style`/`noscript` samt Inhalt, Kommentare und Tags entfernen,
@@ -112,12 +129,24 @@ pub fn html_to_text(html: &str) -> String {
             break;
         };
 
-        let name = tag_name(&lowered[index..=tag_end]);
+        let tag = &lowered[index..=tag_end];
+        let name = tag_name(tag);
+        // Schliessende Tags sind keine Oeffner: `</nav>` darf keinen Skip
+        // ausloesen.
+        let is_closing = tag.starts_with("</");
         if BLOCK_ELEMENTS.contains(&name) {
             out.push('\n');
+        } else if !INLINE_ELEMENTS.contains(&name) {
+            // Entfernte Tags duerfen Woerter nicht verkleben ("Jahr2026").
+            out.push(' ');
         }
 
-        if let Some(position) = SKIPPED_ELEMENTS.iter().position(|element| *element == name) {
+        let skipped = if is_closing {
+            None
+        } else {
+            SKIPPED_ELEMENTS.iter().position(|element| *element == name)
+        };
+        if let Some(position) = skipped {
             // In HTML ist keines dieser Elemente selbstschliessend: `<script/>`
             // oeffnet einen Rohtext-Block.
             let closing = format!("</{name}");
@@ -137,14 +166,18 @@ pub fn html_to_text(html: &str) -> String {
                         .map(|offset| after_close + offset + 1)
                         .unwrap_or(bytes.len());
                 }
-                // Unabgeschlossen: nur das oeffnende Tag ueberspringen und den
-                // folgenden Rohtext bis zum naechsten '<' verwerfen, damit kein
-                // Quelltext im Modellkontext landet.
+                // Unabgeschlossen: bei Rohtext (JavaScript/CSS) wird der Rest
+                // bis zum naechsten '<' verworfen, bei Seitengeruest bleibt der
+                // Inhalt erhalten (nur das oeffnende Tag entfaellt).
                 None => {
-                    index = html[tag_end + 1..]
-                        .find('<')
-                        .map(|offset| tag_end + 1 + offset)
-                        .unwrap_or(bytes.len());
+                    if RAW_TEXT_ELEMENTS.contains(&name) {
+                        index = html[tag_end + 1..]
+                            .find('<')
+                            .map(|offset| tag_end + 1 + offset)
+                            .unwrap_or(bytes.len());
+                    } else {
+                        index = tag_end + 1;
+                    }
                 }
             }
             continue;

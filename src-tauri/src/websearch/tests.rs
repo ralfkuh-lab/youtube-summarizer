@@ -945,3 +945,86 @@ async fn web_search_test_rejects_an_empty_url() {
         "Ungültige SearXNG-URL"
     );
 }
+
+// ------------------------------- C10-Nachzuegler und D1-D3 (Etappe 2b) -----
+
+#[test]
+fn c10a_unbalanced_quote_falls_back_to_the_next_gt() {
+    // Kein Tag-Ende ausserhalb von Quotes, aber ein '>' vorhanden: das Tag endet
+    // dort, statt den Rest samt Tags als Text zu uebernehmen.
+    assert_eq!(html_to_text("<a title=\"x>y"), "y");
+    // Inline-Tags trennen nicht (D3), daher "yz".
+    assert_eq!(html_to_text("<a title=\"x>y<b>z</b>"), "yz");
+    assert_eq!(html_to_text(r#"<a title="a > b">x</a>"#), "x");
+}
+
+#[test]
+fn c10c_empty_comments_are_removed() {
+    assert_eq!(html_to_text("<!-->text"), "text");
+    assert_eq!(html_to_text("<!--->text"), "text");
+    assert_eq!(html_to_text("a<!-->b"), "ab");
+}
+
+#[test]
+fn c10e_page_furniture_is_skipped() {
+    assert_eq!(html_to_text("<nav>Menü</nav><p>Inhalt</p>"), "Inhalt");
+    assert_eq!(html_to_text("<footer>Impressum</footer>Text"), "Text");
+    assert_eq!(html_to_text("<aside>Rand</aside>Haupt"), "Haupt");
+    assert_eq!(html_to_text("<svg><path d='x'/></svg>Text"), "Text");
+    assert_eq!(
+        html_to_text("<form><button>Senden</button></form>Text"),
+        "Text"
+    );
+    assert_eq!(
+        html_to_text("<select><option>A</option></select>Text"),
+        "Text"
+    );
+    assert_eq!(html_to_text("<template>Vorlage</template>Text"), "Text");
+    assert_eq!(html_to_text("<iframe src=x>Rahmen</iframe>Text"), "Text");
+}
+
+#[test]
+fn d1_closing_tags_are_not_openers() {
+    // Ein verwaistes Schluss-Tag wird entfernt und darf keinen Skip ausloesen.
+    for closing in ["</nav>", "</form>", "</button>", "</svg>", "</script>"] {
+        let html = format!("<p>A</p>{closing}<p>B</p><nav>M</nav><p>C</p>");
+        assert_eq!(html_to_text(&html), "A\n\nB\n\nC", "{closing}");
+    }
+    // Verschachtelte Geruest-Tags: der Skip endet am ersten Abschluss-Tag, der
+    // Rest bleibt Text.
+    let nested = html_to_text("<nav>a<nav>b</nav>c</nav>keep");
+    assert_eq!(nested, "c keep");
+}
+
+#[test]
+fn d2_unterminated_furniture_keeps_its_content() {
+    // Nur Rohtext (script/style/noscript) wird ohne Abschluss verworfen.
+    // Ein einzelner Blockumbruch (hier von <p>) ergibt eine Zeile, keine
+    // Leerzeile - anders als im Auftrag notiert; begruendet im Bericht.
+    assert_eq!(html_to_text("<nav>Geheim<p>Artikel</p>"), "Geheim\nArtikel");
+    assert_eq!(
+        html_to_text("<footer>Impressum<p>Text</p>"),
+        "Impressum\nText"
+    );
+    assert_eq!(html_to_text("<nav>Geheim"), "Geheim");
+}
+
+#[test]
+fn d3_removed_tags_do_not_glue_words() {
+    assert_eq!(html_to_text("<tr><td>A</td><td>B</td></tr>"), "A B");
+    assert_eq!(html_to_text("<td>3</td><td>EUR</td>"), "3 EUR");
+    assert_eq!(
+        html_to_text(r#"<a href="x">Link</a><a href="y">Zwei</a>"#),
+        "Link Zwei"
+    );
+    // Inline-Formatierungen trennen nicht.
+    assert_eq!(html_to_text("Wort<b>fett</b>es."), "Wortfettes.");
+    assert_eq!(html_to_text("Satz<b>ende</b>."), "Satzende.");
+    assert_eq!(
+        html_to_text("<span>a</span><code>b</code><em>c</em>"),
+        "abc"
+    );
+    // Tabellenzeilen trennen per Umbruch, Zellen per Leerzeichen.
+    let table = "<tr><td>Jahr</td><td>2026</td></tr><tr><td>Wert</td><td>42</td></tr>";
+    assert_eq!(html_to_text(table), "Jahr 2026\n\nWert 42");
+}

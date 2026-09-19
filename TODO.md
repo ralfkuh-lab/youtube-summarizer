@@ -35,10 +35,12 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 ## Next TODOs
 
 - [ ] Video-Chat ([Spec](docs/spec-video-chat.md)):
-  - [x] Etappe 1: Chat über ein Video (Backend, Chat-Tab, Tests), reviewt von Grok und Gemini (Codex fiel wegen Limit aus).
-  - [ ] Manuell in der installierten App prüfen: Live-Streaming, „Stopp“, Video-/Chatwechsel während einer Anfrage (bisher nur per UI-Tests mit Mock und per Automation-API belegt).
-  - [ ] Etappe 2a: Tool-Calling im Client, `websearch.rs` mit Adresssperren (Mutationsnachweise laut Spec).
-  - [ ] Etappe 2b: Tool-Schleife, `websearch.json`, Einstellungs-Tab „Websuche“, Tool-Aktivität im Chat. `src/chat.ts` hat 585 Zeilen — vor 2b Auswahl-/Entwurfslogik auslagern.
+  - [x] Etappe 1: Chat über ein Video (Backend, Chat-Tab, Tests).
+  - [x] Etappe 2a/2b: Websuche per Tool-Calling (SearXNG + Seitenabruf mit Adresssperre, Tool-Schleife, Einstellungs-Tab „Websuche“, Tool-Aktivität im Chat). Reviewt von Grok, Gemini und Opus (Codex fiel wegen Limit aus).
+  - [ ] Manuell in der installierten App prüfen: Live-Streaming, Tool-Aktivität während der Anfrage, „Stopp“, Video-/Chatwechsel während einer Anfrage (bisher nur per UI-Tests mit Mock und per Automation-API belegt).
+  - [ ] Etappe 3: Kontext-Wähler (Transkript an/aus, Auswahl der Zusammenfassungs-Versionen pro Chat).
+  - [ ] Später erwägen: Obergrenze für gespeicherte Tool-Ergebnisse (eine voll ausgereizte Recherche-Runde speichert ~240 000 Zeichen, die jede Folgefrage mitsendet); Checkbox „unterstützt Tool-Calling“ für Custom-Modelle (ohne Katalog-Flag bleibt die Websuche ausgegraut).
+- [ ] Video an lokalen Agenten übergeben ([Spec-Entwurf](docs/spec-agent-handoff.md)): Kontextdatei exportieren, Kommando in die Zwischenablage; Spec-Review läuft.
 - [x] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
   - [x] 1: Race Conditions beim Videowechsel und Transkript-Neuladen beheben (Etappe 1).
   - [x] 2: Gemeinsamen KI-Konfigurationszustand verwenden und Speicheränderungen bei Schreibfehlern verhindern (Etappe 2).
@@ -69,6 +71,26 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 - The app is installed as a deb package (`sudo dpkg -i youtube-summarizer.deb`), see AGENTS.md.
 
 ## Last Verified State
+
+- 2026-09-19: Abnahme Etappe 2 Video-Chat (Websuche). Nativer Durchlauf mit
+  `npm run tauri dev` (isoliertes `XDG_DATA_HOME`, danach gelöscht) über die
+  Automation-API gegen OpenRouter `deepseek/deepseek-v4.1-flash` und das lokale SearXNG
+  (`http://127.0.0.1:8080`): fünf Tool-Runden (6 Suchen, 5 Seitenabrufe), Schlussanfrage
+  ohne `tools`, Antwort trennt Video- und Web-Aussagen mit verlinkten Quellen;
+  Folgefrage ohne Websuche auf den Tool-Verlauf funktioniert. Der native Lauf fand vor den
+  beiden 2b-Korrekturpaketen statt; danach nur Gates: `cargo fmt --check`, `cargo test`
+  (203 bestanden, 4 ignoriert), `npm run build`, `npm run test:ui` (41 bestanden),
+  `npm run tauri -- build` erfolgreich. Nicht nativ geprüft: Chat-Tab selbst (Streaming,
+  Tool-Aktivität, Stopp). Kein Dev-Server aktiv.
+- 2026-09-19: Video-Chat Korrekturpaket 2 zu Etappe 2b (Opus/Grok): Schluss-Tags lösen
+  keinen Gerüst-Skip mehr aus (D1), unabgeschlossene Gerüst-Elemente behalten ihren Inhalt
+  (nur Rohtext wird verworfen, D2), entfernte Tags trennen Wörter (Inline-Ausnahmen, D3),
+  rohe Kontextteile werden einmal je `chat_send_impl` vorgehalten und nur entliehen (D4,
+  `ExtraParts`), Frontend kürzt Labels nach Codepunkten (D5). Gates: `cargo fmt --check`
+  sauber, `cargo test` (203 bestanden, 4 ignoriert, ohne Warnungen), `npm run build`,
+  `npm run test:ui` (41 bestanden) und `npm run tauri -- build` grün. Mutationsbelege im
+  Bericht `.herd/impl-2b-korrekturen-2-bericht.md`. Installation per
+  `sudo dpkg -i youtube-summarizer.deb` steht beim Maintainer aus.
 
 - 2026-09-19: Video-Chat Korrekturpaket Etappe 2b (Grok/Gemini/Opus/Orchestrator):
   Kontextblöcke werden vor **jeder** Provider-Anfrage neu gebaut (Tool-Ergebnisse der Runde

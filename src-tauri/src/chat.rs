@@ -13,7 +13,7 @@ use crate::ai::catalog as ai_catalog;
 use crate::ai::client as ai_client;
 use crate::ai::config::AiConfigService;
 use crate::ai::tool_stream;
-use crate::chat_prompt::{build_messages_from_context, chat_title, extra_parts, ChatContext};
+use crate::chat_prompt::{build_messages_from_context, chat_title, ChatContext, ExtraParts};
 use crate::models::{Chat, ChatMessageRecord, ChatTurnResult, NewChatMessage};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::summarize::{self, SummaryTarget};
@@ -186,6 +186,8 @@ pub async fn chat_send_impl(
     history.push(NewChatMessage::user(question));
 
     let context = ChatContext::new(&video)?;
+    // Rohteile einmal pro Aufruf: in der Schleife wird nur noch entliehen.
+    let raw_parts = context.raw_parts();
     let mut round_messages: Vec<NewChatMessage> = Vec::new();
     let mut round = 0usize;
 
@@ -195,8 +197,13 @@ pub async fn chat_send_impl(
         }
         // Vor jeder Anfrage neu bauen: Tool-Ergebnisse der Runde koennen
         // Delimiter enthalten und muessen die Kontextbloecke beeinflussen.
-        let messages =
-            build_messages_from_context(&context, &history, &round_messages, tools.is_some());
+        let messages = build_messages_from_context(
+            &context,
+            &raw_parts,
+            &history,
+            &round_messages,
+            tools.is_some(),
+        );
         // In der Schlussrunde (und ohne Websuche) bleibt der strenge Pfad:
         // Tool-Aufrufe werden dort nicht ausgewertet.
         let with_tools = tools.is_some() && round < MAX_TOOL_ROUNDS;
@@ -289,9 +296,11 @@ pub async fn chat_send_impl(
                     .await?;
                     match result {
                         Ok(text) => {
-                            let parts =
-                                extra_parts(&context, history.iter().chain(round_messages.iter()));
-                            let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+                            let parts = ExtraParts::new(
+                                &raw_parts,
+                                history.iter().chain(round_messages.iter()),
+                            );
+                            let refs = parts.refs();
                             on_tool(websearch::ToolEvent {
                                 kind,
                                 label,

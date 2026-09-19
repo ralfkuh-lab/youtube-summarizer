@@ -99,8 +99,11 @@ function hostAndPath(url: string): string {
   }
 }
 
+/// Kuerzt nach Codepunkten, damit kein Surrogatpaar zerteilt wird (sonst
+/// entstehen Ersatzzeichen im Text).
 function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max)}…` : value;
+  const chars = Array.from(value);
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : value;
 }
 
 /// Kopfzeile eines Schritts: gleiche Regel wie das Event-Label.
