@@ -70,6 +70,21 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Video-Chat Korrekturpaket Etappe 2b (Grok/Gemini/Opus/Orchestrator):
+  Kontextblöcke werden vor **jeder** Provider-Anfrage neu gebaut (Tool-Ergebnisse der Runde
+  fließen in die Delimiter ein, Transkript einmal pro Runde), feste Modell-Fehlertexte ohne
+  Fremdtext (+200-Zeichen-Kürzung und `=`-Neutralisierung), Abbruch mitten im Tool-Aufruf
+  (250-ms-Abfrage), eindeutige `tool_call`-IDs, Events nur für ausgeführte Aufrufe
+  (`kind` um `other`), klare Meldung bei leerer Schlussantwort; `websearch.rs` in
+  `fetch`/`search`/`tools` aufgeteilt; HTML-Extraktor mit `>`-Rückfall, leeren Kommentaren,
+  Seitengerüst-Skip und linearen Laufzeittests; Frontend: Aktivitätszeilen aktualisieren
+  statt verdoppeln, Tool-Schritte an ihrer Assistant-Nachricht (über `tool_call_id`) mit
+  lesbaren Kopfzeilen und bereinigtem Inhalt. Gates: `cargo fmt --check` sauber, `cargo test`
+  (197 bestanden, 3 ignoriert, ohne Warnungen), `npm run build` und `npm run test:ui`
+  (40 bestanden) grün, `npm run tauri -- build` erfolgreich. Mutationsbelege M6/M7/M8 und
+  M10 in `/tmp/yts-mut-2b-ds`. Bericht: `.herd/impl-2b-korrekturen-bericht.md`.
+  Installation per `sudo dpkg -i youtube-summarizer.deb` steht beim Maintainer aus.
+
 - 2026-09-19: Video-Chat Etappe 2b (Websuche am Chat): Frontend-Modulschnitt
   (`src/chat-state.ts`, `src/chat-render.ts`), `websearch.json` mit Commands
   `web_search_config_get/set/test`, Tool-Schleife in `chat.rs` (max. 5 Runden, max. 4

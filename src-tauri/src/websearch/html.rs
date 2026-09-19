@@ -22,9 +22,12 @@ const BLOCK_ELEMENTS: &[&str] = &[
     "article",
 ];
 
-/// Elemente mit Rohtext-Inhalt (JavaScript/CSS), dessen Inhalt nicht in den
-/// Modellkontext gehoert.
-const SKIPPED_ELEMENTS: &[&str] = &["script", "style", "noscript"];
+/// Elemente, deren Inhalt nicht in den Modellkontext gehoert (Rohtext und
+/// Seitengeruest). In HTML ist keines davon selbstschliessend.
+const SKIPPED_ELEMENTS: &[&str] = &[
+    "script", "style", "noscript", "nav", "footer", "aside", "svg", "form", "button", "select",
+    "template", "iframe",
+];
 
 /// `script`/`style`/`noscript` samt Inhalt, Kommentare und Tags entfernen,
 /// Entities dekodieren, Blockumbrueche erhalten, Whitespace normalisieren.
@@ -71,6 +74,16 @@ pub fn html_to_text(html: &str) -> String {
 
         // Kommentare als Einheit entfernen (sie koennen '>' enthalten).
         if lowered[index..].starts_with("<!--") {
+            let after_open = &lowered[index + 4..];
+            // `<!-->` und `<!--->` sind vollstaendige leere Kommentare.
+            if after_open.starts_with('>') {
+                index += 5;
+                continue;
+            }
+            if after_open.starts_with("->") {
+                index += 6;
+                continue;
+            }
             match last_comment_end.filter(|end| *end >= index) {
                 Some(_) => {
                     let offset = lowered[index + 4..]
@@ -87,9 +100,13 @@ pub fn html_to_text(html: &str) -> String {
 
         // Tag-Ende anfuehrungsbewusst bestimmen. Gibt es gar kein '>' mehr, ist
         // der Rest Text - ohne erneutes Suchen.
-        let tag_end = last_gt
-            .filter(|position| *position >= index)
-            .and_then(|_| find_tag_end(html, index));
+        let tag_end = last_gt.filter(|position| *position >= index).and_then(|_| {
+            // Bei unbalancierten Anfuehrungszeichen gibt es kein Ende
+            // ausserhalb von Quotes: dann das naechste '>' nehmen, statt den
+            // ganzen Rest als Text zu behandeln.
+            find_tag_end(html, index)
+                .or_else(|| html[index..].find('>').map(|offset| index + offset))
+        });
         let Some(tag_end) = tag_end else {
             out.push_str(&html[index..]);
             break;
@@ -101,11 +118,8 @@ pub fn html_to_text(html: &str) -> String {
         }
 
         if let Some(position) = SKIPPED_ELEMENTS.iter().position(|element| *element == name) {
-            if is_self_closing(&html[index..=tag_end]) {
-                // Selbstschliessend: es gibt keinen Inhalt zu verwerfen.
-                index = tag_end + 1;
-                continue;
-            }
+            // In HTML ist keines dieser Elemente selbstschliessend: `<script/>`
+            // oeffnet einen Rohtext-Block.
             let closing = format!("</{name}");
             // Nur suchen, wenn laut Vorabinfo ueberhaupt ein Abschluss-Tag folgt.
             let closing_start = last_closing[position]
@@ -166,10 +180,6 @@ fn find_tag_end(html: &str, start: usize) -> Option<usize> {
         index += 1;
     }
     None
-}
-
-fn is_self_closing(tag: &str) -> bool {
-    tag.trim_end_matches('>').trim_end().ends_with('/')
 }
 
 /// Tag-Name ohne '<', '</' und Attribute, kleingeschrieben (Eingabe ist bereits

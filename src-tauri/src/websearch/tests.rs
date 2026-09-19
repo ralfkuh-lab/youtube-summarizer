@@ -9,7 +9,12 @@ use serde_json::json;
 
 use url::Host;
 
-use super::address::{check_fetch_url, filter_resolved, FetchTarget};
+use url::Url;
+
+use super::address::{check_fetch_url, filter_resolved, is_blocked_ip, FetchTarget};
+use super::fetch::{fetch_page, fetch_page_with};
+use super::html::html_to_text;
+use super::search::{search_endpoint, web_search};
 use super::*;
 
 /// Lokaler HTTP-Server fuer die Netzwerkfaelle (Muster der Client-Tests).
@@ -804,9 +809,12 @@ fn q1_unterminated_raw_text_is_discarded() {
     assert_eq!(html_to_text("<script>alert(1)"), "");
     assert_eq!(html_to_text("<noscript>ohne js"), "");
     assert_eq!(html_to_text("<script>x<p>Text</p>"), "Text");
-    // Selbstschliessend hat keinen Inhalt zu verwerfen.
-    assert_eq!(html_to_text("<style/>rest"), "rest");
-    assert_eq!(html_to_text("<style />rest"), "rest");
+    // In HTML ist keines dieser Elemente selbstschliessend: `<style/>` oeffnet
+    // einen Rohtext-Block, dessen Rest bis zum naechsten '<' verworfen wird.
+    assert_eq!(html_to_text("<style/>rest"), "");
+    assert_eq!(html_to_text("<style />rest"), "");
+    assert_eq!(html_to_text("<style/>rest<p>Text</p>"), "Text");
+    assert_eq!(html_to_text("<script/>alert(1)<p>Text</p>"), "Text");
     // Mit Abschluss-Tag wird der ganze Block verworfen.
     assert_eq!(html_to_text("<script>x</script>rest"), "rest");
     assert_eq!(
@@ -878,7 +886,7 @@ fn inputs_guard(input: String) -> &'static str {
 
 #[test]
 fn q1_large_inputs_stay_linear() {
-    let cases: [(&str, String); 5] = [
+    let cases: [(&str, String); 7] = [
         ("1 MB nur '<'", "<".repeat(1_000_000)),
         ("500k '<a' ohne '>'", "<a".repeat(500_000)),
         (
@@ -887,6 +895,14 @@ fn q1_large_inputs_stay_linear() {
         ),
         ("200k '<!--' ohne Abschluss", "<!--".repeat(200_000)),
         ("100k '<a title=\"'", "<a title=\"".repeat(100_000)),
+        (
+            "500k '<!--' mit Abschluss",
+            format!("{}-->", "<!--".repeat(500_000)),
+        ),
+        (
+            "200k '<script>x' mit Abschluss",
+            format!("{}</script>", "<script>x".repeat(200_000)),
+        ),
     ];
     let mut slow = Vec::new();
     for (label, input) in cases {

@@ -457,3 +457,30 @@ async fn t14_cancelled_flag_aborts_the_stream() {
         "unerwartet: {error:?}"
     );
 }
+
+#[tokio::test]
+async fn t15_duplicate_ids_become_unique() {
+    let body = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"web_search","arguments":"{}"}},{"index":1,"id":"call_1","function":{"name":"fetch_page","arguments":"{}"}},{"index":2,"id":"call_1","function":{"name":"web_search","arguments":"{}"}}]}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#;
+    let turn = turn_from(body, "text/event-stream").await.unwrap();
+
+    let ids: Vec<&str> = turn
+        .tool_calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .collect();
+    assert_eq!(turn.tool_calls.len(), 3);
+    assert_eq!(ids[0], "call_1");
+    assert_eq!(ids[1], "call_2");
+    assert_eq!(ids[2], "call_3");
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        3,
+        "IDs muessen eindeutig sein"
+    );
+}

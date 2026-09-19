@@ -200,15 +200,42 @@ impl ToolCallAccumulator {
     }
 
     fn finish(self) -> Vec<ToolCall> {
-        self.calls
+        let calls = self
+            .calls
             .into_iter()
             .map(|(index, builder)| ToolCall {
                 id: builder.id.unwrap_or_else(|| format!("call_{index}")),
                 name: builder.name.unwrap_or_default(),
                 arguments: builder.arguments,
             })
-            .collect()
+            .collect();
+        dedupe_ids(calls)
     }
+}
+
+/// Doppelte IDs innerhalb einer Antwort erhalten `call_{index}` und werden
+/// notfalls weiter hochgezaehlt, damit jede Tool-Nachricht eindeutig zuordenbar
+/// bleibt.
+fn dedupe_ids(calls: Vec<ToolCall>) -> Vec<ToolCall> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut result = Vec::with_capacity(calls.len());
+    for (index, mut call) in calls.into_iter().enumerate() {
+        if seen.insert(call.id.clone()) {
+            result.push(call);
+            continue;
+        }
+        let mut candidate_index = index;
+        let unique = loop {
+            let candidate = format!("call_{candidate_index}");
+            if seen.insert(candidate.clone()) {
+                break candidate;
+            }
+            candidate_index += 1;
+        };
+        call.id = unique;
+        result.push(call);
+    }
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +302,7 @@ fn parse_tool_chat_response(body: &str) -> Result<ChatTurn, ChatError> {
             }
         })
         .collect::<Vec<_>>();
+    let tool_calls = dedupe_ids(tool_calls);
     if content.trim().is_empty() && tool_calls.is_empty() {
         return Err(ChatError::MissingChoice);
     }

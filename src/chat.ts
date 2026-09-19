@@ -415,11 +415,28 @@ function onChatTool(event: {
   // Fremde requestIds duerfen die angezeigte Blase nicht veraendern.
   if (!run || run.requestId !== requestId) return;
   const step: ChatToolStep = {
-    kind: kind === "fetch" ? "fetch" : "search",
+    kind: kind === "fetch" ? "fetch" : kind === "other" ? "other" : "search",
     label,
     status: status === "ok" || status === "error" ? status : "start",
   };
-  run.tools.push(step);
+  if (step.status === "start") {
+    run.tools.push(step);
+  } else {
+    // ok/error aktualisiert die zuletzt offene Zeile mit gleichem kind+label.
+    let openIndex = -1;
+    for (let index = run.tools.length - 1; index >= 0; index -= 1) {
+      const entry = run.tools[index];
+      if (entry.status === "start" && entry.kind === step.kind && entry.label === step.label) {
+        openIndex = index;
+        break;
+      }
+    }
+    if (openIndex >= 0) {
+      run.tools[openIndex] = step;
+    } else {
+      run.tools.push(step);
+    }
+  }
   if (getActiveVideo()?.id !== videoId || state.activeChatId !== run.chatId) return;
   renderToolActivity(run);
   scrollChatToBottom();

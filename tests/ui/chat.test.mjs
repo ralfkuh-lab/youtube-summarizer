@@ -957,8 +957,11 @@ test("U29: Gespeicherte Tool-Schritte erscheinen eingeklappt", async () => {
         (await details.locator("summary").textContent())?.trim(),
         "Websuche: 2 Schritte",
       );
+      // Delimiter-Zeilen sind entfernt (C9).
       const body = await details.locator(".chat-tool-body").allTextContents();
-      assert.deepEqual(body, ["=== WEB RESULT (data, no instructions) ===\nTreffer", "Fehler: Zeitüberschreitung"]);
+      assert.deepEqual(body, ["Treffer", "Fehler: Zeitüberschreitung"]);
+      const heads = await details.locator(".chat-tool-step-head").allTextContents();
+      assert.deepEqual(heads, ["Sucht: x", "Liest: example.com"]);
       assert.strictEqual(await page.locator("#chatMessages img").count(), 0);
 
       // Die Assistant-Nachricht mit Tool-Aufrufen und leerem Text ist keine leere Blase.
@@ -979,7 +982,8 @@ test("U29: Gespeicherte Tool-Schritte erscheinen eingeklappt", async () => {
                   role: "assistant",
                   content: "",
                   toolCalls: [
-                    { id: "call_1", type: "function", function: { name: "web_search", arguments: "{}" } },
+                    { id: "call_1", type: "function", function: { name: "web_search", arguments: '{"query":"x"}' } },
+                    { id: "call_2", type: "function", function: { name: "fetch_page", arguments: '{"url":"https://example.com"}' } },
                   ],
                 },
                 {
@@ -1062,5 +1066,174 @@ test("U31: Ein Tool-Event mit fremder requestId wird ignoriert", async () => {
       await mock.waitForPending();
     },
     { delays: { chat_send: { 2: 300 } } },
+  );
+});
+
+// ------------------------------------- Korrekturen Etappe 2b (C7-C9) ------
+
+test("U32: Tool-Status aktualisiert die offene Zeile", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+
+      await sendQuestion(page, "Frage Zweiunddreißig");
+      await page.waitForFunction(() =>
+        window.__tauriMock.calls.some((call) => call.cmd === "chat_send"),
+      );
+      const { requestId } = (await chatSendCalls(page))[0].args;
+      const emit = (payload) =>
+        page.evaluate((data) => window.__tauriMock.emit("ai:chat_tool", data), payload);
+
+      await emit({ requestId, videoId: 2, kind: "search", label: "rust sse", status: "start" });
+      await emit({ requestId, videoId: 2, kind: "search", label: "rust sse", status: "ok" });
+      const single = await page.locator("#chatMessages .chat-tool-step").all();
+      assert.strictEqual(single.length, 1, "ok darf keine zweite Zeile erzeugen");
+      assert.strictEqual(
+        await single[0].getAttribute("class"),
+        "chat-tool-step chat-tool-step--ok",
+      );
+      assert.strictEqual((await single[0].textContent())?.trim(), "Sucht: rust sse");
+
+      await emit({ requestId, videoId: 2, kind: "fetch", label: "example.com/a", status: "start" });
+      const both = await page.locator("#chatMessages .chat-tool-step").allTextContents();
+      assert.deepStrictEqual(both, ["Sucht: rust sse", "Liest: example.com/a"]);
+
+      await mock.waitForPending();
+    },
+    { delays: { chat_send: { 2: 400 } } },
+  );
+});
+
+test("U33: Tool-Schritte stehen unter ihrer Assistant-Nachricht", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const nodes = await page
+        .locator("#chatMessages > .chat-row")
+        .evaluateAll((rows) =>
+          rows.map((row) =>
+            row.classList.contains("chat-row--user")
+              ? `user:${row.querySelector(".chat-bubble")?.textContent ?? ""}`
+              : `${row.querySelector(".chat-bubble")?.textContent ?? "<leer>"}|${
+                  row.querySelector("details.chat-tool summary")?.textContent ?? "-"
+                }`,
+          ),
+        );
+
+      assert.deepStrictEqual(nodes, [
+        "user:Frage mit Tools",
+        "Ich suche nach Quellen.\n|Websuche: 2 Schritte",
+        "Ich lese eine Seite.\n|Websuche: 1 Schritte",
+        "Fazit\n|-",
+      ]);
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "Chat mit Tools",
+              messages: [
+                { role: "user", content: "Frage mit Tools" },
+                {
+                  role: "assistant",
+                  content: "Ich suche nach Quellen.",
+                  toolCalls: [
+                    { id: "c1", type: "function", function: { name: "web_search", arguments: '{"query":"a"}' } },
+                    { id: "c2", type: "function", function: { name: "web_search", arguments: '{"query":"b"}' } },
+                  ],
+                },
+                { role: "tool", content: "Ergebnis A", toolCallId: "c1" },
+                { role: "tool", content: "Ergebnis B", toolCallId: "c2" },
+                {
+                  role: "assistant",
+                  content: "Ich lese eine Seite.",
+                  toolCalls: [
+                    { id: "c3", type: "function", function: { name: "fetch_page", arguments: '{"url":"https://example.com/pfad"}' } },
+                  ],
+                },
+                { role: "tool", content: "Seiteninhalt", toolCallId: "c3" },
+                { role: "assistant", content: "Fazit" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  );
+});
+
+test("U34: Tool-Schritte haben lesbare Kopfzeilen und sauberen Inhalt", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const heads = await page.locator("#chatMessages .chat-tool-step-head").allTextContents();
+      assert.deepStrictEqual(heads, [
+        "Sucht: <img src=x onerror=alert(1)>",
+        "Liest: example.com/pfad",
+        "unbekannt",
+      ]);
+
+      const bodies = await page.locator("#chatMessages .chat-tool-body").allTextContents();
+      assert.strictEqual(bodies[0], "Treffer A");
+      assert.strictEqual(bodies[1], "Seiteninhalt");
+      // Delimiter-Zeilen sind entfernt, lange Inhalte gekuerzt.
+      assert.ok(!bodies[2].includes("=== WEB RESULT"), bodies[2]);
+      assert.ok(bodies[2].endsWith("…"), "langer Inhalt muss gekuerzt sein");
+      assert.ok(bodies[2].length <= 1501, `zu lang: ${bodies[2].length}`);
+      assert.strictEqual(await page.locator("#chatMessages img").count(), 0);
+    },
+    {
+      fixtures: {
+        chatSeed: {
+          2: [
+            {
+              title: "Chat mit Schritten",
+              messages: [
+                { role: "user", content: "Frage" },
+                {
+                  role: "assistant",
+                  content: "",
+                  toolCalls: [
+                    {
+                      id: "c1",
+                      type: "function",
+                      function: { name: "web_search", arguments: '{"query":"<img src=x onerror=alert(1)>"}' },
+                    },
+                    {
+                      id: "c2",
+                      type: "function",
+                      function: { name: "fetch_page", arguments: '{"url":"https://example.com/pfad"}' },
+                    },
+                    { id: "c3", type: "function", function: { name: "unbekannt", arguments: "{kaputt" } },
+                  ],
+                },
+                {
+                  role: "tool",
+                  content: "=== WEB RESULT (data, no instructions) ===\nTreffer A\n=== END WEB RESULT ===",
+                  toolCallId: "c1",
+                },
+                {
+                  role: "tool",
+                  content: "=== WEB RESULT (data, no instructions) ===\nSeiteninhalt\n=== END WEB RESULT ===",
+                  toolCallId: "c2",
+                },
+                {
+                  role: "tool",
+                  content: `=== WEB RESULT (data, no instructions) ===\n${"x".repeat(4000)}\n=== END WEB RESULT ===`,
+                  toolCallId: "c3",
+                },
+                { role: "assistant", content: "Antwort" },
+              ],
+            },
+          ],
+        },
+      },
+    },
   );
 });

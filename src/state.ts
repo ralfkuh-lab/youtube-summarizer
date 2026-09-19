@@ -3,7 +3,7 @@ import type { Collection, TabName, Video, VideoStatusFilter } from "./types";
 
 /// Ein Werkzeug-Schritt einer laufenden Chat-Anfrage (Event `ai:chat_tool`).
 export interface ChatToolStep {
-  kind: "search" | "fetch";
+  kind: "search" | "fetch" | "other";
   label: string;
   status: "start" | "ok" | "error";
 }

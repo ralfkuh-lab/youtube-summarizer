@@ -180,20 +180,43 @@ pub fn build_chat_messages(
     build_chat_messages_with(video, history, false)
 }
 
-/// Wie `build_chat_messages`, mit Websuche-Zusatz im Systemprompt.
+/// Wie `build_chat_messages`, mit Websuche-Zusatz im Systemprompt (Testhilfe;
+/// die Produktion baut die Nachrichten je Anfrage ueber
+/// `build_messages_from_context`).
+#[cfg(test)]
 pub fn build_chat_messages_with(
     video: &Video,
     history: &[NewChatMessage],
     web_search: bool,
 ) -> AppResult<Vec<ChatMessage>> {
     let context = ChatContext::new(video)?;
-    let message_parts: Vec<String> = history.iter().flat_map(message_parts).collect();
-    let extra: Vec<&str> = message_parts.iter().map(String::as_str).collect();
+    Ok(build_messages_from_context(
+        &context,
+        history,
+        &[],
+        web_search,
+    ))
+}
+
+/// Baut die Nachrichtenfolge einer Anfrage: Kontextbloecke bei jeder Anfrage
+/// frisch (ein neues Tool-Ergebnis kann Delimiter enthalten und muss den
+/// Delimiter der Kontextbloecke beeinflussen), dazu Verlauf und die bisherigen
+/// Nachrichten der laufenden Runde. `context` wird einmal pro Runde erzeugt,
+/// weil der Transkripttext teuer ist.
+pub fn build_messages_from_context(
+    context: &ChatContext,
+    history: &[NewChatMessage],
+    round: &[NewChatMessage],
+    web_search: bool,
+) -> Vec<ChatMessage> {
+    let mut parts: Vec<String> = history.iter().flat_map(message_parts).collect();
+    parts.extend(round.iter().flat_map(message_parts));
+    let extra: Vec<&str> = parts.iter().map(String::as_str).collect();
     let context_block = context.blocks(&extra);
 
     let mut messages = vec![ChatMessage::system(chat_system_prompt(web_search))];
     let mut context_placed = false;
-    for message in history {
+    for message in history.iter().chain(round.iter()) {
         let mut client_message = to_client_message(message);
         if !context_placed && message.role == "user" {
             context_placed = true;
@@ -201,5 +224,5 @@ pub fn build_chat_messages_with(
         }
         messages.push(client_message);
     }
-    Ok(messages)
+    messages
 }

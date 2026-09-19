@@ -13,9 +13,7 @@ use crate::ai::catalog as ai_catalog;
 use crate::ai::client as ai_client;
 use crate::ai::config::AiConfigService;
 use crate::ai::tool_stream;
-use crate::chat_prompt::{
-    build_chat_messages_with, chat_title, extra_parts, to_client_message, ChatContext,
-};
+use crate::chat_prompt::{build_messages_from_context, chat_title, extra_parts, ChatContext};
 use crate::models::{Chat, ChatMessageRecord, ChatTurnResult, NewChatMessage};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::summarize::{self, SummaryTarget};
@@ -64,22 +62,84 @@ pub fn web_search_runtime(
 const CANCELLED_MESSAGE: &str = "KI-Antwort abgebrochen";
 const MAX_TOOL_ROUNDS: usize = 5;
 const MAX_TOOL_CALLS_PER_ROUND: usize = 4;
+const MAX_TOOL_ERROR_CHARS: usize = 200;
+/// Meldung, wenn die Schlussanfrage ohne Werkzeuge keinen Text liefert.
+const EMPTY_FINAL_ANSWER_MESSAGE: &str =
+    "Das Modell hat nach der Recherche keine Antwort geliefert – bitte erneut versuchen";
 
-/// Prueft Tool-Name und Argumente, bevor der Executor laeuft.
-fn validate_tool_call(name: &str, arguments: &str) -> Result<(), String> {
-    match name {
-        websearch::WEB_SEARCH_TOOL => websearch::string_argument(arguments, "query").map(|_| ()),
-        websearch::FETCH_PAGE_TOOL => websearch::string_argument(arguments, "url").map(|_| ()),
-        _ => Err(websearch::UNKNOWN_TOOL_MESSAGE.to_string()),
+/// Prueft Tool-Name, Argumente und Rundenlimit, bevor der Executor laeuft.
+/// Liefert bei Nichtausfuehrung den Modelltext und das feste Event-Label.
+fn precheck_tool_call(
+    index: usize,
+    name: &str,
+    arguments: &str,
+) -> Result<(), (&'static str, &'static str)> {
+    if index >= MAX_TOOL_CALLS_PER_ROUND {
+        return Err((websearch::TOOL_LIMIT_MESSAGE, "Tool-Limit erreicht"));
+    }
+    let arguments_ok = match name {
+        websearch::WEB_SEARCH_TOOL => websearch::string_argument(arguments, "query").is_ok(),
+        websearch::FETCH_PAGE_TOOL => websearch::string_argument(arguments, "url").is_ok(),
+        _ => return Err((websearch::UNKNOWN_TOOL_MESSAGE, "unbekanntes Tool")),
+    };
+    if !arguments_ok {
+        return Err((websearch::INVALID_ARGUMENTS_MESSAGE, "ungültige Argumente"));
+    }
+    Ok(())
+}
+
+/// Laesst den Tool-Aufruf laufen und bricht ihn ab, wenn das Abbruch-Flag
+/// gesetzt wird (Abfrage alle 250 ms).
+async fn execute_with_cancel(
+    runtime: &websearch::ToolRuntime,
+    name: &str,
+    arguments: &str,
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> AppResult<Result<String, String>> {
+    let running = (runtime.execute)(name.to_string(), arguments.to_string());
+    tokio::pin!(running);
+    loop {
+        tokio::select! {
+            result = &mut running => return Ok(result),
+            _ = tokio::time::sleep(ai_client::CANCEL_POLL_INTERVAL) => {
+                if is_cancelled() {
+                    return Err(CANCELLED_MESSAGE.to_string());
+                }
+            }
+        }
     }
 }
 
+/// Modelltext eines Fehlers: hoechstens 200 Skalarwerte, ohne Laeufe von drei
+/// oder mehr `=` (damit sich keine Delimiter einschleusen lassen).
 fn tool_error_text(reason: &str) -> String {
-    if reason.starts_with("Fehler:") {
-        reason.to_string()
+    let shortened: String = reason.trim().chars().take(MAX_TOOL_ERROR_CHARS).collect();
+    let neutralized = neutralize_equals(&shortened);
+    if neutralized.starts_with("Fehler:") {
+        neutralized
     } else {
-        format!("Fehler: {reason}")
+        format!("Fehler: {neutralized}")
     }
+}
+
+fn neutralize_equals(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut run = 0usize;
+    for ch in text.chars() {
+        if ch == '=' {
+            run += 1;
+            continue;
+        }
+        if run > 0 {
+            out.extend(std::iter::repeat_n('=', run.min(2)));
+            run = 0;
+        }
+        out.push(ch);
+    }
+    if run > 0 {
+        out.extend(std::iter::repeat_n('=', run.min(2)));
+    }
+    out
 }
 
 /// Eine Chat-Runde: Verlauf + neue Frage als Prompt senden und erst nach
@@ -126,7 +186,6 @@ pub async fn chat_send_impl(
     history.push(NewChatMessage::user(question));
 
     let context = ChatContext::new(&video)?;
-    let mut messages = build_chat_messages_with(&video, &history, tools.is_some())?;
     let mut round_messages: Vec<NewChatMessage> = Vec::new();
     let mut round = 0usize;
 
@@ -134,6 +193,10 @@ pub async fn chat_send_impl(
         if is_cancelled() {
             return Err(CANCELLED_MESSAGE.to_string());
         }
+        // Vor jeder Anfrage neu bauen: Tool-Ergebnisse der Runde koennen
+        // Delimiter enthalten und muessen die Kontextbloecke beeinflussen.
+        let messages =
+            build_messages_from_context(&context, &history, &round_messages, tools.is_some());
         // In der Schlussrunde (und ohne Websuche) bleibt der strenge Pfad:
         // Tool-Aufrufe werden dort nicht ausgewertet.
         let with_tools = tools.is_some() && round < MAX_TOOL_ROUNDS;
@@ -152,7 +215,7 @@ pub async fn chat_send_impl(
             .await
             .map_err(|error| error.to_string())?
         } else {
-            let text = ai_client::chat_stream_cancellable(
+            let result = ai_client::chat_stream_cancellable(
                 http,
                 &target.base_url,
                 target.api_key.as_deref(),
@@ -161,8 +224,16 @@ pub async fn chat_send_impl(
                 &mut on_delta,
                 &mut is_cancelled,
             )
-            .await
-            .map_err(|error| error.to_string())?;
+            .await;
+            let text = match result {
+                Ok(text) => text,
+                // Nur im Websuche-Lauf: die Schlussanfrage ohne Werkzeuge muss
+                // eine Antwort liefern.
+                Err(ai_client::ChatError::MissingChoice) if tools.is_some() => {
+                    return Err(EMPTY_FINAL_ANSWER_MESSAGE.to_string())
+                }
+                Err(error) => return Err(error.to_string()),
+            };
             tool_stream::ChatTurn {
                 content: text,
                 tool_calls: Vec::new(),
@@ -182,7 +253,6 @@ pub async fn chat_send_impl(
             provider: None,
             model: None,
         };
-        messages.push(to_client_message(&assistant));
         round_messages.push(assistant);
 
         let runtime = tools.as_ref().expect("tools vorhanden");
@@ -190,36 +260,56 @@ pub async fn chat_send_impl(
             if is_cancelled() {
                 return Err(CANCELLED_MESSAGE.to_string());
             }
-            let label = websearch::tool_label(&call.name, &call.arguments);
-            let kind = websearch::tool_kind(&call.name);
-            on_tool(websearch::ToolEvent {
-                kind,
-                label: label.clone(),
-                status: "start",
-            });
-            let result = if index >= MAX_TOOL_CALLS_PER_ROUND {
-                Err(websearch::TOOL_LIMIT_MESSAGE.to_string())
-            } else {
-                // Unbekannte Tools und unbrauchbare Argumente werden nicht
-                // ausgefuehrt, sondern als Fehler an das Modell zurueckgegeben.
-                match validate_tool_call(&call.name, &call.arguments) {
-                    Err(reason) => Err(reason),
-                    Ok(()) => (runtime.execute)(call.name.clone(), call.arguments.clone()).await,
+            // Nicht ausgefuehrte Aufrufe (Limit, unbekanntes Tool, unbrauchbare
+            // Argumente): genau ein error-Event mit festem Label und ohne
+            // modellgesteuerten Namen.
+            let content = match precheck_tool_call(index, &call.name, &call.arguments) {
+                Err((reason, label)) => {
+                    on_tool(websearch::ToolEvent {
+                        kind: "other",
+                        label: label.to_string(),
+                        status: "error",
+                    });
+                    tool_error_text(reason)
+                }
+                Ok(()) => {
+                    let label = websearch::tool_label(&call.name, &call.arguments);
+                    let kind = websearch::tool_kind(&call.name);
+                    on_tool(websearch::ToolEvent {
+                        kind,
+                        label: label.clone(),
+                        status: "start",
+                    });
+                    let result = execute_with_cancel(
+                        runtime,
+                        &call.name,
+                        &call.arguments,
+                        &mut is_cancelled,
+                    )
+                    .await?;
+                    match result {
+                        Ok(text) => {
+                            let parts =
+                                extra_parts(&context, history.iter().chain(round_messages.iter()));
+                            let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+                            on_tool(websearch::ToolEvent {
+                                kind,
+                                label,
+                                status: "ok",
+                            });
+                            summarize::wrap_untrusted("WEB RESULT", &text, &refs)
+                        }
+                        Err(reason) => {
+                            on_tool(websearch::ToolEvent {
+                                kind,
+                                label,
+                                status: "error",
+                            });
+                            tool_error_text(&reason)
+                        }
+                    }
                 }
             };
-            let (status, content) = match result {
-                Ok(text) => {
-                    let parts = extra_parts(&context, history.iter().chain(round_messages.iter()));
-                    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-                    ("ok", summarize::wrap_untrusted("WEB RESULT", &text, &refs))
-                }
-                Err(reason) => ("error", tool_error_text(&reason)),
-            };
-            on_tool(websearch::ToolEvent {
-                kind,
-                label,
-                status,
-            });
             let tool_message = NewChatMessage {
                 role: "tool".to_string(),
                 content,
@@ -228,7 +318,6 @@ pub async fn chat_send_impl(
                 provider: None,
                 model: None,
             };
-            messages.push(to_client_message(&tool_message));
             round_messages.push(tool_message);
         }
     };

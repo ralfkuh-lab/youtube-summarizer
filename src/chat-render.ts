@@ -62,26 +62,92 @@ export function buildAssistantMessage(
   return { row, bubble };
 }
 
+type ToolCallInfo = { id: string; name: string; arguments: string };
+
+/// Werkzeug-Aufrufe einer Assistant-Nachricht (fuer die Zuordnung der Schritte).
+export function toolCallInfos(message: ChatMessageRecord): ToolCallInfo[] {
+  if (!Array.isArray(message.toolCalls)) return [];
+  return message.toolCalls.map((call) => {
+    const entry = call as {
+      id?: string;
+      function?: { name?: string; arguments?: string };
+    };
+    return {
+      id: entry.id ?? "",
+      name: entry.function?.name ?? "",
+      arguments: entry.function?.arguments ?? "",
+    };
+  });
+}
+
+function parseArguments(raw: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function hostAndPath(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    return `${parsed.host}${path}`;
+  } catch {
+    return url;
+  }
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/// Kopfzeile eines Schritts: gleiche Regel wie das Event-Label.
+function stepHeadline(call: ToolCallInfo | undefined): string {
+  if (!call) return "Werkzeug";
+  const args = parseArguments(call.arguments);
+  if (call.name === "web_search" && typeof args.query === "string") {
+    return truncate(`Sucht: ${args.query}`, 120);
+  }
+  if (call.name === "fetch_page" && typeof args.url === "string") {
+    return truncate(`Liest: ${hostAndPath(args.url)}`, 120);
+  }
+  return call.name || "Werkzeug";
+}
+
+/// Inhalt ohne die Delimiter-Zeilen, auf 1 500 Zeichen gekuerzt.
+function cleanToolContent(content: string): string {
+  const lines = content.split("\n");
+  if (lines.length && /^===.*===$/.test(lines[0].trim())) lines.shift();
+  if (lines.length && /^===.*===$/.test(lines[lines.length - 1].trim())) lines.pop();
+  return truncate(lines.join("\n").trim(), 1500);
+}
+
 /// Eingeklappte Werkzeug-Schritte des gespeicherten Verlaufs.
-export function buildToolSteps(messages: ChatMessageRecord[]): HTMLDetailsElement {
+export function buildToolSteps(
+  messages: ChatMessageRecord[],
+  calls: Map<string, ToolCallInfo>,
+): HTMLDetailsElement {
   const details = document.createElement("details");
   details.className = "chat-tool";
   const summary = document.createElement("summary");
   summary.textContent = `Websuche: ${messages.length} Schritte`;
   details.append(summary);
   for (const message of messages) {
+    const step = document.createElement("div");
+    step.className = "chat-tool-step-detail";
+    const head = document.createElement("div");
+    head.className = "chat-tool-step-head";
+    head.textContent = stepHeadline(calls.get(message.toolCallId ?? ""));
     const body = document.createElement("div");
     body.className = "chat-tool-body";
     // Nur Text: Werkzeug-Ausgaben sind untrusted.
-    body.textContent = message.content;
-    details.append(body);
+    body.textContent = cleanToolContent(message.content);
+    step.append(head, body);
+    details.append(step);
   }
   return details;
-}
-
-function hasToolCalls(message: ChatMessageRecord): boolean {
-  const calls = message.toolCalls;
-  return Array.isArray(calls) ? calls.length > 0 : !!calls;
 }
 
 export function removeProvisionalMessages(requestId: string) {
@@ -99,7 +165,8 @@ export function buildToolActivity(run: ChatRun): HTMLDivElement | null {
   for (const step of run.tools) {
     const line = document.createElement("div");
     line.className = `chat-tool-step chat-tool-step--${step.status}`;
-    line.textContent = `${step.kind === "search" ? "Sucht" : "Liest"}: ${step.label}`;
+    const prefix = step.kind === "search" ? "Sucht" : step.kind === "fetch" ? "Liest" : "";
+    line.textContent = prefix ? `${prefix}: ${step.label}` : step.label;
     list.append(line);
   }
   return list;
@@ -158,40 +225,62 @@ export async function renderChatMessages(messages: ChatMessageRecord[], gen: num
     root.append(empty);
     return;
   }
-  let pendingTools: ChatMessageRecord[] = [];
-  for (const message of messages) {
+  let index = 0;
+  while (index < messages.length) {
     if (gen !== state.chatRenderGen) return;
-    if (message.role === "tool") {
-      pendingTools.push(message);
-      continue;
-    }
+    const message = messages[index];
     if (message.role === "user") {
       const row = buildMessageRow("user");
       row.append(buildBubble(message.content));
       root.append(row);
+      index += 1;
       continue;
     }
     if (message.role === "assistant") {
-      // Assistant-Nachrichten mit Tool-Aufrufen und ohne Text sind kein Inhalt.
-      if (!message.content.trim() && hasToolCalls(message)) continue;
-      const { row, bubble } = buildAssistantMessage(
-        message.provider ?? null,
-        message.model ?? null,
-      );
-      if (pendingTools.length) {
-        row.prepend(buildToolSteps(pendingTools));
-        pendingTools = [];
+      // Tool-Schritte gehoeren ueber die tool_call_id zu dieser Antwort.
+      const calls = toolCallInfos(message);
+      const callsById = new Map(calls.map((call) => [call.id, call]));
+      const steps: ChatMessageRecord[] = [];
+      let next = index + 1;
+      while (
+        next < messages.length &&
+        messages[next].role === "tool" &&
+        (calls.length === 0 || callsById.has(messages[next].toolCallId ?? ""))
+      ) {
+        steps.push(messages[next]);
+        next += 1;
       }
-      root.append(row);
-      await renderMarkdownInto(bubble, message.content, {
-        mermaid: true,
-        gen,
-        stripFence: false,
-        target: "chat",
-      });
+      const hasText = !!message.content.trim();
+      if (hasText || steps.length) {
+        const { row, bubble } = buildAssistantMessage(
+          message.provider ?? null,
+          message.model ?? null,
+        );
+        if (!hasText) {
+          // Assistant mit Tool-Aufrufen und leerem Text ist keine Blase.
+          bubble.remove();
+        }
+        if (steps.length) row.append(buildToolSteps(steps, callsById));
+        root.append(row);
+        if (hasText) {
+          await renderMarkdownInto(bubble, message.content, {
+            mermaid: true,
+            gen,
+            stripFence: false,
+            target: "chat",
+          });
+        }
+      }
+      index = next;
       continue;
     }
+    // Verwaiste Tool-Nachrichten (ohne zugehoerige Antwort) sammeln.
+    const orphans: ChatMessageRecord[] = [];
+    while (index < messages.length && messages[index].role === "tool") {
+      orphans.push(messages[index]);
+      index += 1;
+    }
+    if (orphans.length) root.append(buildToolSteps(orphans, new Map()));
   }
-  if (pendingTools.length) root.append(buildToolSteps(pendingTools));
   if (gen === state.chatRenderGen && wasAtBottom) scrollChatToBottom(true);
 }

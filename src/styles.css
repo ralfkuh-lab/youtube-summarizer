@@ -1738,3 +1738,12 @@ select option:hover {
   overflow-y: auto;
   white-space: pre-wrap;
 }
+
+.chat-tool-step-detail + .chat-tool-step-detail {
+  margin-top: 6px;
+}
+
+.chat-tool-step-head {
+  font-weight: 600;
+  color: var(--text);
+}
