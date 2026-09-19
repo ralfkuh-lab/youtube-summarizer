@@ -24,6 +24,10 @@ export interface AppState {
   activeChatId: number | null;
   chatRenderGen: number;
   chatRuns: Map<number, ChatRun>;
+  /// Letzte explizite Chat-Wahl je Video; `null` steht fuer „Neuer Chat“.
+  chatSelection: Map<number, number | null>;
+  /// Nicht abgeschickte Fragen, Schluessel aus Video-ID und Chat-ID (bzw. new).
+  chatDrafts: Map<string, string>;
 }
 
 export const state: AppState = {
@@ -40,6 +44,8 @@ export const state: AppState = {
   activeChatId: null,
   chatRenderGen: 0,
   chatRuns: new Map(),
+  chatSelection: new Map(),
+  chatDrafts: new Map(),
 };
 
 let statusTextEl: HTMLElement | null = null;

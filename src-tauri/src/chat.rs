@@ -169,7 +169,7 @@ pub async fn chat_send_impl(
     chat_id: Option<i64>,
     text: String,
     target: SummaryTarget,
-    is_cancelled: impl FnMut() -> bool,
+    mut is_cancelled: impl FnMut() -> bool,
     on_delta: impl FnMut(&str),
 ) -> AppResult<ChatTurnResult> {
     let question = text.trim();
@@ -207,10 +207,16 @@ pub async fn chat_send_impl(
         &target.model,
         &prompt,
         on_delta,
-        is_cancelled,
+        &mut is_cancelled,
     )
     .await
     .map_err(|error| error.to_string())?;
+
+    // Der Lauf kann auch unmittelbar nach dem letzten Token noch abgebrochen
+    // werden; dann darf die Runde nicht mehr gespeichert werden.
+    if is_cancelled() {
+        return Err("KI-Antwort abgebrochen".to_string());
+    }
 
     let mut assistant = NewChatMessage::assistant(answer);
     assistant.provider = Some(target.provider_label.clone());

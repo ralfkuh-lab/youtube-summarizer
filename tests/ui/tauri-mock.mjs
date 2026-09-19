@@ -114,6 +114,37 @@ export function createMockScript(fixtures = {}, delays = {}) {
   const callbacks = new Map();
   let nextCallbackId = 1;
   const chatStore = { chats: [], messages: {}, nextChatId: 1 };
+  const cancelledRequests = new Set();
+
+  function seedChatStore(seed) {
+    for (const [videoId, entries] of Object.entries(seed || {})) {
+      for (const entry of entries) {
+        const id = chatStore.nextChatId++;
+        const createdAt = entry.createdAt || '2026-01-01T00:00:00Z';
+        const updatedAt = entry.updatedAt || createdAt;
+        chatStore.chats.push({
+          id,
+          videoId: Number(videoId),
+          title: entry.title,
+          createdAt,
+          updatedAt,
+        });
+        chatStore.messages[id] = (entry.messages || []).map((message, index) => ({
+          id: index + 1,
+          chatId: id,
+          role: message.role,
+          content: message.content,
+          toolCalls: null,
+          toolCallId: null,
+          provider: message.provider !== undefined ? message.provider : null,
+          model: message.model !== undefined ? message.model : null,
+          createdAt,
+        }));
+      }
+    }
+  }
+
+  seedChatStore(initialFixtures.chatSeed);
 
   function chatTitle(text) {
     const normalized = String(text ?? '').trim().split(/\\s+/).join(' ');
@@ -166,7 +197,7 @@ export function createMockScript(fixtures = {}, delays = {}) {
           if (typeof d === 'number') {
             delayMs = d;
           } else if (typeof d === 'object' && d !== null) {
-            const id = args?.id ?? args?.videoId;
+            const id = args?.id ?? args?.videoId ?? args?.chatId;
             if (id !== undefined && d[id] !== undefined) {
               delayMs = d[id];
             } else if (d.default !== undefined) {
@@ -266,6 +297,9 @@ export function createMockScript(fixtures = {}, delays = {}) {
         }
         if (cmd === 'chat_send') {
           const chatFixture = this.fixtures.chat || {};
+          if (cancelledRequests.has(args?.requestId)) {
+            throw new Error('KI-Antwort abgebrochen');
+          }
           if (chatFixture.error) {
             throw new Error(chatFixture.error);
           }
@@ -316,6 +350,7 @@ export function createMockScript(fixtures = {}, delays = {}) {
           return JSON.parse(JSON.stringify(result));
         }
         if (cmd === 'chat_cancel') {
+          cancelledRequests.add(args?.requestId);
           return null;
         }
         if (cmd === 'chat_delete') {

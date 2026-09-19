@@ -13,6 +13,11 @@ const AUTOSCROLL_TOLERANCE_PX = 40;
 const INPUT_MAX_LINES = 6;
 
 let chatList: Chat[] = [];
+let lastChatVideoId: number | null = null;
+
+function chatContextKey(videoId: number, chatId: number | null): string {
+  return `${videoId}:${chatId ?? "new"}`;
+}
 
 function parseModelValue(value: string): [string | null, string | null] {
   if (!value) return [null, null];
@@ -55,7 +60,8 @@ function updateChatControls(video: Video | null) {
   sendBtn.textContent = run ? "Stopp" : "Senden";
   sendBtn.disabled = !hasTranscript;
   const input = $<HTMLTextAreaElement>("#chatInput");
-  input.disabled = !hasTranscript;
+  // Waehrend einer laufenden Anfrage bleibt nur der Stopp-Button bedienbar.
+  input.disabled = !hasTranscript || !!run;
   input.placeholder = hasTranscript ? "Frage zum Video…" : "Für den Chat wird ein Transkript benötigt";
   $("#chatHint").hidden = hasTranscript;
   $<HTMLButtonElement>("#chatNew").disabled = !!run || !hasTranscript;
@@ -97,7 +103,9 @@ function scrollChatToBottom(force = false) {
 
 function buildMessageRow(role: "user" | "assistant"): HTMLDivElement {
   const row = document.createElement("div");
-  row.className = `chat-message chat-message--${role}`;
+  // Eigener Klassenname: `.chat-message` gehoert dem Modell-Testchat in den
+  // Einstellungen und stylt dort jeden Absatz als eigenen Kasten.
+  row.className = `chat-row chat-row--${role}`;
   return row;
 }
 
@@ -143,7 +151,7 @@ function buildToolMessage(content: string, provider: string | null, model: strin
 
 function removeProvisionalMessages(requestId: string) {
   chatMessagesEl()
-    .querySelectorAll<HTMLElement>(`.chat-message[data-request-id="${requestId}"]`)
+    .querySelectorAll<HTMLElement>(`.chat-row[data-request-id="${requestId}"]`)
     .forEach((node) => node.remove());
 }
 
@@ -250,18 +258,36 @@ async function loadActiveChatMessages(video: Video, gen: number) {
     await renderStreamingAnswer(run, false, gen);
   }
   updateChatControls(video);
+  applyChatDraft(video.id, chatId);
+}
+
+/// Uebernimmt die gemerkte Chat-Wahl eines Videos, wenn sie noch gueltig ist.
+/// Reihenfolge: laufende Anfrage, gemerkte Wahl, sonst der neueste Chat.
+function resolveChatSelection(videoId: number): number | null {
+  const run = state.chatRuns.get(videoId);
+  if (run) return run.chatId;
+  if (state.chatSelection.has(videoId)) {
+    const remembered = state.chatSelection.get(videoId) ?? null;
+    if (remembered === null || chatList.some((chat) => chat.id === remembered)) {
+      return remembered;
+    }
+  }
+  return chatList[0]?.id ?? null;
 }
 
 /// Baut den Chat-Tab fuer ein Video neu auf (auch beim Aktivieren des Tabs).
 export async function renderChatTab(video: Video) {
   const gen = ++state.chatRenderGen;
+  if (lastChatVideoId !== video.id) {
+    lastChatVideoId = video.id;
+    clearChatInput();
+  }
   chatList = [];
   fillChatSelect();
   updateChatControls(video);
   await refreshChatList(video.id, gen);
   if (gen !== state.chatRenderGen || getActiveVideo()?.id !== video.id) return;
-  const known = state.activeChatId !== null && chatList.some((chat) => chat.id === state.activeChatId);
-  state.activeChatId = known ? state.activeChatId : (chatList[0]?.id ?? null);
+  state.activeChatId = resolveChatSelection(video.id);
   fillChatSelect();
   await loadActiveChatMessages(video, gen);
 }
@@ -270,17 +296,21 @@ export async function renderChatTab(video: Video) {
 export function resetChat() {
   state.activeChatId = null;
   chatList = [];
+  lastChatVideoId = null;
   state.chatRenderGen += 1;
   chatMessagesEl().textContent = "";
+  clearChatInput();
   fillChatSelect();
   updateChatControls(null);
 }
 
 function selectChat(chatId: number | null) {
+  const video = getActiveVideo();
+  // Jede explizite Wahl wird gemerkt, auch wenn sie schon aktiv ist.
+  if (video) state.chatSelection.set(video.id, chatId);
   if (state.activeChatId === chatId) return;
   state.activeChatId = chatId;
   fillChatSelect();
-  const video = getActiveVideo();
   if (!video) return;
   const gen = ++state.chatRenderGen;
   updateChatControls(video);
@@ -313,11 +343,11 @@ async function deleteChat() {
     return;
   }
   if (getActiveVideo()?.id !== video.id) return;
-  state.activeChatId = null;
+  state.chatSelection.delete(video.id);
   const gen = ++state.chatRenderGen;
   await refreshChatList(video.id, gen);
   if (gen !== state.chatRenderGen || getActiveVideo()?.id !== video.id) return;
-  state.activeChatId = chatList[0]?.id ?? null;
+  state.activeChatId = resolveChatSelection(video.id);
   fillChatSelect();
   await loadActiveChatMessages(video, gen);
   setStatus("Chat gelöscht");
@@ -336,6 +366,25 @@ function resizeChatInput() {
 function restoreQuestion(text: string) {
   const input = $<HTMLTextAreaElement>("#chatInput");
   input.value = text;
+  resizeChatInput();
+}
+
+function clearChatInput() {
+  const input = $<HTMLTextAreaElement>("#chatInput");
+  input.value = "";
+  resizeChatInput();
+}
+
+/// Ein Entwurf wird nur in ein leeres Eingabefeld zurueckgeschrieben und danach
+/// geloescht, damit ein Chatwechsel getippten Text nicht ueberschreibt.
+function applyChatDraft(videoId: number, chatId: number | null) {
+  const input = $<HTMLTextAreaElement>("#chatInput");
+  if (input.value.trim() !== "") return;
+  const key = chatContextKey(videoId, chatId);
+  const draft = state.chatDrafts.get(key);
+  if (draft === undefined) return;
+  state.chatDrafts.delete(key);
+  input.value = draft;
   resizeChatInput();
 }
 
@@ -359,8 +408,8 @@ async function sendChatMessage() {
   setStatus("Chat-Antwort läuft…");
 
   const videoId = video.id;
-  const matchContext = (chatId: number | null) =>
-    getActiveVideo()?.id === videoId && state.activeChatId === chatId;
+  const runChatId = run.chatId;
+  const isActiveVideo = () => getActiveVideo()?.id === videoId;
   try {
     const result = await invoke<ChatTurnResult>("chat_send", {
       videoId,
@@ -371,26 +420,33 @@ async function sendChatMessage() {
       requestId,
     });
     state.chatRuns.delete(videoId);
-    const gen = ++state.chatRenderGen;
-    // Der Chat-Verlauf des Videos wird auch dann nachgeladen, wenn der
-    // Benutzer inzwischen einen anderen Chat ansieht - die Nachrichten selbst
-    // uebernimmt aber nur der passende Kontext ins DOM.
-    if (getActiveVideo()?.id === videoId) {
-      await refreshChatList(videoId, gen);
-    }
-    if (gen === state.chatRenderGen && matchContext(run.chatId)) {
+    if (isActiveVideo() && state.activeChatId === runChatId) {
+      // Frische Generation: der Sendezeitpunkt kann lange zurueckliegen.
+      const gen = ++state.chatRenderGen;
       state.activeChatId = result.chat.id;
-      fillChatSelect();
-      await renderChatMessages(result.messages, gen);
+      state.chatSelection.set(videoId, result.chat.id);
+      await refreshChatList(videoId, gen);
+      if (gen === state.chatRenderGen) {
+        fillChatSelect();
+        await renderChatMessages(result.messages, gen);
+        applyChatDraft(videoId, result.chat.id);
+      }
+    } else if (isActiveVideo()) {
+      // Gleiches Video, aber ein anderer Chat sichtbar: nur die Liste
+      // nachziehen, den sichtbaren Verlauf nicht anfassen.
+      await refreshChatList(videoId, state.chatRenderGen);
     }
-    setStatus("Chat-Antwort fertig");
+    if (isActiveVideo()) setStatus("Chat-Antwort fertig");
   } catch (error) {
     state.chatRuns.delete(videoId);
-    if (getActiveVideo()?.id === videoId) {
-      removeProvisionalMessages(requestId);
+    removeProvisionalMessages(requestId);
+    if (isActiveVideo() && state.activeChatId === runChatId) {
       restoreQuestion(text);
+    } else {
+      state.chatDrafts.set(chatContextKey(videoId, runChatId), text);
     }
-    setStatus(errorMessage(error));
+    const message = errorMessage(error);
+    setStatus(isActiveVideo() ? message : `Chat zu „${video.title}“: ${message}`);
   } finally {
     updateChatControls(getActiveVideo());
   }
@@ -435,7 +491,9 @@ function bindChatMessagesEvents() {
 }
 
 export function bindChatEvents() {
-  listen<{ requestId: string; videoId: number; text: string }>(STREAM_EVENT, onChatStream);
+  void listen<{ requestId: string; videoId: number; text: string }>(STREAM_EVENT, onChatStream).catch(
+    (error) => console.error("ai:chat_stream konnte nicht abonniert werden", error),
+  );
 
   $("#chatSend").addEventListener("click", () => {
     if (activeRun(getActiveVideo())) {

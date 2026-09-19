@@ -1,6 +1,6 @@
 # Spec: Chat über ein Video, optional mit Webrecherche
 
-Stand: 2026-09-19, Revision 2 (Spec-Review durch Grok eingearbeitet).
+Stand: 2026-09-19, Revision 3 (Spec-Review und Reviews der Etappe 1 eingearbeitet).
 
 ## Ziel
 
@@ -164,7 +164,8 @@ Reihenfolge, **vor** jeder Provider-Anfrage: `text` trimmen (leer →
 Transkript-Fehler). Dann `ai_client::chat_stream_cancellable`; Fehler des
 Clients werden per `to_string()` **unverändert** durchgereicht (kein Präfix
 `KI-Anfrage fehlgeschlagen:`), die Display-Texte von `ChatError` sind das
-Testorakel. `strip_wrapping_code_fence` wird nicht angewandt. Danach
+Testorakel. `strip_wrapping_code_fence` wird nicht angewandt. Unmittelbar vor
+dem Speichern wird das Abbruch-Flag erneut geprüft. Danach
 `append_chat_turn` (prüft erneut Existenz/Zugehörigkeit; wurde Chat oder Video
 inzwischen gelöscht → `Err`, nichts angelegt).
 
@@ -228,6 +229,8 @@ Client-Tests) bzw. direkte Storage-Tests.
 | D10 | doppelte `request_id` bei laufender Anfrage | `Err("Anfrage-ID bereits in Verwendung")`; der erste Lauf bleibt abbrechbar und räumt seinen Eintrag selbst auf |
 | D11 | Provider-HTTP-500 / `finish_reason: "length"` / Stream endet ohne Abschluss | jeweils Display-Text von `ChatError::Http` / `TruncatedOutput` / `IncompleteStream`; DB unverändert, Register leer |
 | D12 | leerer bzw. Whitespace-Text; unbekanntes Video | Wortlaute oben; 0 Provider-Requests |
+| D13 | zwei Runden im selben Chat | Ergebnis der zweiten Runde enthält 4 Nachrichten; der zweite Provider-Request enthält den Verlauf, nur die erste user-Nachricht trägt den Kontext |
+| D14 | Abbruch nach vollständigem Stream, vor dem Speichern | `Err("KI-Antwort abgebrochen")`, DB unverändert |
 
 ### Automation-API
 
@@ -280,6 +283,23 @@ für das neue Video neu auf bzw. leeren ihn), `summary-view.ts`.
   Eingabe deaktiviert.
 - Fehler/Abbruch: provisorische Blasen entfernen, Fragetext zurück ins
   Eingabefeld, Meldung in der Statuszeile.
+- **Chat-Auswahl pro Video:** `state.chatSelection` merkt je Video die letzte
+  explizite Wahl („Neuer Chat“ = `null`). Beim Aufbau des Tabs gilt: läuft für
+  das Video eine Anfrage → deren Chat; sonst die gemerkte Wahl (falls `null`
+  oder noch vorhanden); sonst der neueste Chat.
+- **Render-Zähler:** `state.chatRenderGen` wird nur erhöht, wenn der sichtbare
+  Chat neu gezeichnet wird. Ein im Hintergrund fertig gewordener Lauf rendert
+  mit frischem Zähler, wenn sein Kontext (Video und Chat) gerade sichtbar ist;
+  bei gleichem Video und anderem Chat aktualisiert er nur die Chat-Liste; bei
+  anderem Video ändert er nichts am DOM.
+- **Status und Entwürfe:** „Chat-Antwort fertig“ nur für das aktive Video;
+  Fehler immer, bei inaktivem Video mit Präfix `Chat zu „<Titel>“:`. Solange
+  für das aktive Video eine Anfrage läuft, ist `#chatInput` deaktiviert. Eine
+  fehlgeschlagene Frage geht bei passendem Kontext zurück ins Eingabefeld,
+  sonst als Entwurf (`state.chatDrafts`, je Video + Chat) und erscheint beim
+  nächsten Anzeigen dieses Chats im leeren Eingabefeld.
+- CSS: eigene Klassen (`chat-row…`, `chat-bubble`); `.chat-message` gehört dem
+  Modell-Testchat der Einstellungen.
 - **Race-Regeln:** Ergebnisse und Events werden nur dann ins DOM übernommen,
   wenn Video **und** Chat noch die sind, für die gesendet wurde. Ein Video-
   oder Chatwechsel bricht die Anfrage nicht ab; das Ergebnis wird gespeichert
@@ -305,6 +325,16 @@ für das neue Video neu auf bzw. leeren ihn), `summary-view.ts`.
 | U12 | Modell wählen, Seite neu laden | `#chatModel` zeigt die letzte Wahl |
 | U13 | `ai:chat_stream` mit fremder `requestId` | Antwortblase unverändert |
 | U14 | Antwort ist vollständig in ```` ```…``` ```` gehüllt | Code-Block bleibt sichtbar (kein Fence-Strip) |
+| U15 | Video mit vorhandenem Chat; „Neuer Chat“; Tab wechseln und zurück | Auswahl bleibt „neuer Chat“, keine Blasen |
+| U16 | vorhandener Chat; neuer Chat, Frage senden (verzögert); anderes Video; **vor** Ablauf zurück | provisorische Blase der laufenden Frage, nicht der alte Verlauf; nach Ablauf Runde genau einmal, Auswahl auf dem neuen Chat |
+| U17 | Send auf Video 2, sofort Video 3, Ablauf abwarten | Status nicht „Chat-Antwort fertig“ |
+| U18 | Video 3 mit gespeicherten Chats wird aufgebaut, während ein Send für Video 2 endet | Liste und Verlauf von Video 3 vollständig |
+| U19 | Chat A senden, zu Chat B wechseln, Send schlägt fehl | Eingabe bleibt leer; zurück in Chat A steht die Frage im Eingabefeld |
+| U20 | während laufender Anfrage | `#chatInput` deaktiviert, „Stopp“ aktiv |
+| U21 | Antwort mit zwei Absätzen | `<p>` in der Blase ohne eigenen Hintergrund |
+
+U7 zusätzlich: nach „Stopp“ keine Blasen, Frage wieder im Eingabefeld, Status
+enthält `abgebrochen` (der Mock lässt das abgebrochene `chat_send` scheitern).
 
 ## Etappe 2: Webrecherche per Tool-Calling
 

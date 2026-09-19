@@ -1487,18 +1487,18 @@ select option:hover {
   padding: 14px 16px;
 }
 
-.chat-message {
+.chat-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
 }
 
-.chat-message--user {
+.chat-row--user {
   align-items: flex-end;
 }
 
-.chat-message--assistant {
+.chat-row--assistant {
   align-items: flex-start;
 }
 
@@ -1512,7 +1512,7 @@ select option:hover {
   overflow-wrap: anywhere;
 }
 
-.chat-message--user .chat-bubble {
+.chat-row--user .chat-bubble {
   border-color: var(--accent-strong);
   background: var(--accent-strong);
   color: #fff;

@@ -28,6 +28,7 @@ struct SummarizeRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ChatRequest {
     chat_id: Option<i64>,
     text: String,
@@ -332,4 +333,30 @@ fn write_json<T: serde::Serialize>(
     stream
         .write_all(&body)
         .map_err(|err| format!("Response-Body konnte nicht geschrieben werden: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChatRequest;
+
+    /// Der Automation-Endpunkt nimmt den Body in der camelCase-Form der
+    /// Tauri-Commands entgegen (chatId/providerId/modelId).
+    #[test]
+    fn r2_chat_request_accepts_camel_case_body() {
+        let request: ChatRequest =
+            serde_json::from_str(r#"{"chatId":7,"text":"x","providerId":"p","modelId":"m"}"#)
+                .unwrap();
+        assert_eq!(request.chat_id, Some(7));
+        assert_eq!(request.text, "x");
+        assert_eq!(request.provider_id.as_deref(), Some("p"));
+        assert_eq!(request.model_id.as_deref(), Some("m"));
+    }
+
+    #[test]
+    fn r2_chat_request_allows_omitted_optional_fields() {
+        let request: ChatRequest = serde_json::from_str(r#"{"text":"nur text"}"#).unwrap();
+        assert_eq!(request.chat_id, None);
+        assert_eq!(request.provider_id, None);
+        assert_eq!(request.model_id, None);
+    }
 }
