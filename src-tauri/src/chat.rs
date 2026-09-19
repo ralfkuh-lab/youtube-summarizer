@@ -153,7 +153,11 @@ pub fn build_chat_messages(
         };
         messages.push(ChatMessage {
             role: message.role.clone(),
-            content,
+            content: Some(content),
+            // Gespeicherte Tool-Aufrufe und Tool-Ergebnisse werden unveraendert
+            // mitgesendet (sonst lehnen Provider den Verlauf ab).
+            tool_calls: message.tool_calls.clone(),
+            tool_call_id: message.tool_call_id.clone(),
         });
     }
     Ok(messages)

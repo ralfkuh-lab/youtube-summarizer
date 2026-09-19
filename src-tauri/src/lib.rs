@@ -7,6 +7,7 @@ mod models;
 mod storage;
 mod summarize;
 mod summary_presets;
+mod websearch;
 mod youtube;
 
 use std::fs;

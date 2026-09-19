@@ -2,34 +2,89 @@
 
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode, Url};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
-const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_PROVIDER_ERROR_CHARS: usize = 300;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    /// Text der Nachricht. `None` (oder leer) wird als JSON `null` gesendet:
+    /// Assistant-Nachrichten mit Tool-Aufrufen haben keinen Text.
+    #[serde(serialize_with = "serialize_content")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
+/// Text vorhanden -> String; leer oder `None` -> JSON `null` (nicht weglassen,
+/// nicht `""`), damit auch aus der Datenbank gelesene Assistant-Nachrichten mit
+/// `content = ''` und Tool-Aufrufen korrekt serialisiert werden.
+fn serialize_content<S: Serializer>(
+    content: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match content.as_deref() {
+        Some(text) if !text.is_empty() => serializer.serialize_str(text),
+        _ => serializer.serialize_none(),
+    }
+}
+
+/// Konstruktoren fuer alle Rollen; `assistant_tool_calls` und `tool` nutzt die
+/// Chat-Schleife erst in Etappe 2b.
+#[allow(dead_code)]
 impl ChatMessage {
-    pub fn system(content: impl Into<String>) -> Self {
+    fn text(role: &str, content: impl Into<String>) -> Self {
         Self {
-            role: "system".to_string(),
-            content: content.into(),
+            role: role.to_string(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 
+    pub fn system(content: impl Into<String>) -> Self {
+        Self::text("system", content)
+    }
+
     pub fn user(content: impl Into<String>) -> Self {
+        Self::text("user", content)
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self::text("assistant", content)
+    }
+
+    /// Assistant-Nachricht mit Tool-Aufrufen und ohne Text (JSON `null`).
+    pub fn assistant_tool_calls(tool_calls: Value) -> Self {
         Self {
-            role: "user".to_string(),
-            content: content.into(),
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
         }
+    }
+
+    /// Ergebnis eines Tool-Aufrufs.
+    pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".to_string(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+
+    pub fn with_tool_calls(mut self, tool_calls: Value) -> Self {
+        self.tool_calls = Some(tool_calls);
+        self
     }
 }
 
@@ -69,6 +124,8 @@ struct ChatRequest<'a> {
     messages: &'a [ChatMessage],
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [Value]>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,13 +161,13 @@ struct ChatStreamDelta {
 }
 
 #[derive(Debug, Default)]
-struct SseDecoder {
+pub(crate) struct SseDecoder {
     buffer: Vec<u8>,
     data_lines: Vec<String>,
 }
 
 impl SseDecoder {
-    fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, ChatError> {
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, ChatError> {
         self.buffer.extend_from_slice(chunk);
         let mut events = Vec::new();
 
@@ -137,75 +194,23 @@ impl SseDecoder {
     }
 }
 
-pub async fn chat_stream(
-    http: &Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    model: &str,
-    messages: &[ChatMessage],
-    on_delta: impl FnMut(&str),
-) -> Result<String, ChatError> {
-    chat_stream_cancellable(http, base_url, api_key, model, messages, on_delta, || false).await
+/// Ergebnis der Auswertung eines SSE-Events.
+pub(crate) enum SseStep {
+    Continue,
+    Done,
 }
 
-pub async fn chat_stream_cancellable(
-    http: &Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    model: &str,
-    messages: &[ChatMessage],
-    mut on_delta: impl FnMut(&str),
+/// Liest den SSE-Stream und uebergibt jeden Event-Block an `handle_event`.
+/// Abbruch-Flag und Chunk-Timeout werden hier zentral geprueft, damit der
+/// Tool-Stream (ai/tool_stream.rs) dieselbe Logik nutzen kann.
+pub(crate) async fn read_sse_stream(
+    response: reqwest::Response,
+    mut handle_event: impl FnMut(&str) -> Result<SseStep, ChatError>,
     mut is_cancelled: impl FnMut() -> bool,
-) -> Result<String, ChatError> {
-    let endpoint = chat_url(base_url)?;
-    let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
-    let mut request = http.post(endpoint).json(&ChatRequest {
-        model,
-        messages,
-        stream: true,
-    });
-    if let Some(key) = api_key {
-        request = request.bearer_auth(key);
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|error| ChatError::Request(error_chain(&error)))?;
-    let status = response.status();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    if !status.is_success() {
-        let body = response
-            .text()
-            .await
-            .map_err(|error| ChatError::ResponseRead(error_chain(&error)))?;
-        return Err(ChatError::Http {
-            status,
-            message: provider_error_message(&body, api_key),
-        });
-    }
-
-    if !content_type.starts_with("text/event-stream") {
-        let body = response
-            .text()
-            .await
-            .map_err(|error| ChatError::ResponseRead(error_chain(&error)))?;
-        let text = parse_chat_response(&body)?;
-        on_delta(&text);
-        return Ok(text);
-    }
-
+) -> Result<(), ChatError> {
     let mut stream = response.bytes_stream();
     let mut decoder = SseDecoder::default();
-    let mut accumulated = String::new();
     let mut chunk_wait_started = Instant::now();
-    let mut finished = false;
     loop {
         if is_cancelled() {
             return Err(ChatError::Cancelled);
@@ -230,16 +235,113 @@ pub async fn chat_stream_cancellable(
             if is_cancelled() {
                 return Err(ChatError::Cancelled);
             }
-            if event.trim() == "[DONE]" {
-                return finish_stream(accumulated, true);
+            if let SseStep::Done = handle_event(&event)? {
+                return Ok(());
             }
-            if let Some(message) = stream_error_message(&event, api_key) {
+        }
+    }
+    Ok(())
+}
+
+/// Sendet eine Chat-Anfrage (streamend) und prueft den HTTP-Status. `tools`
+/// wird nur mitgesendet, wenn es gesetzt ist (Etappe 2).
+pub(crate) async fn send_chat_request(
+    http: &Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    messages: &[ChatMessage],
+    tools: Option<&[Value]>,
+) -> Result<reqwest::Response, ChatError> {
+    let endpoint = chat_url(base_url)?;
+    let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
+    let mut request = http.post(endpoint).json(&ChatRequest {
+        model,
+        messages,
+        stream: true,
+        tools,
+    });
+    if let Some(key) = api_key {
+        request = request.bearer_auth(key);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| ChatError::Request(error_chain(&error)))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .map_err(|error| ChatError::ResponseRead(error_chain(&error)))?;
+        return Err(ChatError::Http {
+            status,
+            message: provider_error_message(&body, api_key),
+        });
+    }
+    Ok(response)
+}
+
+/// Content-Type der Antwort, kleingeschrieben; leer, wenn keiner gesetzt ist.
+pub(crate) fn response_content_type(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+pub async fn chat_stream(
+    http: &Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    messages: &[ChatMessage],
+    on_delta: impl FnMut(&str),
+) -> Result<String, ChatError> {
+    chat_stream_cancellable(http, base_url, api_key, model, messages, on_delta, || false).await
+}
+
+pub async fn chat_stream_cancellable(
+    http: &Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    messages: &[ChatMessage],
+    mut on_delta: impl FnMut(&str),
+    mut is_cancelled: impl FnMut() -> bool,
+) -> Result<String, ChatError> {
+    let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
+    let response = send_chat_request(http, base_url, api_key, model, messages, None).await?;
+
+    if !response_content_type(&response).starts_with("text/event-stream") {
+        let body = response
+            .text()
+            .await
+            .map_err(|error| ChatError::ResponseRead(error_chain(&error)))?;
+        let text = parse_chat_response(&body)?;
+        on_delta(&text);
+        return Ok(text);
+    }
+
+    let mut accumulated = String::new();
+    let mut finished = false;
+    read_sse_stream(
+        response,
+        |event| {
+            if event.trim() == "[DONE]" {
+                finished = true;
+                return Ok(SseStep::Done);
+            }
+            if let Some(message) = stream_error_message(event, api_key) {
                 return Err(ChatError::Http {
                     status: StatusCode::BAD_GATEWAY,
                     message,
                 });
             }
-            let response = serde_json::from_str::<ChatStreamResponse>(&event)
+            let response = serde_json::from_str::<ChatStreamResponse>(event)
                 .map_err(|error| ChatError::InvalidJson(error.to_string()))?;
             if let Some(choice) = response.choices.into_iter().next() {
                 if let Some(content) = choice.delta.content {
@@ -255,12 +357,15 @@ pub async fn chat_stream_cancellable(
                     }
                 }
             }
-        }
-    }
+            Ok(SseStep::Continue)
+        },
+        &mut is_cancelled,
+    )
+    .await?;
     finish_stream(accumulated, finished)
 }
 
-fn finish_stream(accumulated: String, completed: bool) -> Result<String, ChatError> {
+pub(crate) fn finish_stream(accumulated: String, completed: bool) -> Result<String, ChatError> {
     if !completed {
         Err(ChatError::IncompleteStream)
     } else if accumulated.trim().is_empty() {
@@ -270,7 +375,7 @@ fn finish_stream(accumulated: String, completed: bool) -> Result<String, ChatErr
     }
 }
 
-fn stream_error_message(body: &str, api_key: Option<&str>) -> Option<String> {
+pub(crate) fn stream_error_message(body: &str, api_key: Option<&str>) -> Option<String> {
     serde_json::from_str::<Value>(body)
         .ok()
         .filter(|value| value.get("error").is_some())
@@ -313,7 +418,7 @@ fn parse_chat_response(body: &str) -> Result<String, ChatError> {
 /// reqwest zeigt in Display nur die oberste Ebene ("error decoding response
 /// body"); die eigentliche Ursache (z. B. ein Timeout) steckt in der
 /// source-Kette und gehört mit in die Meldung.
-fn error_chain(error: &dyn std::error::Error) -> String {
+pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {
@@ -327,7 +432,7 @@ fn error_chain(error: &dyn std::error::Error) -> String {
     message
 }
 
-fn provider_error_message(body: &str, api_key: Option<&str>) -> String {
+pub(crate) fn provider_error_message(body: &str, api_key: Option<&str>) -> String {
     let parsed = serde_json::from_str::<Value>(body).ok();
     let message = parsed
         .as_ref()
@@ -380,6 +485,7 @@ mod tests {
             model: "test-model",
             messages: &messages,
             stream: false,
+            tools: None,
         })
         .unwrap();
         assert_eq!("test-model", value["model"]);

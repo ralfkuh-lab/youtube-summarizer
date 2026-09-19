@@ -70,6 +70,19 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Video-Chat Etappe 2a (Tool-Calling im Client + Webtools, noch nicht an
+  die Chat-Schleife angeschlossen): `ChatMessage.content` ist jetzt `Option<String>` mit
+  `tool_calls`/`tool_call_id` (leerer Text → JSON `null`, T9), gemeinsame Stream-Bausteine
+  in `ai/client.rs` (`read_sse_stream`, `send_chat_request`, `SseStep`), neu
+  `ai/tool_stream.rs` (Delta-Zusammenbau nach `index`, JSON-Fallback) und `websearch.rs`
+  (Adresssperren inkl. eingebettetem IPv4, eigener DNS-Resolver mit Filter, manuelle
+  Redirects, 2-MB-Limit, HTML→Text) mit Tests T1–T10 und S1–S16. Gates: `cargo fmt --check`
+  sauber, `cargo test` (152 bestanden, 1 ignoriert), `npm run build` und `npm run test:ui`
+  (30 bestanden, unverändert) grün. Mutationsnachweise M1 (T4 rot), M2 (S4/S5/S6 rot),
+  M3 (S10 rot) in `/tmp/yts-mut-2a`. Bericht: `.herd/impl-2a-bericht.md`. Etappe 2b
+  (Schleife L1–L6, `websearch.json`, Einstellungs-Tab, Chat-UI für Tool-Aktivität) folgt.
+  Kein Dev-Server oder Tauri-Prozess gestartet.
+
 - 2026-09-19: Abnahme Etappe 1 Video-Chat. Nativer Durchlauf mit `npm run tauri dev`
   (isoliertes `XDG_DATA_HOME` mit Kopie von DB und Konfiguration, danach gelöscht) über
   die Automation-API gegen OpenRouter `deepseek/deepseek-v4.1-flash`: Antwort mit
