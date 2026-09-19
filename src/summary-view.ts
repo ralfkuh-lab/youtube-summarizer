@@ -115,6 +115,10 @@ export function getMermaid() {
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: "strict",
+          // HTML-Labels liegen in <foreignObject> und würden vom SVG-Profil des Sanitizers entfernt
+          htmlLabels: false,
+          // SVG-Labels umbrechen hart mitten im Wort; lange deutsche Komposita brauchen mehr Platz
+          flowchart: { wrappingWidth: 320 },
           theme: "dark",
           darkMode: true,
         });

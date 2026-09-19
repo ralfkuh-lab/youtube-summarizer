@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test:ui": "node --test tests/ui/*.test.mjs",
+    "test:ui": "node --test --test-concurrency=1 tests/ui/*.test.mjs",
     "tauri": "tauri"
   },
   "engines": {

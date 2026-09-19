@@ -74,6 +74,16 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Mermaid-Flowcharts zeigten leere Kästen: Mermaid legt Labels als
+  HTML in `<foreignObject>` ab, das SVG-Profil von DOMPurify entfernt diese.
+  Fix in `getMermaid()` (`src/summary-view.ts`): `htmlLabels: false` (native
+  SVG-Texte) plus `flowchart.wrappingWidth: 320` gegen Umbruch mitten im Wort.
+  Neuer Regressionstest `tests/ui/summary-mermaid.test.mjs` (vor Fix rot, nach
+  Fix grün); `test:ui` läuft jetzt mit `--test-concurrency=1`, weil alle
+  Testdateien denselben festen Vite-Port nutzen. `npm run build`,
+  `npm run test:ui` (6 bestanden) und `npm run tauri -- build` grün; kein
+  Rust-Code geändert, `cargo test` nicht erneut gelaufen. Installation per
+  `sudo dpkg -i youtube-summarizer.deb` steht noch aus. Kein Dev-Server aktiv.
 - 2026-09-11 (Windows 11): `origin/main` per Fast-Forward auf 80bd721 gezogen, `npm run build`,
   `npm run tauri -- build` (NSIS-Setup 5,4 MB und MSI 7,3 MB) und `cargo test` (92 bestanden,
   1 Netzwerktest ignoriert) grün. `npm run test:ui` nur mit
