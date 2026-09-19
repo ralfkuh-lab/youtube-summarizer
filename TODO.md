@@ -70,6 +70,21 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Video-Chat Korrekturpaket 2a (Reviews Grok/Gemini/Opus): `fetch_page` und die
+  lokale Suche ohne System-Proxy (`no_proxy`) – `HTTP_PROXY` konnte Resolver-Filter und
+  Adressprüfung umgehen (K1, Test S17 über einen Kindprozess); NAT64-Regeln korrigiert
+  (`64:ff9b:1::/48` komplett gesperrt, `64:ff9b::/96` exakt 96 Bit, IPv4-translated, `fec0::/10`)
+  samt Präfixgrenzen (K2/K3); `web_search` ohne automatische Redirects mit eigenem Fehlertext
+  und `no_proxy` für lokale Instanzen (K4); `content: null` nur noch bei Assistant mit
+  nichtleeren `tool_calls` (K5); leere `tools` werden weggelassen (K6); Abschluss-/Abbruchpfade
+  getestet (T11–T14, K7); 30-s-Gesamtbudget (K8); eigene Fehlertexte für fehlenden
+  Content-Type, 3xx ohne Location und leeren Text (K9); `html_to_text` mit Kommentaren,
+  nacktem `<`, unabgeschlossenen Blöcken und Blockumbrüchen (K10). Gates: `cargo fmt --check`
+  sauber, `cargo test` (170 bestanden, 3 ignoriert), `npm run build` und `npm run test:ui`
+  (30 bestanden, unverändert) grün. Mutationsbelege M4 (S17 rot ohne `no_proxy`) und
+  M5 (S16 rot bei verschobener 172.16/12-Grenze) in `/tmp/yts-mut-2a`. Bericht:
+  `.herd/impl-2a-korrekturen-bericht.md`. Kein Dev-Server oder Tauri-Prozess gestartet.
+
 - 2026-09-19: Video-Chat Etappe 2a (Tool-Calling im Client + Webtools, noch nicht an
   die Chat-Schleife angeschlossen): `ChatMessage.content` ist jetzt `Option<String>` mit
   `tool_calls`/`tool_call_id` (leerer Text → JSON `null`, T9), gemeinsame Stream-Bausteine

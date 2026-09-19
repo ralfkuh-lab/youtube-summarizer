@@ -299,40 +299,68 @@ data: [DONE]
 
 #[test]
 fn t9_assistant_with_tool_calls_serializes_null_content() {
-    let message = ChatMessage::assistant("").with_tool_calls(json!([{
+    let calls = json!([{
         "id": "call_1",
         "type": "function",
         "function": {"name": "web_search", "arguments": "{}"},
-    }]));
-    let value = serde_json::to_value(&message).unwrap();
+    }]);
 
-    assert_eq!(value["role"], "assistant");
-    assert!(value.as_object().unwrap().contains_key("content"));
-    assert!(
-        value["content"].is_null(),
-        "content muss null sein: {value}"
-    );
-    assert_eq!(value["tool_calls"][0]["id"], "call_1");
-    assert!(
-        value.get("tool_call_id").is_none(),
-        "tool_call_id wird weggelassen"
-    );
-
-    // Auch eine aus der DB gelesene Assistant-Nachricht (content = "") wird null.
-    let from_db = ChatMessage {
-        role: "assistant".to_string(),
-        content: Some(String::new()),
-        tool_calls: Some(json!([])),
-        tool_call_id: None,
-    };
-    assert!(serde_json::to_value(&from_db).unwrap()["content"].is_null());
+    // Null nur bei assistant + nichtleeren tool_calls + leerem Text.
+    for content in [Some(String::new()), None] {
+        let message = ChatMessage {
+            role: "assistant".to_string(),
+            content,
+            tool_calls: Some(calls.clone()),
+            tool_call_id: None,
+        };
+        let value = serde_json::to_value(&message).unwrap();
+        assert_eq!(value["role"], "assistant");
+        assert!(value.as_object().unwrap().contains_key("content"));
+        assert!(
+            value["content"].is_null(),
+            "content muss null sein: {value}"
+        );
+        assert_eq!(value["tool_calls"][0]["id"], "call_1");
+        assert!(value.get("tool_call_id").is_none());
+    }
 
     // Text bleibt ein String.
-    let with_text = ChatMessage::assistant("Antwort");
+    let with_text = ChatMessage::assistant("Antwort").with_tool_calls(calls.clone());
     assert_eq!(
         serde_json::to_value(&with_text).unwrap()["content"],
         "Antwort"
     );
+
+    // Jeder andere Fall sendet einen String, leer als "".
+    for (label, message) in [
+        ("user", ChatMessage::user("")),
+        ("system", ChatMessage::system("")),
+        ("assistant ohne Tools", ChatMessage::assistant("")),
+        ("tool", ChatMessage::tool("call_1", "")),
+    ] {
+        let value = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            value["content"], "",
+            "content muss ein leerer String sein ({label})"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(ChatMessage::system("Regeln")).unwrap()["content"],
+        "Regeln"
+    );
+
+    // Leere tool_calls sind kein Tool-Aufruf: dann kein null.
+    let empty_calls = ChatMessage::assistant("").with_tool_calls(json!([]));
+    assert_eq!(serde_json::to_value(&empty_calls).unwrap()["content"], "");
+
+    // Aus der DB gelesen (content = "") mit echten Tool-Aufrufen -> null.
+    let from_db = ChatMessage {
+        role: "assistant".to_string(),
+        content: Some(String::new()),
+        tool_calls: Some(calls),
+        tool_call_id: None,
+    };
+    assert!(serde_json::to_value(&from_db).unwrap()["content"].is_null());
 }
 
 #[tokio::test]
@@ -347,4 +375,80 @@ data: [DONE]
 
     assert_eq!(turn.tool_calls[0].id, "call_0");
     assert_eq!(turn.tool_calls[1].id, "call_1");
+}
+
+#[tokio::test]
+async fn t11_empty_tools_are_not_sent() {
+    let server = TestServer::start(|stream| respond_sse(stream, T1_STREAM));
+    let http = reqwest::Client::new();
+    let turn = chat_stream_with_tools_cancellable(
+        &http,
+        &server.base_url(),
+        None,
+        "test-model",
+        &[ChatMessage::user("hi")],
+        &[],
+        |_| {},
+        || false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(turn.tool_calls.len(), 1);
+    let body: Value = serde_json::from_str(&server.bodies()[0]).unwrap();
+    assert!(
+        body.get("tools").is_none(),
+        "leere tools duerfen nicht gesendet werden: {body}"
+    );
+}
+
+#[tokio::test]
+async fn t12_finish_reason_length_is_truncated() {
+    let body = r#"data: {"choices":[{"delta":{"content":"Teil"},"finish_reason":"length"}]}
+
+data: [DONE]
+
+"#;
+    let error = turn_from(body, "text/event-stream").await.unwrap_err();
+
+    assert!(
+        matches!(error, ChatError::TruncatedOutput),
+        "unerwartet: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn t13_stream_without_completion_is_incomplete() {
+    let body = r#"data: {"choices":[{"delta":{"content":"Teil"}}]}
+
+"#;
+    let error = turn_from(body, "text/event-stream").await.unwrap_err();
+
+    assert!(
+        matches!(error, ChatError::IncompleteStream),
+        "unerwartet: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn t14_cancelled_flag_aborts_the_stream() {
+    let server = TestServer::start(|stream| respond_sse(stream, T1_STREAM));
+    let http = reqwest::Client::new();
+    let error = chat_stream_with_tools_cancellable(
+        &http,
+        &server.base_url(),
+        None,
+        "test-model",
+        &[ChatMessage::user("hi")],
+        &websearch::tool_definitions(),
+        |_| {},
+        || true,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(error, ChatError::Cancelled),
+        "unerwartet: {error:?}"
+    );
 }

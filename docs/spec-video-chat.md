@@ -1,6 +1,6 @@
 # Spec: Chat über ein Video, optional mit Webrecherche
 
-Stand: 2026-09-19, Revision 3 (Spec-Review und Reviews der Etappe 1 eingearbeitet).
+Stand: 2026-09-19, Revision 4 (Spec-Review sowie Reviews der Etappen 1 und 2a eingearbeitet).
 
 ## Ziel
 
@@ -368,9 +368,10 @@ Tool-Calling“. Auch das Backend sendet `tools` nur unter dieser Bedingung.
 
 - `ChatMessage.content` wird `Option<String>`; neue optionale Felder
   `tool_calls`, `tool_call_id` (`skip_serializing_if`). Serialisierung: Text
-  vorhanden → String; Assistant mit `tool_calls` und leerem Text → JSON
-  **`null`** (nicht weglassen, nicht `""`), auch beim Wiedereinlesen aus der DB
-  (`content = ''`). Konstruktoren `system`/`user` bleiben; bestehende Aufrufer
+  vorhanden → String; **ausschließlich** Assistant mit nichtleeren `tool_calls`
+  und leerem Text → JSON **`null`** (nicht weglassen, nicht `""`), auch beim
+  Wiedereinlesen aus der DB (`content = ''`); jede andere leere Nachricht →
+  `""`. Ein leeres `tools`-Array wird nicht gesendet (Feld weglassen). Konstruktoren `system`/`user` bleiben; bestehende Aufrufer
   und Tests bleiben grün.
 - Neue Funktion neben `chat_stream_cancellable`, sendet zusätzlich `tools` und
   liefert `ChatTurn { content: String, tool_calls: Vec<ToolCall> }`. Sie nutzt
@@ -425,7 +426,9 @@ Function-Schemas (verbindlich):
 {"type":"function","function":{"name":"fetch_page","description":"Fetch a public web page and return its text content.","parameters":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}}}
 ```
 
-- `web_search`: `GET <endpunkt>?q=…&format=json`, Timeout 15 s; aus
+- `web_search`: `GET <endpunkt>?q=…&format=json`, Timeout 15 s, keine
+  automatischen Redirects (3xx → Fehler mit Hinweis auf die endgültige URL),
+  `.no_proxy()` bei lokaler Instanz (`localhost` oder gesperrtes IP-Literal); aus
   `results[]` die ersten 8, je `title`, `url`, `content` (fehlend → leer;
   `content` auf 300 Unicode-Skalare gekürzt).
 - `fetch_page`: extrahierter Text, höchstens 12 000 Unicode-Skalare. Regeln:
@@ -435,25 +438,34 @@ Function-Schemas (verbindlich):
      `Domain` → DNS über einen eigenen `reqwest::dns::Resolve`, der gesperrte
      Adressen **ausfiltert**; bleibt nichts übrig → Fehler. Verbunden wird nur
      zu gefilterten Adressen (schützt auch vor DNS-Rebinding).
-  3. Eigener Client: `redirect(Policy::none())`, kein Cookie-Store, keine
-     Auth-Header, **nicht** der managed Client; der Provider-Key geht nie an
+  3. Eigener Client: `.no_proxy()` (ein System-Proxy würde Resolver-Filter und
+     Adressprüfung vollständig umgehen), `redirect(Policy::none())`, kein
+     Cookie-Store, keine Auth-Header, **nicht** der managed Client; der Provider-Key geht nie an
      Tool-Ziele. Redirects manuell, höchstens 5; jede `Location` (relativ zur
      aktuellen URL aufgelöst) erneut nach 1–2 geprüft.
   4. Media-Type vor `;`, case-insensitiv: nur `text/html`,
      `application/xhtml+xml`, `text/plain`. Body höchstens 2 MB (Bytes), beim
-     Streamen abbrechen. Timeout 15 s.
-  5. HTML→Text: `script`/`style`/`noscript` samt Inhalt entfernen, Tags
-     strippen, Entities dekodieren, Whitespace normalisieren. Eine kleine
-     Crate ist zulässig, wenn im Bericht begründet.
+     Streamen abbrechen. Timeout 15 s pro Station, 30 s für den gesamten
+     Aufruf. Fehlender `Content-Type` und 3xx ohne `Location` erhalten eigene
+     Fehlertexte.
+  5. HTML→Text: `script`/`style`/`noscript` samt Inhalt und Kommentare
+     entfernen (unabgeschlossene Blöcke verwerfen nur das öffnende Tag), Tags
+     strippen (ein nacktes `<` ohne Tag-Anfang bleibt Text), Entities
+     dekodieren, Block-Tags als Zeilenumbruch erhalten, Leerraum normalisieren.
+     Leerer Text nach erfolgreichem Abruf ist ein Fehler
+     (`Fehler: kein Text extrahiert`).
 
 `fn is_blocked_ip(ip: IpAddr) -> bool` (verbindlich, vollständig):
 - IPv4: `0.0.0.0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`,
   `192.168/16`, `224.0.0.0/4`, `240.0.0.0/4` (inkl. Broadcast).
 - IPv6: `::`, `::1`, `fe80::/10`, `fc00::/7`, `ff00::/8`; außerdem wird ein
   **eingebettetes IPv4** derselben IPv4-Prüfung unterzogen bei IPv4-mapped
-  (`::ffff:0:0/96`), IPv4-compatible (`::/96`), 6to4 (`2002::/16`), NAT64
-  (`64:ff9b::/96`, `64:ff9b:1::/48`), Teredo (`2001:0::/32`, IPv4 = letzte 32
-  Bit bitweise invertiert).
+  (`::ffff:0:0/96`), IPv4-translated (`::ffff:0:0:0/96`), IPv4-compatible
+  (`::/96`), 6to4 (`2002::/16`), NAT64 `64:ff9b::/96` (exakt 96 Bit; öffentliche
+  Ziele bleiben wegen DNS64 erlaubt), Teredo (`2001:0::/32`, IPv4 = letzte 32
+  Bit bitweise invertiert). **Vollständig gesperrt** sind außerdem
+  `64:ff9b:1::/48` (Local-Use-NAT64; dort liegt das IPv4 nach RFC 6052 nicht in
+  den letzten 32 Bit) und `fec0::/10`.
 
 | # | Eingabe | Erwartung |
 |---|---|---|
@@ -468,9 +480,10 @@ Function-Schemas (verbindlich):
 | S11 | Resolver liefert `8.8.8.8` und `::ffff:10.0.0.1` | nur `8.8.8.8` bleibt; liefert er nur gesperrte → Fehler |
 | S12 | `text/html; charset=utf-8` / `application/json` | erlaubt / Fehler |
 | S13 | Body > 2 MB | Abbruch während des Streams, Fehler |
-| S14 | 6. Redirect | Fehler, kein 6. Request |
+| S14 | Kette aus 6 Weiterleitungen | 5 werden verfolgt (6 Requests), die 6. Weiterleitung ist ein Fehler, kein 7. Request |
 | S15 | SearXNG-URL `http://127.0.0.1:8080` | `web_search` erlaubt; `fetch_page` derselben URL gesperrt |
-| S16 | `10.0.0.1`, `172.16.0.1`, `192.168.1.1`, `100.64.0.1`, `169.254.1.1`, `224.0.0.1`, `255.255.255.255`, `fe80::1`, `fc00::1`, `ff02::1` | gesperrt; `8.8.8.8`, `2606:4700::1111` erlaubt |
+| S17 | `HTTP_PROXY`/`ALL_PROXY` zeigen auf einen lokalen Listener (Kindprozess) | Abruf schlägt fehl, 0 Verbindungen zum Proxy |
+| S16 | jede Präfixgrenze (letzte erlaubte / erste und letzte gesperrte / erste erlaubte) sowie `10.0.0.1`, `172.16.0.1`, `192.168.1.1`, `100.64.0.1`, `169.254.1.1`, `224.0.0.1`, `255.255.255.255`, `fe80::1`, `fc00::1`, `ff02::1` | gesperrt; `8.8.8.8`, `2606:4700::1111` erlaubt |
 
 Tests für Redirect/Content-Type/Body-Limit laufen gegen einen lokalen
 Testserver; dafür erhält die Prüffunktion eine **nur im Test** nutzbare
@@ -517,7 +530,7 @@ UI-Fälle: Schalter deaktiviert + Tooltip bei Modell ohne `tool_call`;
 | 1a | Storage, `chat.rs` inkl. Commands und Laufregister, Automation-Endpunkte, Tests P1–P10, D1–D12, Mutationsnachweis P4/P7 | `cargo fmt`, `cargo test` grün |
 | 1b | Chat-Tab, Renderer-Umbau, Mock, UI-Tests U1–U14 | `npm run build`, `npm run test:ui` grün |
 | 1-Abnahme | Review (Grok), Kreuzreview, nativer Durchlauf mit `npm run tauri dev` über die Automation-API gegen ein echtes Modell; Neustart → Verlauf noch da | — |
-| 2a | `tool_stream.rs`, `ChatMessage`-Umbau, `websearch.rs`; Tests T1–T10, S1–S16. **Mutationsnachweis:** T4 rot, wenn `index` ignoriert wird; S4/S5/S6 rot, wenn nur `is_loopback()`/`is_private()` geprüft wird; S10 rot bei automatischen Redirects | `cargo test` grün |
+| 2a | `tool_stream.rs`, `ChatMessage`-Umbau, `websearch.rs`; Tests T1–T10, S1–S16. **Mutationsnachweis:** T4 rot, wenn `index` ignoriert wird; S4/S5/S6 rot, wenn nur `is_loopback()`/`is_private()` geprüft wird; S10 rot bei automatischen Redirects; S17 rot ohne `.no_proxy()`; S16 rot bei verschobener Präfixgrenze | `cargo test` grün |
 | 2b | Schleife (L1–L6), `websearch.json`, Einstellungs-Tab, Chat-UI für Tool-Aktivität | alle Gates |
 | 2-Abnahme | Review, Kreuzreview **plus zusätzlicher Reviewer** für Adressprüfung/Redirects, untrusted Tool-Ergebnisse, Commit-nach-Erfolg; nativer Durchlauf gegen das lokale SearXNG (`http://127.0.0.1:8080`, `format=json` aktiv) | — |
 

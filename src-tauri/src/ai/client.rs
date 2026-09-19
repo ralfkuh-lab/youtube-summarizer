@@ -2,6 +2,7 @@
 
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode, Url};
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -11,29 +12,49 @@ pub(crate) const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_PROVIDER_ERROR_CHARS: usize = 300;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    /// Text der Nachricht. `None` (oder leer) wird als JSON `null` gesendet:
-    /// Assistant-Nachrichten mit Tool-Aufrufen haben keinen Text.
-    #[serde(serialize_with = "serialize_content")]
+    /// Text der Nachricht. `null` wird nur fuer Assistant-Nachrichten mit
+    /// Tool-Aufrufen und leerem Text gesendet (siehe `Serialize`).
     pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
 
-/// Text vorhanden -> String; leer oder `None` -> JSON `null` (nicht weglassen,
-/// nicht `""`), damit auch aus der Datenbank gelesene Assistant-Nachrichten mit
-/// `content = ''` und Tool-Aufrufen korrekt serialisiert werden.
-fn serialize_content<S: Serializer>(
-    content: &Option<String>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    match content.as_deref() {
-        Some(text) if !text.is_empty() => serializer.serialize_str(text),
-        _ => serializer.serialize_none(),
+/// Serialisierung laut Spec: `content` ist immer vorhanden. JSON `null` gilt
+/// ausschliesslich fuer `role == "assistant"` mit nichtleeren `tool_calls` und
+/// leerem/fehlendem Text; in allen anderen Faellen wird ein String gesendet
+/// (leerer Text als `""`). `tool_calls`/`tool_call_id` werden nur bei `Some`
+/// mitgesendet.
+impl Serialize for ChatMessage {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let text = self.content.as_deref().unwrap_or_default();
+        let null_content =
+            self.role == "assistant" && has_tool_calls(&self.tool_calls) && text.is_empty();
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("role", &self.role)?;
+        match null_content {
+            true => map.serialize_entry("content", &Option::<String>::None)?,
+            false => map.serialize_entry("content", text)?,
+        }
+        if let Some(tool_calls) = &self.tool_calls {
+            if !tool_calls.is_null() {
+                map.serialize_entry("tool_calls", tool_calls)?;
+            }
+        }
+        if let Some(tool_call_id) = &self.tool_call_id {
+            map.serialize_entry("tool_call_id", tool_call_id)?;
+        }
+        map.end()
+    }
+}
+
+fn has_tool_calls(tool_calls: &Option<Value>) -> bool {
+    match tool_calls {
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true,
     }
 }
 
@@ -255,6 +276,9 @@ pub(crate) async fn send_chat_request(
 ) -> Result<reqwest::Response, ChatError> {
     let endpoint = chat_url(base_url)?;
     let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
+    // Ohne Werkzeuge kein `tools`-Feld: manche Provider antworten auf
+    // `"tools": []` mit HTTP 400.
+    let tools = tools.filter(|tools| !tools.is_empty());
     let mut request = http.post(endpoint).json(&ChatRequest {
         model,
         messages,
@@ -828,6 +852,98 @@ mod tests {
         server.join().unwrap();
 
         assert_eq!(text, "Hallo Welt");
+    }
+
+    /// Der extrahierte `read_sse_stream` muss fuer den strengen Pfad weiterhin
+    /// `finish_reason: "length"` und ein gesetztes Abbruch-Flag erkennen.
+    #[tokio::test]
+    async fn stream_with_finish_reason_length_is_truncated() {
+        use std::io::{BufRead as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let event =
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Teil\"},\"finish_reason\":\"length\"}]}\n\n";
+            let body = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{event}",
+                event.len()
+            );
+            stream.write_all(body.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let http = Client::builder().build().unwrap();
+        let error = chat_stream(
+            &http,
+            &format!("http://{addr}/v1"),
+            None,
+            "test-model",
+            &[ChatMessage::user("hi")],
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+
+        assert!(
+            matches!(error, ChatError::TruncatedOutput),
+            "unerwartet: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_flag_aborts_the_stream() {
+        use std::io::{BufRead as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let event = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n";
+            let body = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{event}",
+                event.len()
+            );
+            stream.write_all(body.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let http = Client::builder().build().unwrap();
+        let error = chat_stream_cancellable(
+            &http,
+            &format!("http://{addr}/v1"),
+            None,
+            "test-model",
+            &[ChatMessage::user("hi")],
+            |_| {},
+            || true,
+        )
+        .await
+        .unwrap_err();
+        server.join().unwrap();
+
+        assert!(
+            matches!(error, ChatError::Cancelled),
+            "unerwartet: {error:?}"
+        );
     }
 
     #[tokio::test]

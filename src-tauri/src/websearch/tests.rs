@@ -94,6 +94,41 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str)
     respond_with(stream, status, content_type, body, None);
 }
 
+/// Antwort ganz ohne Content-Type (K9).
+fn respond_without_content_type(stream: &mut TcpStream, body: &str) {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+/// Fuehrt einen `#[ignore]`-Test im Kindprozess aus. Proxy-Variablen werden nur
+/// dort gesetzt, damit parallele Tests im Elternprozess unberuehrt bleiben.
+fn run_ignored_child(test_name: &str, env: &[(&str, String)]) -> std::process::ExitStatus {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--ignored", "--exact", test_name, "--nocapture"])
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
+        .status()
+        .expect("Kindprozess konnte nicht gestartet werden")
+}
+
+fn proxy_env(url: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("HTTP_PROXY", url.to_string()),
+        ("http_proxy", url.to_string()),
+        ("ALL_PROXY", url.to_string()),
+        ("all_proxy", url.to_string()),
+    ]
+}
+
 fn respond_redirect(stream: &mut TcpStream, location: &str) {
     respond_with(stream, "302 Found", "text/plain", "", Some(location));
 }
@@ -154,13 +189,33 @@ fn s4_ipv4_mapped_loopback_is_blocked() {
 }
 
 #[test]
-fn s5_nat64_embedded_loopback_is_blocked() {
+fn s5_nat64_addresses_are_handled() {
+    for value in [
+        // Well-known-Praefix mit eingebettetem Loopback
+        "64:ff9b::7f00:1",
+        // Local-Use-Praefix: komplett gesperrt (IPv4 steckt in Bits 48-63/72-87)
+        "64:ff9b:1::7f00:1",
+        "64:ff9b:1:7f00:0:1:808:808",
+        "64:ff9b:1::808:808",
+    ] {
+        assert!(
+            is_blocked_ip(value.parse().unwrap()),
+            "{value} muss gesperrt sein"
+        );
+    }
+    for value in [
+        // eingebettetes 8.8.8.8 bleibt erlaubt
+        "64:ff9b::808:808",
+        // kein NAT64-Praefix -> nichts eingebettet
+        "64:ff9b:0:1::7f00:1",
+    ] {
+        assert!(
+            !is_blocked_ip(value.parse().unwrap()),
+            "{value} muss erlaubt sein"
+        );
+    }
     assert_eq!(
         target("http://[64:ff9b::7f00:1]/"),
-        Err(WebError::AddressNotAllowed)
-    );
-    assert_eq!(
-        target("http://[64:ff9b:1::7f00:1]/"),
         Err(WebError::AddressNotAllowed)
     );
 }
@@ -246,7 +301,7 @@ fn s16_address_table_is_blocked_or_allowed() {
 #[tokio::test]
 async fn s10_redirect_to_a_blocked_address_fails_at_the_hop() {
     let server = TestServer::start(|stream| respond_redirect(stream, "http://169.254.169.254/"));
-    let error = fetch_page_with(&server.url("/start"), allow_test_server())
+    let error = fetch_page_with(&server.url("/start"), allow_test_server(), FETCH_BUDGET)
         .await
         .unwrap_err();
 
@@ -277,6 +332,7 @@ async fn s11b_blocked_domain_is_rejected_before_connecting() {
     let error = fetch_page_with(
         &server.host_url("localhost", "/x"),
         Arc::new(|_ip: IpAddr| true),
+        FETCH_BUDGET,
     )
     .await
     .unwrap_err();
@@ -300,7 +356,7 @@ async fn s12_allowed_and_rejected_content_types() {
         )
     });
     assert_eq!(
-        fetch_page_with(&html.url("/"), allow_test_server())
+        fetch_page_with(&html.url("/"), allow_test_server(), FETCH_BUDGET)
             .await
             .unwrap(),
         "Hallo Welt"
@@ -308,7 +364,7 @@ async fn s12_allowed_and_rejected_content_types() {
 
     let json = TestServer::start(|stream| respond(stream, "200 OK", "application/json", "{}"));
     assert_eq!(
-        fetch_page_with(&json.url("/"), allow_test_server())
+        fetch_page_with(&json.url("/"), allow_test_server(), FETCH_BUDGET)
             .await
             .unwrap_err(),
         WebError::UnsupportedContentType("application/json".to_string())
@@ -319,7 +375,7 @@ async fn s12_allowed_and_rejected_content_types() {
 async fn s13_body_over_limit_aborts_the_download() {
     let big = "a".repeat(3 * 1024 * 1024);
     let server = TestServer::start(move |stream| respond(stream, "200 OK", "text/html", &big));
-    let error = fetch_page_with(&server.url("/"), allow_test_server())
+    let error = fetch_page_with(&server.url("/"), allow_test_server(), FETCH_BUDGET)
         .await
         .unwrap_err();
 
@@ -329,7 +385,7 @@ async fn s13_body_over_limit_aborts_the_download() {
 #[tokio::test]
 async fn s14_sixth_redirect_is_rejected() {
     let server = TestServer::start(|stream| respond_redirect(stream, "/loop"));
-    let error = fetch_page_with(&server.url("/loop"), allow_test_server())
+    let error = fetch_page_with(&server.url("/loop"), allow_test_server(), FETCH_BUDGET)
         .await
         .unwrap_err();
 
@@ -453,4 +509,245 @@ fn tool_schemas_match_the_spec() {
             }
         })
     );
+}
+
+// ------------------------------------------------ K2/K3: Praefixgrenzen ----
+
+#[test]
+fn s16b_prefix_boundaries_and_embedded_forms() {
+    let cases: [(&str, bool); 43] = [
+        // IPv4-Praefixgrenzen: letzte erlaubte davor / erste gesperrte /
+        // letzte gesperrte / erste erlaubte danach
+        ("9.255.255.255", false),
+        ("10.0.0.0", true),
+        ("10.255.255.255", true),
+        ("11.0.0.0", false),
+        ("100.63.255.255", false),
+        ("100.64.0.0", true),
+        ("100.127.255.255", true),
+        ("100.128.0.0", false),
+        ("126.255.255.255", false),
+        ("127.0.0.0", true),
+        ("127.255.255.255", true),
+        ("128.0.0.0", false),
+        ("169.253.255.255", false),
+        ("169.254.0.0", true),
+        ("169.254.255.255", true),
+        ("169.255.0.0", false),
+        ("172.15.255.255", false),
+        ("172.16.0.0", true),
+        ("172.31.255.255", true),
+        ("172.32.0.0", false),
+        ("192.167.255.255", false),
+        ("192.168.0.0", true),
+        ("192.168.255.255", true),
+        ("192.169.0.0", false),
+        ("223.255.255.255", false),
+        ("224.0.0.0", true),
+        ("0.255.255.255", true),
+        ("1.0.0.0", false),
+        // IPv6-Grenzen
+        ("fe7f:ffff::1", false),
+        ("fe80::", true),
+        ("febf:ffff::1", true),
+        ("fec0::", true),
+        ("feff:ffff::1", true),
+        ("fe00::1", false),
+        ("fbff::1", false),
+        ("fc00::", true),
+        ("fdff:ffff::1", true),
+        ("ff00::", true),
+        // eingebettete Formen (K2)
+        ("::ffff:0:127.0.0.1", true),
+        ("2001:0::80ff:fffe", true),
+        ("2001:0::f7f7:f7f7", false),
+        ("fe80:0:0:0:0:0:0:1", true),
+        ("8.8.4.4", false),
+    ];
+    for (value, blocked) in cases {
+        assert_eq!(
+            is_blocked_ip(value.parse().unwrap()),
+            blocked,
+            "{value} (erwartet gesperrt: {blocked})"
+        );
+    }
+}
+
+// ------------------------------------------- K1/K4: Proxy-Umgebung, Suche ---
+
+#[test]
+fn s17_fetch_page_ignores_proxy_environment() {
+    let proxy = TestServer::start(|_stream| {});
+    let status = run_ignored_child(
+        "websearch::tests::s17b_inner_fetch_page_ignores_proxy",
+        &proxy_env(&proxy.url("")),
+    );
+
+    assert!(status.success(), "Kindprozess muss erfolgreich sein");
+    assert_eq!(
+        proxy.requests(),
+        0,
+        "der Proxy aus der Umgebung darf nicht kontaktiert werden"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn s17b_inner_fetch_page_ignores_proxy() {
+    // Laeuft nur im Kindprozess mit gesetzten Proxy-Variablen.
+    let result = fetch_page("http://example.invalid./x").await;
+    assert!(
+        result.is_err(),
+        "example.invalid darf nicht erreichbar sein: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn k4_search_redirect_is_reported() {
+    let server =
+        TestServer::start(|stream| respond_redirect(stream, "http://127.0.0.1:9/search?q=x"));
+    let error = web_search(&server.url(""), "rust").await.unwrap_err();
+
+    assert_eq!(
+        error,
+        WebError::SearchRedirect("http://127.0.0.1:9/search?q=x".to_string())
+    );
+    assert_eq!(
+        error.to_string(),
+        "SearXNG leitet weiter nach http://127.0.0.1:9/search?q=x – bitte die endgültige URL eintragen"
+    );
+    assert_eq!(server.requests(), 1, "kein zweiter Request");
+}
+
+#[test]
+fn k4_local_search_ignores_proxy_environment() {
+    let proxy = TestServer::start(|_stream| {});
+    let searxng = TestServer::start(|stream| {
+        respond(stream, "200 OK", "application/json", r#"{"results":[]}"#)
+    });
+    let mut env = proxy_env(&proxy.url(""));
+    env.push(("YTS_SEARXNG_URL", searxng.url("")));
+    let status = run_ignored_child(
+        "websearch::tests::k4b_inner_local_search_ignores_proxy",
+        &env,
+    );
+
+    assert!(status.success(), "Kindprozess muss erfolgreich sein");
+    assert_eq!(
+        proxy.requests(),
+        0,
+        "eine lokale Instanz darf nicht ueber den Proxy laufen"
+    );
+    assert_eq!(
+        searxng.requests(),
+        1,
+        "die lokale Instanz muss direkt gefragt werden"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn k4b_inner_local_search_ignores_proxy() {
+    let url = std::env::var("YTS_SEARXNG_URL").expect("YTS_SEARXNG_URL fehlt");
+    let results = web_search(&url, "rust").await.expect("lokale Suche");
+    assert!(results.is_empty());
+}
+
+// ------------------------------------------------- K8/K9/K10: Abrufpfad -----
+
+#[tokio::test]
+async fn k8_slow_fetch_exceeds_the_total_budget() {
+    let server = TestServer::start(|stream| {
+        std::thread::sleep(Duration::from_millis(400));
+        respond(stream, "200 OK", "text/html", "<p>spaet</p>");
+    });
+    let error = fetch_page_with(
+        &server.url("/"),
+        allow_test_server(),
+        Duration::from_millis(60),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error, WebError::Timeout);
+}
+
+#[tokio::test]
+async fn k9_missing_content_type_is_reported() {
+    let server = TestServer::start(|stream| respond_without_content_type(stream, "hallo"));
+    let error = fetch_page_with(&server.url("/"), allow_test_server(), FETCH_BUDGET)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, WebError::MissingContentType);
+    assert_eq!(error.model_message(), "Fehler: Antwort ohne Content-Type");
+}
+
+#[tokio::test]
+async fn k9_redirect_without_location_reports_the_status() {
+    let server =
+        TestServer::start(|stream| respond_with(stream, "302 Found", "text/plain", "", None));
+    let error = fetch_page_with(&server.url("/"), allow_test_server(), FETCH_BUDGET)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, WebError::HttpStatus(302));
+}
+
+#[tokio::test]
+async fn k10_empty_extraction_is_an_error() {
+    let server = TestServer::start(|stream| {
+        respond(stream, "200 OK", "text/html", "<script>alert(1)</script>")
+    });
+    let error = fetch_page_with(&server.url("/"), allow_test_server(), FETCH_BUDGET)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, WebError::EmptyText);
+    assert_eq!(error.model_message(), "Fehler: kein Text extrahiert");
+}
+
+#[test]
+fn k10_unterminated_script_keeps_the_rest() {
+    assert_eq!(html_to_text("<script>alert(1)"), "alert(1)");
+    assert_eq!(html_to_text("<style/>rest"), "rest");
+    assert_eq!(html_to_text("<noscript>ohne js"), "ohne js");
+    assert_eq!(html_to_text("<script>x</script>rest"), "rest");
+}
+
+#[test]
+fn k10_bare_angle_brackets_stay_text() {
+    assert_eq!(html_to_text("a < b und c > d"), "a < b und c > d");
+    assert_eq!(html_to_text("1 <2 und 3> 4"), "1 <2 und 3> 4");
+}
+
+#[test]
+fn k10_comments_are_removed_as_a_unit() {
+    assert_eq!(html_to_text("<!-- a > b -->x"), "x");
+    assert_eq!(html_to_text("vor<!-- a > b -->nach"), "vornach");
+    assert_eq!(html_to_text("<!-- offen"), "");
+}
+
+#[test]
+fn k10_block_elements_produce_line_breaks() {
+    assert_eq!(html_to_text("<p>eins</p><p>zwei</p>"), "eins\n\nzwei");
+    assert_eq!(html_to_text("a<br>b"), "a\nb");
+    assert_eq!(html_to_text("<div>a</div><div>b</div>"), "a\n\nb");
+    assert_eq!(html_to_text("<h2>T</h2><ul><li>x</li></ul>"), "T\n\nx");
+    assert_eq!(
+        html_to_text("<tr><td>a</td></tr><tr><td>b</td></tr>"),
+        "a\n\nb"
+    );
+    // Anfangs- und End-Tag eines Blockelements erzeugen je einen Umbruch,
+    // zwischen zwei Bloecken steht deshalb genau eine Leerzeile.
+    assert_eq!(
+        html_to_text("<section>a</section><article>b</article>"),
+        "a\n\nb"
+    );
+    assert_eq!(
+        html_to_text("<blockquote>a</blockquote><pre>b</pre>"),
+        "a\n\nb"
+    );
+    assert_eq!(html_to_text("<p>a</p>\n\n\n<p>b</p>"), "a\n\nb");
+    assert_eq!(html_to_text("  <p>  a  </p>  "), "a");
 }

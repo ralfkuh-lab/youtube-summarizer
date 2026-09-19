@@ -32,6 +32,16 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
             if segments[0] & 0xff00 == 0xff00 {
                 return true; // ff00::/8
             }
+            if segments[0] & 0xffc0 == 0xfec0 {
+                return true; // fec0::/10 (Site-Local, veraltet)
+            }
+            // 64:ff9b:1::/48 (NAT64 local-use, RFC 8215): kein oeffentliches
+            // Ziel. Die eingebettete IPv4 steckt hier in Bits 48-63 und 72-87,
+            // nicht in den letzten 32 Bit - deshalb wird der ganze Praefix
+            // gesperrt.
+            if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001 {
+                return true;
+            }
             match embedded_ipv4(v6) {
                 Some(v4) => is_blocked_ipv4(v4),
                 None => false,
@@ -82,10 +92,13 @@ fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
             segments[2] as u8,
         ));
     }
-    // 64:ff9b::/96 und 64:ff9b:1::/48 (NAT64); eingebettet sind die letzten
-    // 32 Bit. Eine konservative Auslegung: beide Praefixe pruefen die letzten
-    // 32 Bit als IPv4.
-    if segments[0] == 0x0064 && segments[1] == 0xff9b && (segments[2] == 0 || segments[2] == 1) {
+    // 64:ff9b::/96 (NAT64 well-known, RFC 6052): exakt 96 Bit Praefix,
+    // eingebettetes IPv4 = letzte 32 Bit (oeffentliche Ziele bleiben erlaubt).
+    if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
+        return Some(last32());
+    }
+    // ::ffff:0:0:0/96 (IPv4-translated)
+    if segments[0..4] == [0, 0, 0, 0] && segments[4] == 0xffff && segments[5] == 0 {
         return Some(last32());
     }
     // 2001:0::/32 (Teredo); eingebettetes IPv4 = letzte 32 Bit invertiert

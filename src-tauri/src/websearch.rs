@@ -20,6 +20,7 @@ use futures_util::StreamExt;
 use reqwest::redirect::Policy;
 use reqwest::{Client, Url};
 use serde_json::{json, Value};
+use url::Host;
 
 use address::{check_fetch_url, FilteredResolver};
 
@@ -32,6 +33,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_REDIRECTS: usize = 5;
 /// Groesste akzeptierte Antwortgroesse (Bytes).
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+/// Gesamtbudget eines `fetch_page`-Aufrufs (inkl. Weiterleitungen und Body).
+const FETCH_BUDGET: Duration = Duration::from_secs(30);
 const MAX_SEARCH_RESULTS: usize = 8;
 const MAX_SNIPPET_CHARS: usize = 300;
 const MAX_PAGE_CHARS: usize = 12_000;
@@ -55,6 +58,12 @@ pub enum WebError {
     UnsupportedContentType(String),
     BodyTooLarge,
     TooManyRedirects,
+    /// Antwort ohne Content-Type (K9).
+    MissingContentType,
+    /// Nach der Extraktion blieb kein Text uebrig (K10).
+    EmptyText,
+    /// Die SearXNG-Instanz leitet weiter (K4).
+    SearchRedirect(String),
     /// Sonstiger Fehler beim Lesen der Antwort.
     Response(String),
 }
@@ -82,6 +91,12 @@ impl std::fmt::Display for WebError {
             WebError::UnsupportedContentType(value) => write!(formatter, "Content-Type {value}"),
             WebError::BodyTooLarge => write!(formatter, "Antwort zu groß"),
             WebError::TooManyRedirects => write!(formatter, "zu viele Weiterleitungen"),
+            WebError::MissingContentType => write!(formatter, "Antwort ohne Content-Type"),
+            WebError::EmptyText => write!(formatter, "kein Text extrahiert"),
+            WebError::SearchRedirect(location) => write!(
+                formatter,
+                "SearXNG leitet weiter nach {location} – bitte die endgültige URL eintragen"
+            ),
             WebError::Response(message) => write!(formatter, "{message}"),
         }
     }
@@ -94,7 +109,7 @@ impl std::error::Error for WebError {}
 /// Laedt eine oeffentliche Seite und liefert den extrahierten Text (hoechstens
 /// 12 000 Unicode-Skalarwerte).
 pub async fn fetch_page(url: &str) -> Result<String, WebError> {
-    fetch_page_with(url, Arc::new(is_blocked_ip)).await
+    fetch_page_with(url, Arc::new(is_blocked_ip), FETCH_BUDGET).await
 }
 
 /// Interne Fassung mit injizierbarem Adresspraedikat: die Produktion uebergibt
@@ -102,9 +117,23 @@ pub async fn fetch_page(url: &str) -> Result<String, WebError> {
 async fn fetch_page_with(
     url: &str,
     blocked: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>,
+    budget: Duration,
+) -> Result<String, WebError> {
+    match tokio::time::timeout(budget, fetch_page_inner(url, blocked)).await {
+        Ok(result) => result,
+        Err(_) => Err(WebError::Timeout),
+    }
+}
+
+async fn fetch_page_inner(
+    url: &str,
+    blocked: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>,
 ) -> Result<String, WebError> {
     let client = Client::builder()
         .redirect(Policy::none())
+        // Kein Proxy: HTTP_PROXY/ALL_PROXY wuerden den Zielhost ungeprueft an
+        // einen fremden Proxy schicken (SSRF-Schutz wird damit umgangen).
+        .no_proxy()
         // Kein Cookie-Store, keine Auth-Header; eigener Resolver mit Filter.
         .dns_resolver(Arc::new(FilteredResolver {
             blocked: blocked.clone(),
@@ -132,7 +161,7 @@ async fn fetch_page_with(
                 .headers()
                 .get(reqwest::header::LOCATION)
                 .and_then(|value| value.to_str().ok())
-                .ok_or(WebError::InvalidUrl)?;
+                .ok_or(WebError::HttpStatus(status.as_u16()))?;
             // Relative Ziele werden gegen die aktuelle URL aufgeloest und im
             // naechsten Durchlauf erneut geprueft.
             current = current.join(location).map_err(|_| WebError::InvalidUrl)?;
@@ -146,9 +175,8 @@ async fn fetch_page_with(
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        let media_type = media_type_of(&content_type);
+            .ok_or(WebError::MissingContentType)?;
+        let media_type = media_type_of(content_type);
         if !is_allowed_media_type(&media_type) {
             return Err(WebError::UnsupportedContentType(media_type));
         }
@@ -159,6 +187,9 @@ async fn fetch_page_with(
         } else {
             html_to_text(&raw)
         };
+        if text.trim().is_empty() {
+            return Err(WebError::EmptyText);
+        }
         return Ok(truncate_chars(&text, MAX_PAGE_CHARS));
     }
     Err(WebError::TooManyRedirects)
@@ -258,18 +289,57 @@ pub async fn web_search(base_url: &str, query: &str) -> Result<Vec<SearchResult>
         .append_pair("q", query)
         .append_pair("format", "json");
 
-    let client = Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|error| WebError::Response(error.to_string()))?;
+    let client = search_client(&url)?;
+    let request_url = url.clone();
     let response = client.get(url).send().await.map_err(map_request_error)?;
     let status = response.status();
+    if status.is_redirection() {
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| {
+                request_url
+                    .join(value)
+                    .map(|url| url.to_string())
+                    .unwrap_or_else(|_| value.to_string())
+            });
+        return Err(match location {
+            Some(location) => WebError::SearchRedirect(location),
+            None => WebError::HttpStatus(status.as_u16()),
+        });
+    }
     if !status.is_success() {
         return Err(WebError::HttpStatus(status.as_u16()));
     }
     let body = read_body_limited(response, MAX_BODY_BYTES).await?;
     parse_search_results(&String::from_utf8_lossy(&body))
+}
+
+/// Client fuer die Suche: keine automatischen Weiterleitungen (die koennen auf
+/// eine andere Maschine zeigen). Lokale Instanzen werden ohne System-Proxy
+/// angesprochen, damit der Proxy den Zielhost nicht ungeprueft weiterleitet.
+fn search_client(url: &Url) -> Result<Client, WebError> {
+    let mut builder = Client::builder()
+        .redirect(Policy::none())
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent(USER_AGENT);
+    if is_local_host(url) {
+        builder = builder.no_proxy();
+    }
+    builder
+        .build()
+        .map_err(|error| WebError::Response(error.to_string()))
+}
+
+/// `localhost` oder eine Adresse, die `is_blocked_ip` sperrt (Loopback/privat).
+fn is_local_host(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => is_blocked_ip(IpAddr::V4(ip)),
+        Some(Host::Ipv6(ip)) => is_blocked_ip(IpAddr::V6(ip)),
+        None => false,
+    }
 }
 
 fn parse_search_results(body: &str) -> Result<Vec<SearchResult>, WebError> {
