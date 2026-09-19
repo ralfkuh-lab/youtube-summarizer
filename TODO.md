@@ -70,6 +70,19 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Video-Chat Korrekturpaket 2 zu Etappe 2a (Nachprüfungen Opus/Grok):
+  `html_to_text` ist jetzt ein einziger Vorwärtsdurchlauf (vorab letztes `>`, letztes
+  Kommentarende, letzte Abschluss-Tags; anführungsbewusstes Tag-Ende; Rohtext ohne
+  Abschluss wird bis zum nächsten `<` verworfen), Extraktion läuft per `spawn_blocking`
+  (Q1); der Kindprozess-Helfer der Proxy-Tests prüft die Ausgabe („test result: ok.
+  1 passed“), damit ein Tippfehler im Testnamen nicht fälschlich grün ist (Q2); der
+  SearXNG-Client läuft **immer** ohne System-Proxy (Q3); leere `tool_calls` werden
+  weggelassen (Q4); S12 prüft Content-Types case-insensitiv, S13b belegt den Abbruch
+  mitten im Stream (Q5). Gates: `cargo fmt --check` sauber, `cargo test` (174 bestanden,
+  3 ignoriert), `npm run build` und `npm run test:ui` (30 bestanden) grün. Mutationsbeleg
+  M9 (naive Variante → Laufzeittest rot) in `/tmp/yts-mut-2a`. Bericht:
+  `.herd/impl-2a-korrekturen-2-bericht.md`. Kein Dev-Server oder Tauri-Prozess gestartet.
+
 - 2026-09-19: Video-Chat Korrekturpaket 2a (Reviews Grok/Gemini/Opus): `fetch_page` und die
   lokale Suche ohne System-Proxy (`no_proxy`) – `HTTP_PROXY` konnte Resolver-Filter und
   Adressprüfung umgehen (K1, Test S17 über einen Kindprozess); NAT64-Regeln korrigiert

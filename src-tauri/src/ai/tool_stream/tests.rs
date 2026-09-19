@@ -349,9 +349,14 @@ fn t9_assistant_with_tool_calls_serializes_null_content() {
         "Regeln"
     );
 
-    // Leere tool_calls sind kein Tool-Aufruf: dann kein null.
+    // Leere tool_calls sind kein Tool-Aufruf: kein null und kein Feld.
     let empty_calls = ChatMessage::assistant("").with_tool_calls(json!([]));
-    assert_eq!(serde_json::to_value(&empty_calls).unwrap()["content"], "");
+    let value = serde_json::to_value(&empty_calls).unwrap();
+    assert_eq!(value["content"], "");
+    assert!(
+        value.get("tool_calls").is_none(),
+        "leere tool_calls duerfen nicht gesendet werden: {value}"
+    );
 
     // Aus der DB gelesen (content = "") mit echten Tool-Aufrufen -> null.
     let from_db = ChatMessage {

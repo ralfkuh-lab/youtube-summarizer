@@ -1,7 +1,9 @@
-//! Grobe HTML-zu-Text-Umwandlung ohne zusaetzliche Crate. Ein Durchlauf ueber
-//! den Text (linear), keine wiederholten Scans.
+//! Grobe HTML-zu-Text-Umwandlung ohne zusaetzliche Crate. Ein einziger
+//! Vorwaertsdurchlauf (linear): es wird nie mehrfach erfolglos ueber den Rest
+//! gesucht, sondern einmalig vorab ermittelt, ob es ueberhaupt noch ein `>`,
+//! ein Kommentarende oder ein Abschluss-Tag gibt.
 
-/// Blockelemente: ihr oeffnendes/schliessendes Tag erzeugt einen Zeilenumbruch.
+/// Blockelemente: ihr Anfangs-/End-Tag erzeugt einen Zeilenumbruch.
 const BLOCK_ELEMENTS: &[&str] = &[
     "p",
     "div",
@@ -20,25 +22,32 @@ const BLOCK_ELEMENTS: &[&str] = &[
     "article",
 ];
 
-/// Elemente, deren Inhalt komplett verworfen wird (nur mit Abschluss-Tag).
+/// Elemente mit Rohtext-Inhalt (JavaScript/CSS), dessen Inhalt nicht in den
+/// Modellkontext gehoert.
 const SKIPPED_ELEMENTS: &[&str] = &["script", "style", "noscript"];
 
-/// `script`/`style`/`noscript` samt Inhalt entfernen, Kommentare entfernen,
-/// Tags strippen, Entities dekodieren, Whitespace normalisieren.
+/// `script`/`style`/`noscript` samt Inhalt, Kommentare und Tags entfernen,
+/// Entities dekodieren, Blockumbrueche erhalten, Whitespace normalisieren.
 pub fn html_to_text(html: &str) -> String {
     let lowered = html.to_ascii_lowercase();
     let bytes = html.as_bytes();
+    // Vorabinformationen, damit "es gibt keinen Treffer mehr" in O(1) bekannt
+    // ist (sonst waere der Durchlauf quadratisch).
+    let last_gt = lowered.rfind('>');
+    let last_comment_end = lowered.rfind("-->");
+    let last_closing: Vec<Option<usize>> = SKIPPED_ELEMENTS
+        .iter()
+        .map(|name| lowered.rfind(&format!("</{name}")))
+        .collect();
+
     let mut out = String::with_capacity(html.len());
     let mut index = 0usize;
-
     while index < bytes.len() {
-        // Text bis zum naechsten '<' uebernehmen.
         if bytes[index] != b'<' {
-            let next = html[index..].find('<').map(|offset| index + offset);
-            match next {
-                Some(next) => {
-                    out.push_str(&html[index..next]);
-                    index = next;
+            match html[index..].find('<') {
+                Some(offset) => {
+                    out.push_str(&html[index..index + offset]);
+                    index += offset;
                 }
                 None => {
                     out.push_str(&html[index..]);
@@ -62,38 +71,67 @@ pub fn html_to_text(html: &str) -> String {
 
         // Kommentare als Einheit entfernen (sie koennen '>' enthalten).
         if lowered[index..].starts_with("<!--") {
-            index = match lowered[index + 4..].find("-->") {
-                Some(offset) => index + 4 + offset + 3,
-                None => html.len(),
-            };
+            match last_comment_end.filter(|end| *end >= index) {
+                Some(_) => {
+                    let offset = lowered[index + 4..]
+                        .find("-->")
+                        .map(|offset| index + 4 + offset + 3)
+                        .unwrap_or(bytes.len());
+                    index = offset;
+                }
+                // Kein Kommentarende mehr: der Rest ist Kommentar.
+                None => break,
+            }
             continue;
         }
 
-        let Some(tag_end_offset) = html[index..].find('>') else {
-            // Kein Tag-Ende: das '<' gehoert zum Text.
-            out.push('<');
-            index += 1;
-            continue;
+        // Tag-Ende anfuehrungsbewusst bestimmen. Gibt es gar kein '>' mehr, ist
+        // der Rest Text - ohne erneutes Suchen.
+        let tag_end = last_gt
+            .filter(|position| *position >= index)
+            .and_then(|_| find_tag_end(html, index));
+        let Some(tag_end) = tag_end else {
+            out.push_str(&html[index..]);
+            break;
         };
-        let tag_end = index + tag_end_offset;
+
         let name = tag_name(&lowered[index..=tag_end]);
         if BLOCK_ELEMENTS.contains(&name) {
             out.push('\n');
         }
 
-        if SKIPPED_ELEMENTS.contains(&name) {
+        if let Some(position) = SKIPPED_ELEMENTS.iter().position(|element| *element == name) {
+            if is_self_closing(&html[index..=tag_end]) {
+                // Selbstschliessend: es gibt keinen Inhalt zu verwerfen.
+                index = tag_end + 1;
+                continue;
+            }
             let closing = format!("</{name}");
-            match lowered[tag_end + 1..].find(&closing) {
-                Some(offset) => {
-                    let after_close = tag_end + 1 + offset + closing.len();
+            // Nur suchen, wenn laut Vorabinfo ueberhaupt ein Abschluss-Tag folgt.
+            let closing_start = last_closing[position]
+                .filter(|start| *start > tag_end)
+                .and_then(|_| {
+                    lowered[tag_end + 1..]
+                        .find(&closing)
+                        .map(|offset| tag_end + 1 + offset)
+                });
+            match closing_start {
+                Some(start) => {
+                    let after_close = start + closing.len();
                     index = lowered[after_close..]
                         .find('>')
-                        .map(|position| after_close + position + 1)
-                        .unwrap_or(html.len());
+                        .map(|offset| after_close + offset + 1)
+                        .unwrap_or(bytes.len());
                 }
-                // Unabgeschlossen: nur das oeffnende Tag ueberspringen, der Rest
-                // bleibt als Text erhalten.
-                None => index = tag_end + 1,
+                // Unabgeschlossen: nur das oeffnende Tag ueberspringen und den
+                // folgenden Rohtext bis zum naechsten '<' verwerfen, damit kein
+                // Quelltext im Modellkontext landet.
+                None => {
+                    index = html[tag_end + 1..]
+                        .find('<')
+                        .map(|offset| tag_end + 1 + offset)
+                        .unwrap_or(bytes.len());
+                }
             }
             continue;
         }
@@ -102,6 +140,36 @@ pub fn html_to_text(html: &str) -> String {
     }
 
     normalize_text(&decode_entities(&out))
+}
+
+/// Position des Tag-Endes ab `start` ('<'): '>' innerhalb von "..." oder '...'
+/// beendet das Tag nicht. `None`, wenn kein '>' ausserhalb von
+/// Anfuehrungszeichen folgt.
+fn find_tag_end(html: &str, start: usize) -> Option<usize> {
+    let bytes = html.as_bytes();
+    let mut index = start + 1;
+    let mut quote: Option<u8> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match quote {
+            Some(active) => {
+                if byte == active {
+                    quote = None;
+                }
+            }
+            None => match byte {
+                b'"' | b'\'' => quote = Some(byte),
+                b'>' => return Some(index),
+                _ => {}
+            },
+        }
+        index += 1;
+    }
+    None
+}
+
+fn is_self_closing(tag: &str) -> bool {
+    tag.trim_end_matches('>').trim_end().ends_with('/')
 }
 
 /// Tag-Name ohne '<', '</' und Attribute, kleingeschrieben (Eingabe ist bereits

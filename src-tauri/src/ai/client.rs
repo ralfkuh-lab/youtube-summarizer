@@ -38,8 +38,10 @@ impl Serialize for ChatMessage {
             true => map.serialize_entry("content", &Option::<String>::None)?,
             false => map.serialize_entry("content", text)?,
         }
-        if let Some(tool_calls) = &self.tool_calls {
-            if !tool_calls.is_null() {
+        // Leere oder fehlende Tool-Aufrufe werden nicht gesendet (Provider
+        // lehnen `"tool_calls": []` ab).
+        if has_tool_calls(&self.tool_calls) {
+            if let Some(tool_calls) = &self.tool_calls {
                 map.serialize_entry("tool_calls", tool_calls)?;
             }
         }

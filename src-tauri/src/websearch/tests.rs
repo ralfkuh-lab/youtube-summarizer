@@ -106,7 +106,10 @@ fn respond_without_content_type(stream: &mut TcpStream, body: &str) {
 
 /// Fuehrt einen `#[ignore]`-Test im Kindprozess aus. Proxy-Variablen werden nur
 /// dort gesetzt, damit parallele Tests im Elternprozess unberuehrt bleiben.
-fn run_ignored_child(test_name: &str, env: &[(&str, String)]) -> std::process::ExitStatus {
+///
+/// Geprueft wird die Ausgabe: libtest endet auch dann mit 0, wenn `--exact` auf
+/// keinen Test passt. Deshalb muss genau ein Test gelaufen und bestanden sein.
+fn run_ignored_child(test_name: &str, env: &[(&str, String)]) -> Result<(), String> {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
         .args(["--ignored", "--exact", test_name, "--nocapture"])
@@ -115,9 +118,33 @@ fn run_ignored_child(test_name: &str, env: &[(&str, String)]) -> std::process::E
     for (key, value) in env {
         command.env(key, value);
     }
-    command
-        .status()
-        .expect("Kindprozess konnte nicht gestartet werden")
+    let output = command
+        .output()
+        .map_err(|error| format!("Kindprozess konnte nicht gestartet werden: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() {
+        return Err(format!(
+            "Kindprozess fehlgeschlagen ({:?}):\n{stdout}",
+            output.status
+        ));
+    }
+    if !stdout.contains("test result: ok. 1 passed") {
+        return Err(format!(
+            "genau ein bestandener Test erwartet, Ausgabe war:\n{stdout}"
+        ));
+    }
+    Ok(())
+}
+
+/// Der Helfer muss einen Tippfehler im Testnamen bemerken (libtest endet sonst
+/// mit 0).
+#[test]
+fn q2_run_ignored_child_rejects_an_unknown_test_name() {
+    let result = run_ignored_child("websearch::tests::diesen_test_gibt_es_nicht", &[]);
+    assert!(
+        result.is_err(),
+        "ein nicht existierender Test darf nicht als Erfolg gelten"
+    );
 }
 
 fn proxy_env(url: &str) -> Vec<(&'static str, String)> {
@@ -127,6 +154,34 @@ fn proxy_env(url: &str) -> Vec<(&'static str, String)> {
         ("ALL_PROXY", url.to_string()),
         ("all_proxy", url.to_string()),
     ]
+}
+
+/// Schreibt den Body in Bloecken und zaehlt die erfolgreich gesendeten Bytes
+/// (bricht ab, sobald der Client nicht mehr liest).
+fn respond_streaming(
+    stream: &mut TcpStream,
+    content_type: &str,
+    total: usize,
+    chunk: usize,
+    sent: &AtomicUsize,
+) {
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(header.as_bytes()).is_err() {
+        return;
+    }
+    let block = vec![b'a'; chunk];
+    let mut written = 0usize;
+    while written < total {
+        let length = chunk.min(total - written);
+        if stream.write_all(&block[..length]).is_err() {
+            break;
+        }
+        written += length;
+        sent.store(written, Ordering::SeqCst);
+    }
+    let _ = stream.flush();
 }
 
 fn respond_redirect(stream: &mut TcpStream, location: &str) {
@@ -347,28 +402,42 @@ async fn s11b_blocked_domain_is_rejected_before_connecting() {
 
 #[tokio::test]
 async fn s12_allowed_and_rejected_content_types() {
-    let html = TestServer::start(|stream| {
-        respond(
-            stream,
-            "200 OK",
+    for (content_type, body, expected) in [
+        (
             "text/html; charset=utf-8",
             "<p>Hallo Welt</p>",
-        )
-    });
-    assert_eq!(
-        fetch_page_with(&html.url("/"), allow_test_server(), FETCH_BUDGET)
-            .await
-            .unwrap(),
-        "Hallo Welt"
-    );
+            "Hallo Welt",
+        ),
+        (
+            "TEXT/HTML; charset=UTF-8",
+            "<p>Hallo Welt</p>",
+            "Hallo Welt",
+        ),
+        ("application/xhtml+xml", "<p>Hallo Welt</p>", "Hallo Welt"),
+        // text/plain wird unveraendert uebernommen (kein Tag-Strippen).
+        ("Text/Plain", "Hallo Welt", "Hallo Welt"),
+    ] {
+        let server = TestServer::start(move |stream| respond(stream, "200 OK", content_type, body));
+        assert_eq!(
+            fetch_page_with(&server.url("/"), allow_test_server(), FETCH_BUDGET)
+                .await
+                .unwrap(),
+            expected,
+            "Content-Type {content_type}"
+        );
+    }
 
-    let json = TestServer::start(|stream| respond(stream, "200 OK", "application/json", "{}"));
-    assert_eq!(
-        fetch_page_with(&json.url("/"), allow_test_server(), FETCH_BUDGET)
+    for content_type in ["application/json", "APPLICATION/JSON", "image/png"] {
+        let server = TestServer::start(move |stream| respond(stream, "200 OK", content_type, "{}"));
+        let error = fetch_page_with(&server.url("/"), allow_test_server(), FETCH_BUDGET)
             .await
-            .unwrap_err(),
-        WebError::UnsupportedContentType("application/json".to_string())
-    );
+            .unwrap_err();
+        assert_eq!(
+            error,
+            WebError::UnsupportedContentType(content_type.to_ascii_lowercase()),
+            "Content-Type {content_type}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -380,6 +449,28 @@ async fn s13_body_over_limit_aborts_the_download() {
         .unwrap_err();
 
     assert_eq!(error, WebError::BodyTooLarge);
+}
+
+#[tokio::test]
+async fn s13b_body_limit_aborts_while_the_server_still_writes() {
+    const TOTAL: usize = 16 * 1024 * 1024;
+    const CHUNK: usize = 64 * 1024;
+    let sent = Arc::new(AtomicUsize::new(0));
+    let server = TestServer::start({
+        let sent = sent.clone();
+        move |stream| respond_streaming(stream, "text/html", TOTAL, CHUNK, &sent)
+    });
+
+    let error = fetch_page_with(&server.url("/"), allow_test_server(), FETCH_BUDGET)
+        .await
+        .unwrap_err();
+    let sent_bytes = sent.load(Ordering::SeqCst);
+
+    assert_eq!(error, WebError::BodyTooLarge);
+    assert!(
+        sent_bytes < TOTAL,
+        "der Client darf den Body nicht zu Ende lesen (gesendet: {sent_bytes} von {TOTAL})"
+    );
 }
 
 #[tokio::test]
@@ -578,12 +669,11 @@ fn s16b_prefix_boundaries_and_embedded_forms() {
 #[test]
 fn s17_fetch_page_ignores_proxy_environment() {
     let proxy = TestServer::start(|_stream| {});
-    let status = run_ignored_child(
+    run_ignored_child(
         "websearch::tests::s17b_inner_fetch_page_ignores_proxy",
         &proxy_env(&proxy.url("")),
-    );
-
-    assert!(status.success(), "Kindprozess muss erfolgreich sein");
+    )
+    .expect("Kindprozess muss genau einen bestandenen Test melden");
     assert_eq!(
         proxy.requests(),
         0,
@@ -626,13 +716,13 @@ fn k4_local_search_ignores_proxy_environment() {
         respond(stream, "200 OK", "application/json", r#"{"results":[]}"#)
     });
     let mut env = proxy_env(&proxy.url(""));
-    env.push(("YTS_SEARXNG_URL", searxng.url("")));
-    let status = run_ignored_child(
+    // Hostname statt IP-Literal: die Proxy-Regel darf nicht am Namen scheitern.
+    env.push(("YTS_SEARXNG_URL", searxng.host_url("localhost", "")));
+    run_ignored_child(
         "websearch::tests::k4b_inner_local_search_ignores_proxy",
         &env,
-    );
-
-    assert!(status.success(), "Kindprozess muss erfolgreich sein");
+    )
+    .expect("Kindprozess muss genau einen bestandenen Test melden");
     assert_eq!(
         proxy.requests(),
         0,
@@ -708,11 +798,30 @@ async fn k10_empty_extraction_is_an_error() {
 }
 
 #[test]
-fn k10_unterminated_script_keeps_the_rest() {
-    assert_eq!(html_to_text("<script>alert(1)"), "alert(1)");
+fn q1_unterminated_raw_text_is_discarded() {
+    // Unabgeschlossen: oeffnendes Tag ueberspringen und den folgenden Rohtext
+    // bis zum naechsten '<' verwerfen (kein Quelltext im Modellkontext).
+    assert_eq!(html_to_text("<script>alert(1)"), "");
+    assert_eq!(html_to_text("<noscript>ohne js"), "");
+    assert_eq!(html_to_text("<script>x<p>Text</p>"), "Text");
+    // Selbstschliessend hat keinen Inhalt zu verwerfen.
     assert_eq!(html_to_text("<style/>rest"), "rest");
-    assert_eq!(html_to_text("<noscript>ohne js"), "ohne js");
+    assert_eq!(html_to_text("<style />rest"), "rest");
+    // Mit Abschluss-Tag wird der ganze Block verworfen.
     assert_eq!(html_to_text("<script>x</script>rest"), "rest");
+    assert_eq!(
+        html_to_text("<script>a</script>keep<script>b</script>"),
+        "keep"
+    );
+}
+
+#[test]
+fn q1_quoted_angle_brackets_do_not_end_tags() {
+    assert_eq!(html_to_text(r#"<a title="<script>">x</a>"#), "x");
+    assert_eq!(html_to_text("<p title='a > b'>y</p>"), "y");
+    assert_eq!(html_to_text(r#"<span data-x="1">z"#), "z");
+    // Ohne schliessendes '>' bleibt der Rest Text.
+    assert_eq!(html_to_text("<span>offen"), "offen");
 }
 
 #[test]
@@ -750,4 +859,40 @@ fn k10_block_elements_produce_line_breaks() {
     );
     assert_eq!(html_to_text("<p>a</p>\n\n\n<p>b</p>"), "a\n\nb");
     assert_eq!(html_to_text("  <p>  a  </p>  "), "a");
+}
+
+/// Fuehrt `html_to_text` in einem eigenen Thread aus und meldet, ob es innerhalb
+/// der Schranke fertig wurde (der Thread laeuft bei einem Fehlschlag aus).
+fn html_to_text_within(input: String, limit: Duration) -> bool {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = html_to_text(&inputs_guard(input));
+        let _ = sender.send(());
+    });
+    receiver.recv_timeout(limit).is_ok()
+}
+
+fn inputs_guard(input: String) -> &'static str {
+    Box::leak(input.into_boxed_str())
+}
+
+#[test]
+fn q1_large_inputs_stay_linear() {
+    let cases: [(&str, String); 5] = [
+        ("1 MB nur '<'", "<".repeat(1_000_000)),
+        ("500k '<a' ohne '>'", "<a".repeat(500_000)),
+        (
+            "200k '<script>x' ohne Abschluss",
+            "<script>x".repeat(200_000),
+        ),
+        ("200k '<!--' ohne Abschluss", "<!--".repeat(200_000)),
+        ("100k '<a title=\"'", "<a title=\"".repeat(100_000)),
+    ];
+    let mut slow = Vec::new();
+    for (label, input) in cases {
+        if !html_to_text_within(input, Duration::from_secs(2)) {
+            slow.push(label);
+        }
+    }
+    assert!(slow.is_empty(), "zu langsam (Schranke 2 s): {slow:?}");
 }

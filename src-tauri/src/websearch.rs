@@ -20,7 +20,6 @@ use futures_util::StreamExt;
 use reqwest::redirect::Policy;
 use reqwest::{Client, Url};
 use serde_json::{json, Value};
-use url::Host;
 
 use address::{check_fetch_url, FilteredResolver};
 
@@ -182,10 +181,14 @@ async fn fetch_page_inner(
         }
         let body = read_body_limited(response, MAX_BODY_BYTES).await?;
         let raw = String::from_utf8_lossy(&body).to_string();
+        // Die Extraktion laeuft im Blocking-Pool: sonst koennte das
+        // Gesamtbudget nicht greifen, waehrend sie rechnet.
         let text = if media_type == "text/plain" {
             raw
         } else {
-            html_to_text(&raw)
+            tokio::task::spawn_blocking(move || html_to_text(&raw))
+                .await
+                .map_err(|error| WebError::Response(error.to_string()))?
         };
         if text.trim().is_empty() {
             return Err(WebError::EmptyText);
@@ -317,29 +320,18 @@ pub async fn web_search(base_url: &str, query: &str) -> Result<Vec<SearchResult>
 }
 
 /// Client fuer die Suche: keine automatischen Weiterleitungen (die koennen auf
-/// eine andere Maschine zeigen). Lokale Instanzen werden ohne System-Proxy
-/// angesprochen, damit der Proxy den Zielhost nicht ungeprueft weiterleitet.
-fn search_client(url: &Url) -> Result<Client, WebError> {
-    let mut builder = Client::builder()
+/// eine andere Maschine zeigen) und **immer** ohne System-Proxy - sonst ginge
+/// die Suchanfrage samt Suchbegriff an den Proxy, sobald die konfigurierte
+/// Instanz nicht als `localhost`/IP-Literal erkannt wird (z. B. `localhost.`,
+/// /etc/hosts-Alias oder LAN-Name).
+fn search_client(_url: &Url) -> Result<Client, WebError> {
+    Client::builder()
         .redirect(Policy::none())
+        .no_proxy()
         .timeout(REQUEST_TIMEOUT)
-        .user_agent(USER_AGENT);
-    if is_local_host(url) {
-        builder = builder.no_proxy();
-    }
-    builder
+        .user_agent(USER_AGENT)
         .build()
         .map_err(|error| WebError::Response(error.to_string()))
-}
-
-/// `localhost` oder eine Adresse, die `is_blocked_ip` sperrt (Loopback/privat).
-fn is_local_host(url: &Url) -> bool {
-    match url.host() {
-        Some(Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(ip)) => is_blocked_ip(IpAddr::V4(ip)),
-        Some(Host::Ipv6(ip)) => is_blocked_ip(IpAddr::V6(ip)),
-        None => false,
-    }
 }
 
 fn parse_search_results(body: &str) -> Result<Vec<SearchResult>, WebError> {
