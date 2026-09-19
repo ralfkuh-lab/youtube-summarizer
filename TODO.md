@@ -39,9 +39,10 @@ tab, and detail tooltip on the 'T' status chip) — spec:
   - [x] Etappe 2a/2b: Websuche per Tool-Calling (SearXNG + Seitenabruf mit Adresssperre, Tool-Schleife, Einstellungs-Tab „Websuche“, Tool-Aktivität im Chat). Reviewt von Grok, Gemini und Opus (Codex fiel wegen Limit aus).
   - [ ] Manuell in der installierten App prüfen: Live-Streaming, Tool-Aktivität während der Anfrage, „Stopp“, Video-/Chatwechsel während einer Anfrage (bisher nur per UI-Tests mit Mock und per Automation-API belegt).
   - [x] Etappe 3: Kontext-Wähler (Transkript an/aus, Mehrfachauswahl der Zusammenfassungs-Versionen pro Chat; Chat auch für Videos ohne Transkript, wenn eine Zusammenfassung existiert). Dazu das Paket aus dem ersten Praxistest: Schlussrunde speichert keine rohe Tool-Syntax mehr (Budget-Ansage, `tool_choice: none`, eine Wiederholung, höchstens 7 Provider-Anfragen), ein aufklappbarer Bereich je Recherche-Schritt, verständliche Websuche-Einstellungen. Reviewt von Grok und Gemini.
-  - [ ] Live-Anzeige während der Generierung (Beobachtung des Maintainers vom 2026-09-19 mit Screenshot): Es gibt nur eine Live-Blase; bei jeder neuen Provider-Runde beginnt der Stream-Text neu und überschreibt den Zwischentext („Ich recherchiere kurz im Netz“ → „Ich“), die Tool-Zeilen stehen fest darüber. Soll: Live-Anzeige im selben Layout wie die fertige Anzeige (Textblase bleibt stehen, darunter ihre Recherche-Schritte, dann die nächste Blase, Gruppenzeile „Recherche · N Schritte“); Rundennummer im Stream-Event, ungedrosseltes Abschluss-Event je Runde. Auftrag liegt in `.herd/impl-live-auftrag.md`, Umsetzung im Review-Fenster der Agenten-Übergabe.
+  - [x] Live-Anzeige während der Generierung im Layout der fertigen Anzeige (Zwischentexte bleiben stehen, darunter ihre Recherche-Schritte; Rundennummer und ungedrosseltes Abschluss-Event je Runde). Auslöser: Beobachtung des Maintainers vom 2026-09-19.
   - [ ] Später erwägen: Obergrenze für gespeicherte Tool-Ergebnisse (eine voll ausgereizte Recherche-Runde speichert ~240 000 Zeichen, die jede Folgefrage mitsendet); Checkbox „unterstützt Tool-Calling“ für Custom-Modelle (ohne Katalog-Flag bleibt die Websuche ausgegraut).
 - [x] Video an lokalen Agenten übergeben ([Spec](docs/spec-agent-handoff.md), Revision 2): Etappe 1 umgesetzt (Backend `src-tauri/src/agent_handoff.rs` + Untermodule, Commands `agent_config_get`/`agent_config_set`/`agent_prepare`/`agent_preview`, Automation-Endpunkt `POST /api/agent-handoff/<id>`, Frontend `src/agent-handoff.ts`/`src/agent-settings.ts`, Einstellungs-Tab „Agent“, UI-Tests G1–G11). Die App startet weiterhin keinen Prozess; das Kommando geht nur in die Zwischenablage.
+  - [ ] Offen zur Agenten-Übergabe: Zwischenablage unter WebKitGTK in der installierten App prüfen (sonst Kommando im Dialog markieren); PowerShell-Vorlage unter Windows ausführen; Stufe 2 (Direktstart im Terminal) nur bei Bedarf.
   - [ ] Nativer Durchlauf (Linux, WebKitGTK): Export für ein echtes Video, Zwischenablage in der gebauten App prüfen, kopiertes Kommando in einem Terminal ausführen, Agent liest `context.md`. Review und Kreuzreview stehen aus.
   - [ ] Windows offen: Die PowerShell-Vorlage ist nur als Zeichenkette getestet, nicht unter Windows ausgeführt (siehe `AGENTS.md`).
 - [x] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
@@ -75,6 +76,14 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19 (Abschluss des Tages): Gesamtstand nach Agenten-Übergabe (inkl. Review-Korrekturen)
+  und Live-Anzeige vom Orchestrator geprüft: `cargo fmt --check`, `cargo test` (282 bestanden,
+  4 ignoriert), `npm run build`, `npm run test:ui` (84 bestanden), `npm run tauri -- build`
+  (deb von 21:37) grün. Nativer Backend-Durchlauf der Agenten-Übergabe über die Automation-API
+  (isolierte Daten, Arbeitspfad mit Leerzeichen und Apostroph): Kontextdatei mit festem Kopf und
+  Delimiter-Blöcken, `cd`-Teil landet im Arbeitsverzeichnis; Agent nicht gestartet,
+  Zwischenablage der gebauten App nicht geprüft. Live-Anzeige per Screenshot mit simulierter
+  Event-Folge geprüft, nicht mit echtem Modell. Kein Dev-Server aktiv.
 - 2026-09-19 (spät): Agenten-Übergabe, Etappe 1 (Spec Revision 2) umgesetzt. `cargo fmt --check`,
   `cargo test` (275 bestanden, 4 ignoriert), `npm run build`, `npm run test:ui` (74 bestanden) und
   `npm run tauri -- build` grün. Fünf Mutationsnachweise (S1, Q2/Q3, Q6/Q9, A4, C2) in einer Kopie
