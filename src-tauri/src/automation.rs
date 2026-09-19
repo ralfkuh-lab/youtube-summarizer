@@ -27,6 +27,14 @@ struct SummarizeRequest {
     options: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChatRequest {
+    chat_id: Option<i64>,
+    text: String,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+}
+
 pub fn start(paths: AppPaths) {
     thread::spawn(move || {
         let listener = match TcpListener::bind("127.0.0.1:0") {
@@ -219,6 +227,57 @@ fn route(
                     target,
                     request.timestamps,
                     request.options,
+                    |_| {},
+                ))
+            })();
+            write_result(stream, result)
+        }
+        _ if method == "GET" && path.starts_with("/api/chats/") => {
+            let video_id = parse_id(path, "/api/chats/")?;
+            write_result(stream, storage::list_chats(paths, video_id))
+        }
+        _ if method == "GET" && path.starts_with("/api/chat-messages/") => {
+            let chat_id = parse_id(path, "/api/chat-messages/")?;
+            write_result(stream, storage::get_chat_messages(paths, chat_id))
+        }
+        _ if method == "POST" && path.starts_with("/api/chat/") => {
+            let video_id = parse_id(path, "/api/chat/")?;
+            let request = parse_body::<ChatRequest>(body)?;
+            let runtime = tokio::runtime::Runtime::new()
+                .map_err(|err| format!("Runtime konnte nicht erstellt werden: {err}"))?;
+            // Wie /api/summarize/: Konfiguration von Platte, kein Zugriff auf
+            // den verwalteten Tauri-State.
+            let http = reqwest::Client::builder()
+                .user_agent("Mozilla/5.0 YouTubeSummarizer/0.1")
+                .connect_timeout(std::time::Duration::from_secs(20))
+                .read_timeout(std::time::Duration::from_secs(60))
+                .build()
+                .map_err(|err| format!("HTTP-Client konnte nicht erstellt werden: {err}"))?;
+            let result = (|| -> AppResult<crate::models::ChatTurnResult> {
+                let ai = crate::ai::config::AiConfigService::load(paths).data();
+                let catalog = crate::ai::catalog::load(paths).catalog;
+                let (selected, base_url) = summarize::resolve_summary_target(
+                    &ai,
+                    &catalog,
+                    request.provider_id,
+                    request.model_id,
+                )?;
+                let key = crate::ai::auth::AuthStore::load(paths).get_key(&selected.provider);
+                let provider_label = summarize::provider_label(&ai, &catalog, &selected.provider);
+                let target = summarize::SummaryTarget {
+                    provider_label,
+                    model: selected.model,
+                    base_url,
+                    api_key: key,
+                };
+                runtime.block_on(crate::chat::chat_send_impl(
+                    paths,
+                    &http,
+                    video_id,
+                    request.chat_id,
+                    request.text,
+                    target,
+                    || false,
                     |_| {},
                 ))
             })();

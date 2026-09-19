@@ -1,6 +1,7 @@
 mod ai;
 #[cfg(debug_assertions)]
 mod automation;
+mod chat;
 mod commands;
 mod models;
 mod storage;
@@ -52,6 +53,7 @@ pub fn run() {
             app.manage(ai_auth);
 
             app.manage(paths);
+            app.manage(chat::ChatRuns::default());
 
             #[cfg(debug_assertions)]
             {
@@ -91,7 +93,13 @@ pub fn run() {
             commands::summary_preset_save,
             commands::summary_preset_delete,
             commands::get_summaries,
-            commands::delete_summary
+            commands::delete_summary,
+            // Video-Chat (Etappe 1)
+            chat::chat_list,
+            chat::chat_messages,
+            chat::chat_delete,
+            chat::chat_send,
+            chat::chat_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,7 +6,9 @@ use base64::Engine;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use crate::models::{Chapter, Collection, NewVideo, Summary, Video};
+use crate::models::{
+    Chapter, Chat, ChatMessageRecord, Collection, NewChatMessage, NewVideo, Summary, Video,
+};
 
 pub type AppResult<T> = Result<T, String>;
 
@@ -98,6 +100,31 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
             FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_summaries_video_id ON summaries(video_id);
+
+        CREATE TABLE IF NOT EXISTS chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            tool_calls TEXT,
+            tool_call_id TEXT,
+            provider TEXT,
+            model TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id, id);
+        CREATE INDEX IF NOT EXISTS idx_chats_video ON chats(video_id, updated_at);
         "#,
     )
     .map_err(|err| format!("Datenbank konnte nicht initialisiert werden: {err}"))?;
@@ -375,6 +402,189 @@ pub fn set_transcript_error(paths: &AppPaths, id: i64, error: &str) -> AppResult
     )
     .map_err(|err| format!("Transkript-Fehler konnte nicht gespeichert werden: {err}"))?;
     get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())
+}
+
+const CHAT_COLUMNS: &str = "id, video_id, title, created_at, updated_at";
+
+const CHAT_MESSAGE_COLUMNS: &str =
+    "id, chat_id, role, content, tool_calls, tool_call_id, provider, model, created_at";
+
+pub fn list_chats(paths: &AppPaths, video_id: i64) -> AppResult<Vec<Chat>> {
+    let conn = open_db(paths)?;
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {CHAT_COLUMNS} FROM chats WHERE video_id = ?1 ORDER BY updated_at DESC, id DESC"
+        ))
+        .map_err(|err| format!("Chats konnten nicht geladen werden: {err}"))?;
+    let rows = stmt
+        .query_map(params![video_id], row_to_chat)
+        .map_err(|err| format!("Chats konnten nicht gelesen werden: {err}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("Chat konnte nicht gelesen werden: {err}"))
+}
+
+pub fn get_chat(paths: &AppPaths, chat_id: i64) -> AppResult<Option<Chat>> {
+    let conn = open_db(paths)?;
+    conn.query_row(
+        &format!("SELECT {CHAT_COLUMNS} FROM chats WHERE id = ?1"),
+        params![chat_id],
+        row_to_chat,
+    )
+    .optional()
+    .map_err(|err| format!("Chat konnte nicht geladen werden: {err}"))
+}
+
+pub fn get_chat_messages(paths: &AppPaths, chat_id: i64) -> AppResult<Vec<ChatMessageRecord>> {
+    let conn = open_db(paths)?;
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {CHAT_MESSAGE_COLUMNS} FROM chat_messages WHERE chat_id = ?1 ORDER BY id"
+        ))
+        .map_err(|err| format!("Chat-Nachrichten konnten nicht geladen werden: {err}"))?;
+    let rows = stmt
+        .query_map(params![chat_id], row_to_chat_message)
+        .map_err(|err| format!("Chat-Nachrichten konnten nicht gelesen werden: {err}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("Chat-Nachricht konnte nicht gelesen werden: {err}"))
+}
+
+/// Speichert eine komplette Chat-Runde in genau einer Transaktion. `None` legt
+/// einen neuen Chat an; `Some(id)` verlangt einen existierenden Chat, der zum
+/// Video gehoert. Schlaegt irgendein Insert fehl, bleibt nichts zurueck.
+pub fn append_chat_turn(
+    paths: &AppPaths,
+    video_id: i64,
+    chat_id: Option<i64>,
+    title: &str,
+    messages: Vec<NewChatMessage>,
+) -> AppResult<(Chat, Vec<ChatMessageRecord>)> {
+    let mut conn = open_db(paths)?;
+    let now = Utc::now().to_rfc3339();
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("Chat konnte nicht gespeichert werden: {err}"))?;
+
+    let video_exists = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM videos WHERE id = ?1)",
+            params![video_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| format!("Video konnte nicht geprüft werden: {err}"))?
+        == 1;
+    if !video_exists {
+        return Err("Video nicht gefunden".to_string());
+    }
+
+    let chat_id = match chat_id {
+        Some(id) => {
+            let owner = tx
+                .query_row(
+                    "SELECT video_id FROM chats WHERE id = ?1",
+                    params![id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|err| format!("Chat konnte nicht geprüft werden: {err}"))?;
+            match owner {
+                None => return Err("Chat wurde gelöscht".to_string()),
+                Some(owner) if owner != video_id => {
+                    return Err("Chat gehört nicht zu diesem Video".to_string())
+                }
+                Some(_) => id,
+            }
+        }
+        None => {
+            tx.execute(
+                "INSERT INTO chats (video_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+                params![video_id, title, now],
+            )
+            .map_err(|err| format!("Chat konnte nicht angelegt werden: {err}"))?;
+            tx.last_insert_rowid()
+        }
+    };
+
+    let mut records = Vec::with_capacity(messages.len());
+    for message in messages {
+        let tool_calls = message.tool_calls.as_ref().map(|value| value.to_string());
+        tx.execute(
+            r#"
+            INSERT INTO chat_messages
+                (chat_id, role, content, tool_calls, tool_call_id, provider, model, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            params![
+                chat_id,
+                message.role,
+                message.content,
+                tool_calls,
+                message.tool_call_id,
+                message.provider,
+                message.model,
+                now
+            ],
+        )
+        .map_err(|err| format!("Chat-Nachricht konnte nicht gespeichert werden: {err}"))?;
+        records.push(ChatMessageRecord {
+            id: tx.last_insert_rowid(),
+            chat_id,
+            role: message.role,
+            content: message.content,
+            tool_calls: message.tool_calls,
+            tool_call_id: message.tool_call_id,
+            provider: message.provider,
+            model: message.model,
+            created_at: now.clone(),
+        });
+    }
+
+    tx.execute(
+        "UPDATE chats SET updated_at = ?1 WHERE id = ?2",
+        params![now, chat_id],
+    )
+    .map_err(|err| format!("Chat konnte nicht aktualisiert werden: {err}"))?;
+    let chat = tx
+        .query_row(
+            &format!("SELECT {CHAT_COLUMNS} FROM chats WHERE id = ?1"),
+            params![chat_id],
+            row_to_chat,
+        )
+        .map_err(|err| format!("Chat konnte nicht geladen werden: {err}"))?;
+    tx.commit()
+        .map_err(|err| format!("Chat konnte nicht gespeichert werden: {err}"))?;
+    Ok((chat, records))
+}
+
+pub fn delete_chat(paths: &AppPaths, chat_id: i64) -> AppResult<()> {
+    let conn = open_db(paths)?;
+    conn.execute("DELETE FROM chats WHERE id = ?1", params![chat_id])
+        .map_err(|err| format!("Chat konnte nicht gelöscht werden: {err}"))?;
+    Ok(())
+}
+
+fn row_to_chat(row: &Row<'_>) -> rusqlite::Result<Chat> {
+    Ok(Chat {
+        id: row.get("id")?,
+        video_id: row.get("video_id")?,
+        title: row.get("title")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+fn row_to_chat_message(row: &Row<'_>) -> rusqlite::Result<ChatMessageRecord> {
+    let tool_calls: Option<String> = row.get("tool_calls")?;
+    Ok(ChatMessageRecord {
+        id: row.get("id")?,
+        chat_id: row.get("chat_id")?,
+        role: row.get("role")?,
+        content: row.get("content")?,
+        tool_calls: tool_calls.and_then(|raw| serde_json::from_str(&raw).ok()),
+        tool_call_id: row.get("tool_call_id")?,
+        provider: row.get("provider")?,
+        model: row.get("model")?,
+        created_at: row.get("created_at")?,
+    })
 }
 
 pub fn get_collections(paths: &AppPaths) -> AppResult<Vec<Collection>> {

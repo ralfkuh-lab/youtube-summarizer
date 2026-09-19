@@ -58,6 +58,7 @@ export const appTemplate = `
         <div id="tabBar">
           <button class="tab active" data-tab="transcript">Transkript</button>
           <button class="tab" data-tab="summary">Zusammenfassung</button>
+          <button class="tab" data-tab="chat">Chat</button>
           <button class="tab" data-tab="video">Video</button>
           <button id="reloadTranscriptBtn">Transkript laden</button>
           <button id="summarizeBtn">Zusammenfassen lassen</button>
@@ -71,6 +72,20 @@ export const appTemplate = `
               <button id="summaryHistoryDelete" class="delete-icon-btn" title="Diese Version löschen" aria-label="Diese Version löschen">🗑</button>
             </div>
             <div id="summaryBody"></div>
+          </div>
+          <div id="tabChat" class="tabPanel">
+            <div class="chat-toolbar">
+              <select id="chatSelect" aria-label="Chat-Verlauf"></select>
+              <button id="chatNew" class="inline-action">Neuer Chat</button>
+              <button id="chatDelete" class="delete-icon-btn" title="Chat löschen" aria-label="Chat löschen">🗑</button>
+              <select id="chatModel" aria-label="Chat-Modell"></select>
+            </div>
+            <div id="chatMessages" class="chat-messages"></div>
+            <p id="chatHint" class="chat-hint" hidden>Für den Chat wird ein Transkript benötigt</p>
+            <div class="chat-composer">
+              <textarea id="chatInput" rows="1" placeholder="Frage zum Video…"></textarea>
+              <button id="chatSend">Senden</button>
+            </div>
           </div>
           <div id="tabVideo" class="tabPanel">
             <div id="videoCodecNotice" class="video-codec-notice" hidden></div>

@@ -40,7 +40,32 @@ export type Collection = {
   updated_at: string;
 };
 
-export type TabName = "transcript" | "summary" | "video";
+export type TabName = "transcript" | "summary" | "chat" | "video";
+
+export type Chat = {
+  id: number;
+  videoId: number;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChatMessageRecord = {
+  id: number;
+  chatId: number;
+  role: string;
+  content: string;
+  toolCalls?: unknown | null;
+  toolCallId?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  createdAt: string;
+};
+
+export type ChatTurnResult = {
+  chat: Chat;
+  messages: ChatMessageRecord[];
+};
 
 export type SummaryRecord = {
   id: number;

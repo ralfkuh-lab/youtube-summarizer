@@ -245,7 +245,9 @@ pub async fn ai_model_chat_test(
 
 // use managed state via mutate_ai_config_state / from_state (F11)
 
-fn ai_config_data_from_state(cfg: &std::sync::Mutex<AiConfigService>) -> Result<AiConfig, String> {
+pub(crate) fn ai_config_data_from_state(
+    cfg: &std::sync::Mutex<AiConfigService>,
+) -> Result<AiConfig, String> {
     let guard = cfg
         .lock()
         .map_err(|_| "AI config lock poisoned".to_string())?;
@@ -263,7 +265,7 @@ fn mutate_ai_config_state(
     Ok(service.data())
 }
 
-fn lock_ai_auth_from_state(
+pub(crate) fn lock_ai_auth_from_state(
     auth: &std::sync::Mutex<AuthStore>,
 ) -> Result<std::sync::MutexGuard<'_, AuthStore>, String> {
     auth.lock().map_err(|_| "AI auth lock poisoned".to_string())

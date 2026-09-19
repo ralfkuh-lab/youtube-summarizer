@@ -35,8 +35,9 @@ export function stripWrappingCodeFence(markdown: string): string {
   return inner;
 }
 
-export function markdownToHtml(markdown: string): string {
-  const rendered = marked.parse(stripWrappingCodeFence(markdown), { async: false }) as string;
+export function markdownToHtml(markdown: string, stripFence = true): string {
+  const source = stripFence ? stripWrappingCodeFence(markdown) : markdown;
+  const rendered = marked.parse(source, { async: false }) as string;
   return DOMPurify.sanitize(rendered, {
     ADD_ATTR: ["target", "rel"],
   });
@@ -56,7 +57,7 @@ export function timestampSeconds(match: RegExpMatchArray): number | null {
   return mid * 60 + seconds;
 }
 
-export function linkifySummaryTimestamps(root: HTMLElement) {
+export function linkifyTimestamps(root: HTMLElement) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = node.parentElement;
@@ -137,7 +138,26 @@ export function removeMermaidArtifacts(id: string) {
   document.getElementById(`d${id}`)?.remove();
 }
 
-export async function renderMermaidBlocks(root: HTMLElement, gen: number) {
+/// Zaehler, gegen den ein Mermaid-Lauf auf Abbruch prueft: Chat und
+/// Zusammenfassung rendern getrennt, damit keiner den anderen abbricht.
+export type MarkdownTarget = "summary" | "chat";
+
+export interface MarkdownRenderOptions {
+  mermaid: boolean;
+  gen: number;
+  stripFence?: boolean;
+  target?: MarkdownTarget;
+}
+
+function currentRenderGen(target: MarkdownTarget): number {
+  return target === "chat" ? state.chatRenderGen : state.summaryRenderGen;
+}
+
+export async function renderMermaidBlocks(
+  root: HTMLElement,
+  gen: number,
+  target: MarkdownTarget = "summary",
+) {
   const blocks = [...root.querySelectorAll("pre > code.language-mermaid")];
   if (!blocks.length) return;
   let mermaid;
@@ -146,9 +166,9 @@ export async function renderMermaidBlocks(root: HTMLElement, gen: number) {
   } catch {
     return;
   }
-  if (gen !== state.summaryRenderGen) return;
+  if (gen !== currentRenderGen(target)) return;
   for (const code of blocks) {
-    if (gen !== state.summaryRenderGen) return;
+    if (gen !== currentRenderGen(target)) return;
     const pre = code.parentElement;
     if (!(pre instanceof HTMLElement) || !pre.isConnected) continue;
     const source = (code.textContent ?? "").trim();
@@ -156,7 +176,7 @@ export async function renderMermaidBlocks(root: HTMLElement, gen: number) {
     const id = `summaryMermaid${(mermaidIdSeq += 1)}`;
     try {
       const { svg } = await mermaid.render(id, source);
-      if (gen !== state.summaryRenderGen || !pre.isConnected) {
+      if (gen !== currentRenderGen(target) || !pre.isConnected) {
         removeMermaidArtifacts(id);
         return;
       }
@@ -176,11 +196,26 @@ export async function renderMermaidBlocks(root: HTMLElement, gen: number) {
   }
 }
 
+/// Rendert Markdown in ein Element: Markdown/DOMPurify, Zeitstempel-Links und
+/// optional Mermaid. Ersetzt `renderSummaryMarkdown` fuer beide Tabs.
+export async function renderMarkdownInto(
+  element: HTMLElement,
+  markdown: string,
+  options: MarkdownRenderOptions,
+) {
+  element.innerHTML = markdownToHtml(markdown, options.stripFence ?? true);
+  linkifyTimestamps(element);
+  if (options.mermaid) {
+    await renderMermaidBlocks(element, options.gen, options.target ?? "summary");
+  }
+}
+
 export async function renderSummaryMarkdown(markdown: string, gen = ++state.summaryRenderGen) {
-  const body = $("#summaryBody");
-  body.innerHTML = markdownToHtml(markdown);
-  linkifySummaryTimestamps(body);
-  await renderMermaidBlocks(body, gen);
+  await renderMarkdownInto($("#summaryBody"), markdown, {
+    mermaid: true,
+    gen,
+    target: "summary",
+  });
 }
 
 export function hideSummaryHistoryBar() {
@@ -230,7 +265,7 @@ export async function renderSummaryTab(video: Video) {
   hideSummaryHistoryBar();
   if (video.summary) {
     body.innerHTML = markdownToHtml(video.summary);
-    linkifySummaryTimestamps(body);
+    linkifyTimestamps(body);
   } else {
     body.innerHTML = EMPTY_SUMMARY_HTML;
   }

@@ -65,6 +65,30 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Video-Chat Etappe 1 komplett. Korrekturen an 1a (K1: `ChatTurnResult.messages`
+  ist jetzt der vollständige Verlauf nach der Runde; K2: `request_id` aus reinem Whitespace
+  wird abgelehnt, Tests `d13_second_turn_returns_the_full_history` und
+  `k2_request_id_with_only_whitespace_is_invalid`). Etappe 1b: neuer Chat-Tab (`src/chat.ts`,
+  Template/CSS/Typen/State, `renderMarkdownInto` in `summary-view.ts`, `detail.ts`-Hooks,
+  `bindChatEvents`), UI-Mock um `chat_*` und Video 3 erweitert, `tests/ui/chat.test.mjs` mit
+  U1–U14. Gates: `cargo fmt --check` sauber, `cargo test` (121 bestanden, 1 ignoriert),
+  `npm run build` und `npm run test:ui` (20 bestanden) grün, `npm run tauri -- build`
+  erfolgreich (deb/rpm/AppImage, Symlinks aktualisiert). Bericht:
+  `.herd/impl-1b-bericht.md`. Installation per `sudo dpkg -i youtube-summarizer.deb` steht
+  aus; kein Dev-Server oder Tauri-Prozess gestartet.
+- 2026-09-19: Video-Chat Etappe 1a (Backend) umgesetzt: `chats`/`chat_messages`
+  in `storage.rs` (inkl. `append_chat_turn` in einer Transaktion), Modelle
+  (`Chat`, `ChatMessageRecord`, `NewChatMessage`, `ChatTurnResult`, Serde
+  camelCase), neues Modul `src-tauri/src/chat.rs` (`build_chat_messages`,
+  `chat_send_impl`, `ChatRuns`-Laufregister, Commands `chat_list`/`chat_messages`/
+  `chat_delete`/`chat_send`/`chat_cancel`, Event `ai:chat_stream`) und die drei
+  Automation-Endpunkte. Tests P1–P10 und D1–D12 in `src-tauri/src/chat/tests.rs`,
+  Provider-Seite über einen lokalen Test-HTTP-Server. `cargo fmt` und `cargo test`
+  (119 bestanden, 1 ignoriert) grün; Mutationsnachweis P4/P7 in einer Kopie unter
+  `/tmp/yts-mut-1a` (beide rot, wenn der Verlauf nicht in `extra_parts` einfließt).
+  Bericht: `.herd/impl-1a-bericht.md`. Etappe 1b (Frontend) und der Release-Build
+  stehen noch aus; kein Dev-Server oder Tauri-Prozess gestartet.
+
 - 2026-09-19: Windows-Befunde vom 2026-09-11 umgesetzt (auf Linux, unter Windows
   noch nicht gegengeprüft): UI-Harness sucht Chrome/Edge/Chromium pro Plattform
   (`CHROMIUM_PATH` hat Vorrang) und weicht bei belegtem Vite-Port aus, daher läuft

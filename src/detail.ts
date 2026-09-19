@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, errorMessage, escapeHtml } from "./dom-utils";
+import { renderChatTab, resetChat } from "./chat";
 import { loadCollections, openCollectionDialog, renderVideoList } from "./library";
 import { getActiveVideo, setBusy, setStatus, state } from "./state";
 import { renderSummaryTab } from "./summary-view";
@@ -23,6 +24,7 @@ export function clearDetail() {
   detailContent.hidden = true;
   detailPlaceholder.hidden = false;
   chaptersPanel.hidden = true;
+  resetChat();
 }
 
 // YouTube liefert seine Streams als H.264/MP4 oder VP8/VP9/WebM ueber die
@@ -359,6 +361,7 @@ export function showDetail(video: Video) {
     : "";
   renderVideoCollections(video);
   renderChapters(video.chapters);
+  void renderChatTab(video);
   switchTab(state.activeTab);
 }
 

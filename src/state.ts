@@ -1,6 +1,15 @@
 import { $ } from "./dom-utils";
 import type { Collection, TabName, Video, VideoStatusFilter } from "./types";
 
+/// Laufende Chat-Anfrage eines Videos. `chatId` ist der Chat, fuer den
+/// gesendet wurde (`null` = neuer Chat), `answer` der bisher gestreamte Text.
+export interface ChatRun {
+  requestId: string;
+  chatId: number | null;
+  question: string;
+  answer: string;
+}
+
 export interface AppState {
   videos: Video[];
   collections: Collection[];
@@ -12,6 +21,9 @@ export interface AppState {
   videoStatusFilter: VideoStatusFilter;
   streamingVideoId: number | null;
   summaryRenderGen: number;
+  activeChatId: number | null;
+  chatRenderGen: number;
+  chatRuns: Map<number, ChatRun>;
 }
 
 export const state: AppState = {
@@ -25,6 +37,9 @@ export const state: AppState = {
   videoStatusFilter: "all",
   streamingVideoId: null,
   summaryRenderGen: 0,
+  activeChatId: null,
+  chatRenderGen: 0,
+  chatRuns: new Map(),
 };
 
 let statusTextEl: HTMLElement | null = null;

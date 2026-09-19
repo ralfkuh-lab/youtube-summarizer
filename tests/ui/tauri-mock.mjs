@@ -42,6 +42,27 @@ export const defaultFixtures = {
       has_transcript: true,
       has_summary: true,
     },
+    {
+      id: 3,
+      video_id: "vid3",
+      url: "https://www.youtube.com/watch?v=vid3",
+      title: "Video Drei (mit Transkript)",
+      thumbnail_url: "https://example.com/thumb3.jpg",
+      thumbnail: null,
+      transcript: "Dies ist das Transkript von Video 3.",
+      chapters: [],
+      summary: null,
+      summary_provider: null,
+      summary_model: null,
+      published_at: "2026-01-03T00:00:00Z",
+      description: "Beschreibung 3",
+      collection_ids: [],
+      created_at: "2026-01-03T00:00:00Z",
+      updated_at: "2026-01-03T00:00:00Z",
+      transcript_error: null,
+      has_transcript: true,
+      has_summary: false,
+    },
   ],
   collections: [],
   aiConfig: {
@@ -75,6 +96,10 @@ export const defaultFixtures = {
       builtin: true,
     },
   ],
+  chat: {
+    answer: "Antwort vom Mock-Modell",
+    error: null,
+  },
 };
 
 export function createMockScript(fixtures = {}, delays = {}) {
@@ -88,6 +113,26 @@ export function createMockScript(fixtures = {}, delays = {}) {
   const initialDelays = ${delaysJson};
   const callbacks = new Map();
   let nextCallbackId = 1;
+  const chatStore = { chats: [], messages: {}, nextChatId: 1 };
+
+  function chatTitle(text) {
+    const normalized = String(text ?? '').trim().split(/\\s+/).join(' ');
+    const chars = [...normalized];
+    return chars.length > 60 ? chars.slice(0, 60).join('') + '…' : normalized;
+  }
+
+  function chatMessagesOf(chatId) {
+    return chatStore.messages[chatId] || [];
+  }
+
+  function chatsOfVideo(videoId) {
+    return chatStore.chats
+      .filter((chat) => chat.videoId === videoId)
+      .sort((a, b) => {
+        if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
+        return b.id - a.id;
+      });
+  }
 
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
     unregisterListener: () => {},
@@ -205,6 +250,78 @@ export function createMockScript(fixtures = {}, delays = {}) {
         }
         if (cmd === 'summary_presets_list') {
           return JSON.parse(JSON.stringify(this.fixtures.summaryPresets || []));
+        }
+        if (cmd === 'ai_auth_status') {
+          return {};
+        }
+        if (cmd === 'chat_list') {
+          const chats = chatsOfVideo(args?.videoId);
+          callRecord.result = chats;
+          return JSON.parse(JSON.stringify(chats));
+        }
+        if (cmd === 'chat_messages') {
+          const messages = chatMessagesOf(args?.chatId);
+          callRecord.result = messages;
+          return JSON.parse(JSON.stringify(messages));
+        }
+        if (cmd === 'chat_send') {
+          const chatFixture = this.fixtures.chat || {};
+          if (chatFixture.error) {
+            throw new Error(chatFixture.error);
+          }
+          const now = new Date().toISOString();
+          let chat = chatStore.chats.find((item) => item.id === args?.chatId);
+          if (args?.chatId !== null && args?.chatId !== undefined && !chat) {
+            throw new Error('Chat wurde gelöscht');
+          }
+          if (!chat) {
+            chat = {
+              id: chatStore.nextChatId++,
+              videoId: args.videoId,
+              title: chatTitle(args.text),
+              createdAt: now,
+              updatedAt: now,
+            };
+            chatStore.chats.push(chat);
+            chatStore.messages[chat.id] = [];
+          } else {
+            chat.updatedAt = now;
+          }
+          const answer = chatFixture.answer !== undefined ? chatFixture.answer : 'Antwort vom Mock-Modell';
+          const messages = chatStore.messages[chat.id];
+          messages.push({
+            id: messages.length + 1,
+            chatId: chat.id,
+            role: 'user',
+            content: String(args.text).trim(),
+            toolCalls: null,
+            toolCallId: null,
+            provider: null,
+            model: null,
+            createdAt: now,
+          });
+          messages.push({
+            id: messages.length + 1,
+            chatId: chat.id,
+            role: 'assistant',
+            content: answer,
+            toolCalls: null,
+            toolCallId: null,
+            provider: 'openai',
+            model: 'gpt-4o',
+            createdAt: now,
+          });
+          const result = { chat, messages };
+          callRecord.result = result;
+          return JSON.parse(JSON.stringify(result));
+        }
+        if (cmd === 'chat_cancel') {
+          return null;
+        }
+        if (cmd === 'chat_delete') {
+          chatStore.chats = chatStore.chats.filter((chat) => chat.id !== args?.chatId);
+          delete chatStore.messages[args?.chatId];
+          return null;
         }
 
         throw new Error('Unhandled Tauri mock command: ' + cmd + ' with args: ' + JSON.stringify(args));

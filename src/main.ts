@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import "./styles.css";
 import "./settings-ai.css";
 import { applyConfig, bindAiConfigEvents, initAiConfig, type AiConfig } from "./ai-config";
+import { bindChatEvents } from "./chat";
 import { bindDetailEvents, initDetail } from "./detail";
 import { $, errorMessage } from "./dom-utils";
 import {
@@ -67,6 +68,7 @@ function bindEvents() {
   bindDetailEvents();
   bindSummaryDialogEvents();
   bindSummaryViewEvents();
+  bindChatEvents();
 
   bindEscapeToCloseModals();
 
