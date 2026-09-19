@@ -10,6 +10,9 @@ import { getActiveVideo, setBusy, setStatus, state } from "./state";
 import type { AgentHandoff, AgentTemplate } from "./types";
 
 let handoff: AgentHandoff | null = null;
+/// Zaehlt jede Vorbereitung. Nur die juengste Antwort darf Feld, Zwischenablage
+/// und Status aendern (H4b).
+let prepareGeneration = 0;
 
 async function startHandoff() {
   const video = getActiveVideo();
@@ -25,27 +28,30 @@ async function startHandoff() {
   }
 }
 
-/// Vorbereiten, kopieren, Dialog öffnen. Der Dialog öffnet **immer**, auch wenn
+/// Vorbereiten, kopieren, Dialog oeffnen. Der Dialog oeffnet **immer**, auch wenn
 /// beide Kopierwege scheitern.
 async function prepareAndCopy(templateId: string | null, openDialog: boolean) {
   const video = getActiveVideo();
   if (!video) return;
+  const videoId = video.id;
+  const generation = ++prepareGeneration;
   const prepared = await invoke<AgentHandoff>("agent_prepare", {
-    videoId: video.id,
+    videoId,
     templateId,
   });
-  handoff = prepared;
+  // (a) Videowechsel waehrend `agent_prepare`: Ergebnis verwerfen.
+  if (generation !== prepareGeneration || getActiveVideo()?.id !== videoId) return;
   const copied = await copyText(prepared.command);
+  // (b) Schneller Vorlagenwechsel: die juengere Antwort gewinnt.
+  if (generation !== prepareGeneration || getActiveVideo()?.id !== videoId) return;
+  handoff = prepared;
   if (openDialog) {
     showModal("#agentModal");
   }
   renderTemplateOptions(templateId ?? getAgentView()?.config.activeTemplate ?? null);
   updateDialog();
-  setStatus(
-    copied
-      ? `Kommando kopiert – Kontext liegt in ${prepared.workdir}`
-      : `Kontext liegt in ${prepared.workdir} – Kommando im Dialog markieren und kopieren`,
-  );
+  updateCopyHint(copied);
+  setStatus(copyStatus(copied, prepared.workdir));
 }
 
 async function reprepare() {
@@ -61,11 +67,21 @@ async function reprepare() {
 async function copyFromDialog() {
   if (!handoff) return;
   const copied = await copyText(handoff.command);
-  setStatus(
-    copied
-      ? `Kommando kopiert – Kontext liegt in ${handoff.workdir}`
-      : `Kontext liegt in ${handoff.workdir} – Kommando im Dialog markieren und kopieren`,
-  );
+  updateCopyHint(copied);
+  setStatus(copyStatus(copied, handoff.workdir));
+}
+
+function copyStatus(copied: boolean, workdir: string): string {
+  return copied
+    ? `Kommando kopiert – Kontext liegt in ${workdir}`
+    : `Kontext liegt in ${workdir} – Kommando im Dialog markieren und kopieren`;
+}
+
+/// Die Hinweiszeile im Dialog haengt am Kopiererfolg (H3).
+function updateCopyHint(copied: boolean) {
+  $("#agentCopyHint").textContent = copied
+    ? "Das Kommando wurde in die Zwischenablage kopiert; die App startet nichts selbst."
+    : "Kommando bitte markieren und kopieren; die App startet nichts selbst.";
 }
 
 async function revealContext() {
@@ -151,6 +167,7 @@ function renderShellHint() {
 /// stehen bleiben.
 export function resetAgentHandoff() {
   handoff = null;
+  prepareGeneration += 1;
   const field = document.querySelector<HTMLTextAreaElement>("#agentCommand");
   if (field) field.value = "";
   const path = document.querySelector<HTMLElement>("#agentContextPath");

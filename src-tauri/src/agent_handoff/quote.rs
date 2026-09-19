@@ -42,10 +42,13 @@ impl Shell {
     }
 }
 
-/// Steuerzeichen laut Spezifikation: `\0`-`\x1f` und `\x7f`. Die C1-Bereichs-
-/// zeichen (`\x80`-`\x9f`) sind bewusst nicht enthalten.
+/// Steuerzeichen laut Spezifikation: `\0`-`\x1f`, `\x7f` sowie die
+/// Zeilentrenner U+2028 und U+2029. Die C1-Bereichszeichen (`\x80`-`\x9f`)
+/// sind bewusst nicht enthalten.
 pub fn has_forbidden_control(value: &str) -> bool {
-    value.chars().any(|ch| ch < ' ' || ch == '\u{7f}')
+    value
+        .chars()
+        .any(|ch| ch < ' ' || ch == '\u{7f}' || ch == '\u{2028}' || ch == '\u{2029}')
 }
 
 /// Maskiert einen Wert fuer die angegebene Shell.

@@ -37,7 +37,7 @@ impl Values {
         }
     }
 
-    /// Jeder Wert muss einzeilig sein (`\0`-`\x1f`, `\x7f`).
+    /// Jeder Wert muss einzeilig sein (`\0`-`\x1f`, `\x7f`, U+2028, U+2029).
     pub fn validate(&self) -> AppResult<()> {
         for name in PLACEHOLDERS {
             let value = self.get(name).unwrap_or_default();
@@ -93,32 +93,48 @@ pub fn valid_video_id(video_id: &str) -> bool {
 }
 
 /// Basisverzeichnis der Kontexte: leer -> `<Home>/yt-agent`, fuehrendes `~`
-/// bzw. `~/` -> Home, sonst wie angegeben.
+/// bzw. `~/` -> Home. Nach der `~`-Aufloesung wird ein nicht absoluter Pfad
+/// gegen das Home-Verzeichnis aufgeloest, damit App und Terminal dasselbe
+/// Verzeichnis meinen.
 pub fn resolve_workdir_base(base: &str, home: &Path) -> PathBuf {
-    if base.is_empty() {
-        return home.join("yt-agent");
+    let resolved = if base.is_empty() {
+        home.join("yt-agent")
+    } else if base == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = base.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(base)
+    };
+    if resolved.is_absolute() {
+        resolved
+    } else {
+        home.join(resolved)
     }
-    if base == "~" {
-        return home.to_path_buf();
-    }
-    if let Some(rest) = base.strip_prefix("~/") {
-        return home.join(rest);
-    }
-    PathBuf::from(base)
 }
 
 /// `<titel-slug>-<video_id>` (bzw. nur die Video-ID, wenn der Titel nichts
-/// hergibt).
+/// hergibt). Ein reservierter Geraetename wird in jedem Fall mit `v-`
+/// entschaerft - auch wenn erst die Video-ID den Namen ergibt.
 pub fn slug(title: &str, video_id: &str) -> String {
     let mut title_slug = title_slug(title);
-    if WINDOWS_RESERVED.contains(&title_slug.as_str()) {
+    if is_windows_reserved(&title_slug) {
         title_slug = format!("v-{title_slug}");
     }
-    if title_slug.is_empty() {
+    let slug = if title_slug.is_empty() {
         video_id.to_string()
     } else {
         format!("{title_slug}-{video_id}")
+    };
+    if is_windows_reserved(&slug) {
+        format!("v-{slug}")
+    } else {
+        slug
     }
+}
+
+fn is_windows_reserved(name: &str) -> bool {
+    WINDOWS_RESERVED.contains(&name)
 }
 
 /// Slug-Schritte 1-4: NFC-nahe Komposition, Kleinschreibung, Transliteration,
@@ -193,13 +209,13 @@ fn is_combining_mark(ch: char) -> bool {
     ('\u{0300}'..='\u{036f}').contains(&ch)
 }
 
-/// Prompt fuer die Aufloesung: Zeilenumbrueche zu einem Leerzeichen,
-/// `{context_file}` roh eingesetzt, alles andere bleibt woertlich.
+/// Prompt fuer die Aufloesung: Zeilenumbrueche **und Tabulatoren** zu einem
+/// Leerzeichen, `{context_file}` roh eingesetzt, alles andere bleibt woertlich.
 pub fn normalize_prompt(prompt: &str, context_file: &str) -> String {
     let mut single_line = String::with_capacity(prompt.len());
     for ch in prompt.chars() {
         match ch {
-            '\r' | '\n' | '\u{2028}' | '\u{2029}' => single_line.push(' '),
+            '\r' | '\n' | '\t' | '\u{2028}' | '\u{2029}' => single_line.push(' '),
             ch => single_line.push(ch),
         }
     }

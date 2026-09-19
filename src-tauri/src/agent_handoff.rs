@@ -38,6 +38,9 @@ pub struct AgentConfigView {
     /// Eingebaute Vorlagen der wirksamen Shell.
     pub builtin_templates: Vec<AgentTemplate>,
     pub default_workdir_base: String,
+    /// Standard-Prompt: der Benutzer soll sehen, was bei leerem Feld gesendet
+    /// wird.
+    pub default_prompt: String,
     pub effective_shell: String,
 }
 
@@ -94,6 +97,7 @@ fn config_view(paths: &AppPaths) -> AgentConfigView {
         config,
         builtin_templates: config::builtin_templates(shell),
         default_workdir_base: to_string(&home_dir().join("yt-agent")),
+        default_prompt: config::DEFAULT_PROMPT.to_string(),
         effective_shell: shell.name().to_string(),
     }
 }
@@ -103,6 +107,16 @@ pub fn prepare(
     paths: &AppPaths,
     video_id: i64,
     template_id: Option<String>,
+) -> AppResult<AgentHandoff> {
+    prepare_with_home(paths, video_id, template_id, &home_dir())
+}
+
+/// Wie `prepare`, aber mit vorgegebenem Home-Verzeichnis (Tests).
+pub(crate) fn prepare_with_home(
+    paths: &AppPaths,
+    video_id: i64,
+    template_id: Option<String>,
+    home: &std::path::Path,
 ) -> AppResult<AgentHandoff> {
     let config = config::load(paths);
     let shell = Shell::parse(&config.shell)?;
@@ -118,8 +132,7 @@ pub fn prepare(
         return Err("Ungültige YouTube-ID im Datensatz".to_string());
     }
 
-    let home = home_dir();
-    let workdir = resolve::resolve_workdir_base(&config.workdir_base, &home)
+    let workdir = resolve::resolve_workdir_base(&config.workdir_base, home)
         .join(resolve::slug(&video.title, &video.video_id));
     let context_path = workdir.join("context.md");
     let context_file = to_string(&context_path);

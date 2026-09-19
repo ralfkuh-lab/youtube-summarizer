@@ -56,7 +56,10 @@ function render() {
   $<HTMLSelectElement>("#agentShell").value = view.config.shell;
   $<HTMLSelectElement>("#agentSummaries").value = view.config.summaries;
   $<HTMLInputElement>("#agentIncludeChats").checked = view.config.includeChats;
-  $<HTMLTextAreaElement>("#agentPrompt").value = view.config.prompt;
+  const prompt = $<HTMLTextAreaElement>("#agentPrompt");
+  prompt.value = view.config.prompt;
+  // Der Standard-Prompt ist vollstaendig lesbar, solange das Feld leer ist (H6).
+  prompt.placeholder = view.defaultPrompt;
   renderActiveTemplates();
   renderCustomTemplates();
   if (!editorOpen) void updatePreview();
@@ -239,6 +242,11 @@ export function bindAgentSettingsEvents() {
   $("#agentPromptReset").addEventListener("click", () => {
     // Leerer Prompt = Standard-Prompt des Backends.
     $<HTMLTextAreaElement>("#agentPrompt").value = "";
+    void saveFromForm("#agentSettingsError");
+  });
+  $("#agentPromptUseDefault").addEventListener("click", () => {
+    // Standard-Prompt zum Bearbeiten in das Feld uebernehmen.
+    $<HTMLTextAreaElement>("#agentPrompt").value = view?.defaultPrompt ?? "";
     void saveFromForm("#agentSettingsError");
   });
   $("#agentTemplateNew").addEventListener("click", () => openEditor(null));

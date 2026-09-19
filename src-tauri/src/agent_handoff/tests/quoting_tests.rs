@@ -112,7 +112,16 @@ fn q9_backslash_before_apostrophe() {
 
 #[test]
 fn q5_control_characters_are_rejected() {
-    for value in ["a\nb", "a\rb", "a\0b", "a\u{1b}b", "a\tb", "\u{7f}"] {
+    for value in [
+        "a\nb",
+        "a\rb",
+        "a\0b",
+        "a\u{1b}b",
+        "a\tb",
+        "\u{7f}",
+        "a\u{2028}b",
+        "a\u{2029}b",
+    ] {
         for shell in [Shell::Posix, Shell::Fish, Shell::Powershell] {
             assert!(
                 shell_quote(value, shell).is_err(),
@@ -176,6 +185,22 @@ fn s3_prompt_becomes_one_line_and_keeps_video_id() {
     let command = resolve_command("claude {prompt}", &values, Shell::Posix).unwrap();
     assert!(!command.contains('\n') && !command.contains('\r'));
     assert_eq!(command, "claude 'Zeile1  Zeile2 {video_id} Zeile3'");
+}
+
+/// Tabulatoren im Prompt werden zu einem Leerzeichen, statt die Aufloesung
+/// mit `Ungueltige Zeichen im Wert prompt` abzubrechen.
+#[test]
+fn h7_tab_in_prompt_becomes_a_space() {
+    let prompt = normalize_prompt("Spalte1\tSpalte2", "/tmp/c.md");
+    assert_eq!(prompt, "Spalte1 Spalte2");
+    let values = Values {
+        prompt,
+        ..sample_values()
+    };
+    let command = resolve_command("claude {prompt}", &values, Shell::Posix).unwrap();
+    assert_eq!(command, "claude 'Spalte1 Spalte2'");
+    // Auch mit Tabulator bleibt der Wert ein einziges Argument.
+    assert_eq!(command.matches("'Spalte1 Spalte2'").count(), 1);
 }
 
 #[test]

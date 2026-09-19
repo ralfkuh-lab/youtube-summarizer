@@ -86,6 +86,11 @@ test("G1: Klick ruft agent_prepare, kopiert und zeigt Dialog samt Erfolgsstatus"
       "das Kommandofeld zeigt das Kommando",
     );
     assert.strictEqual(await page.locator("#agentCommand").getAttribute("readonly"), "");
+    assert.strictEqual(
+      await page.locator("#agentCopyHint").textContent(),
+      "Das Kommando wurde in die Zwischenablage kopiert; die App startet nichts selbst.",
+      "Erfolgshinweis im Dialog",
+    );
 
     const status = await page.locator("#statusText").textContent();
     assert.strictEqual(
@@ -133,6 +138,20 @@ test("G2b: beide Kopierwege scheitern – Dialog bleibt, Status ohne „kopiert�
     assert.strictEqual(
       status,
       `Kontext liegt in ${AGENT.prepare.workdir} – Kommando im Dialog markieren und kopieren`,
+    );
+    assert.strictEqual(
+      await page.locator("#agentCopyHint").textContent(),
+      "Kommando bitte markieren und kopieren; die App startet nichts selbst.",
+      "Hinweiszeile darf keinen Kopiererfolg behaupten (H3)",
+    );
+
+    // Der Button „Kopieren“ behauptet weiterhin keinen Erfolg: beide Wege
+    // scheitern auch dort.
+    await page.locator("#agentCopy").click();
+    await mock.waitForPending();
+    assert.strictEqual(
+      await page.locator("#agentCopyHint").textContent(),
+      "Kommando bitte markieren und kopieren; die App startet nichts selbst.",
     );
   });
 });
@@ -273,7 +292,92 @@ test("G9: Button ist waehrend setBusy deaktiviert", async () => {
   });
 });
 
-test("G10: Fehler aus agent_prepare landet im Status", async () => {
+test("G10: Videowechsel waehrend agent_prepare verwirft das Ergebnis", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await selectVideo(page, 2);
+    await mock.waitForPending();
+    await mock.setDelays({ agent_prepare: { 2: 300 } });
+
+    await page.locator("#agentHandoffBtn").click();
+    // Waehrend der Vorbereitung auf Video 3 wechseln.
+    await page.locator('.video-item[data-id="3"]').click();
+    await mock.waitForPending();
+
+    assert.strictEqual(await page.locator("#agentModal").isVisible(), false, "kein Dialog");
+    assert.deepEqual(
+      await page.evaluate(() => window.__copied),
+      [],
+      "es darf nichts kopiert werden",
+    );
+    const status = await page.locator("#statusText").textContent();
+    assert.ok(!status.includes("Kontext liegt in"), `kein Handoff-Status: "${status}"`);
+  });
+});
+
+test("G11: nur die juengste Vorlagen-Antwort aktualisiert Feld und Zwischenablage", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+    assert.strictEqual(await page.locator("#agentCommand").inputValue(), AGENT.prepare.command);
+
+    // Vorlage A (codex) ist langsam, Vorlage B (claude) schnell.
+    await mock.setFixtures({ agent: { ...AGENT, prepareDelays: { codex: 300 } } });
+    await page.locator("#agentTemplate").selectOption("codex");
+    await page.locator("#agentTemplate").selectOption("claude");
+    await mock.waitForPending();
+
+    const claude = AGENT.prepareByTemplate.claude.command;
+    const codex = AGENT.prepareByTemplate.codex.command;
+    assert.strictEqual(
+      await page.locator("#agentCommand").inputValue(),
+      claude,
+      "das Feld zeigt die juengste Antwort",
+    );
+    const copied = await page.evaluate(() => window.__copied);
+    assert.strictEqual(copied[copied.length - 1], claude, "zuletzt kopiert wird die juengste Antwort");
+    assert.ok(!copied.includes(codex), `die ueberholte Antwort darf nichts kopieren: ${JSON.stringify(copied)}`);
+  });
+});
+
+test("G12: Standard-Prompt ist als Platzhalter sichtbar und uebernehmbar", async () => {
+  await withApp(async (page, mock) => {
+    await openAgentSettings(page, mock);
+    const prompt = page.locator("#agentPrompt");
+    assert.strictEqual(await prompt.inputValue(), "", "das Feld ist zunaechst leer");
+    assert.strictEqual(
+      await prompt.getAttribute("placeholder"),
+      AGENT.view.defaultPrompt,
+      "der Standard-Prompt steht vollstaendig als Platzhalter",
+    );
+    assert.strictEqual(await prompt.getAttribute("rows"), "8", "Feldhoehe fuer den langen Text");
+
+    await page.locator("#agentPromptUseDefault").click();
+    await mock.waitForPending();
+    assert.strictEqual(await prompt.inputValue(), AGENT.view.defaultPrompt);
+    const set = callsOf(await mock.getCalls(), "agent_config_set");
+    assert.strictEqual(set[set.length - 1].args.config.prompt, AGENT.view.defaultPrompt);
+  });
+});
+
+test("G13: Das Vorlagenformular erscheint nur nach Anlegen oder Bearbeiten", async () => {
+  await withApp(async (page, mock) => {
+    await openAgentSettings(page, mock);
+    assert.strictEqual(
+      await page.locator("#agentTemplateEdit").isVisible(),
+      false,
+      "initial muss das Formular verborgen sein",
+    );
+
+    await page.locator("#agentTemplateNew").click();
+    assert.strictEqual(await page.locator("#agentTemplateEdit").isVisible(), true);
+
+    await page.locator("#agentTemplateCancel").click();
+    assert.strictEqual(await page.locator("#agentTemplateEdit").isVisible(), false);
+  });
+});
+
+test("G14: Fehler aus agent_prepare landet im Status", async () => {
   const agent = { ...AGENT, prepareError: "Vorlage nicht gefunden" };
   await withApp(
     async (page, mock) => {
@@ -291,7 +395,7 @@ test("G10: Fehler aus agent_prepare landet im Status", async () => {
   );
 });
 
-test("G11: Einstellungen speichern Arbeitsverzeichnis und Shell", async () => {
+test("G15: Einstellungen speichern Arbeitsverzeichnis und Shell", async () => {
   await withApp(async (page, mock) => {
     await openAgentSettings(page, mock);
 

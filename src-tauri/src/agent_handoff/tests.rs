@@ -3,14 +3,18 @@
 //! Kontextdatei liegen in den Untermodulen.
 
 mod context_tests;
+mod prepare_tests;
 mod quoting_tests;
+
+use std::collections::BTreeMap;
 
 use tempfile::TempDir;
 
-use crate::models::Video;
+use crate::models::{Chat, ChatMessageRecord, NewVideo, Summary, Video};
 use crate::storage::AppPaths;
 
 use super::config::{self, AgentConfig, AgentTemplate, DEFAULT_PROMPT, MAX_PROMPT_CHARS};
+use super::context::{self, ContextSources};
 use super::quote::Shell;
 use super::resolve::{normalize_prompt, slug, title_slug, Values};
 
@@ -23,6 +27,72 @@ pub(crate) fn temp_paths() -> (TempDir, AppPaths) {
     crate::storage::init_db(&paths).unwrap();
     (temp, paths)
 }
+
+pub(crate) const EXPORTED: &str = "2026-09-19T12:00:00Z";
+
+pub(crate) fn render(video: &Video) -> String {
+    render_with(video, &[], &[], &BTreeMap::new(), "latest", false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_with(
+    video: &Video,
+    summaries: &[Summary],
+    chats: &[Chat],
+    messages: &BTreeMap<i64, Vec<ChatMessageRecord>>,
+    summary_mode: &str,
+    include_chats: bool,
+) -> String {
+    context::render(&ContextSources {
+        video,
+        summaries,
+        chats,
+        messages,
+        summary_mode,
+        include_chats,
+        exported_at: EXPORTED,
+    })
+}
+
+pub(crate) fn integration_video(video_id: &str, title: &str) -> NewVideo {
+    NewVideo {
+        video_id: video_id.to_string(),
+        url: format!("https://www.youtube.com/watch?v={video_id}"),
+        title: title.to_string(),
+        thumbnail_url: "https://example.com/t.jpg".to_string(),
+        thumbnail_data: None,
+        transcript: Some(r#"[{"text":"hallo welt","start":0.0,"time":"0:00"}]"#.to_string()),
+        chapters: None,
+        published_at: None,
+        description: None,
+        transcript_error: None,
+    }
+}
+
+pub(crate) fn store_config(
+    paths: &crate::storage::AppPaths,
+    base: &std::path::Path,
+    template: &str,
+) {
+    let config = AgentConfig {
+        workdir_base: base.to_string_lossy().into_owned(),
+        active_template: "test".to_string(),
+        custom_templates: vec![AgentTemplate {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            command: template.to_string(),
+        }],
+        ..AgentConfig::default()
+    };
+    config::save(paths, &config).unwrap();
+}
+
+pub(crate) fn read_context(paths: &crate::storage::AppPaths, video_id: i64) -> String {
+    let handoff = super::prepare(paths, video_id, None).unwrap();
+    std::fs::read_to_string(handoff.context_file).unwrap()
+}
+
+// --------------------------------------------------------------------------- A --
 
 pub(crate) fn sample_video() -> Video {
     Video {
@@ -113,6 +183,11 @@ fn a6_windows_reserved_names_get_a_prefix() {
     assert_eq!(slug("nul", "vid1"), "v-nul-vid1");
     assert_eq!(slug("com7", "vid1"), "v-com7-vid1");
     assert_eq!(slug("Konsole", "vid1"), "konsole-vid1");
+    // Auch der reine ID-Fall (Titel ohne Buchstaben/Ziffern) wird entschaerft.
+    assert_eq!(slug("🎬", "con"), "v-con");
+    assert_eq!(slug("   ", "nul"), "v-nul");
+    assert_eq!(slug("🎬🎥", "com1"), "v-com1");
+    assert_eq!(slug("🎬", "vid1"), "vid1");
 }
 
 #[test]
@@ -145,10 +220,26 @@ fn workdir_base_resolution() {
         super::resolve::resolve_workdir_base("/srv/yt agent/it's", home),
         std::path::PathBuf::from("/srv/yt agent/it's")
     );
+    // Relative Angaben gelten ab dem Home-Verzeichnis (H2), auch ein
+    // woertliches `~user`, das nicht aufgeloest wird.
+    assert_eq!(
+        super::resolve::resolve_workdir_base("yt-agent", home),
+        std::path::PathBuf::from("/home/test/yt-agent")
+    );
+    assert_eq!(
+        super::resolve::resolve_workdir_base("unter/ordner", home),
+        std::path::PathBuf::from("/home/test/unter/ordner")
+    );
     assert_eq!(
         super::resolve::resolve_workdir_base("~user/yt", home),
-        std::path::PathBuf::from("~user/yt")
+        std::path::PathBuf::from("/home/test/~user/yt")
     );
+    for base in ["", "~", "~/yt", "/srv/yt", "yt-agent", "~user/yt"] {
+        assert!(
+            super::resolve::resolve_workdir_base(base, home).is_absolute(),
+            "{base:?} muss absolut sein"
+        );
+    }
 }
 
 // ------------------------------------------------------------------ Konfiguration --

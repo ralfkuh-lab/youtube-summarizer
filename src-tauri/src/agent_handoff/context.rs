@@ -118,10 +118,16 @@ fn summary_blocks(sources: &ContextSources<'_>) -> Vec<(&'static str, String)> {
 }
 
 fn chat_blocks(sources: &ContextSources<'_>) -> Vec<(&'static str, String)> {
-    sources
-        .chats
-        .iter()
-        .rev()
+    // "Aelteste zuerst" heisst `created_at` aufsteigend; die Speicherreihen-
+    // folge (`updated_at DESC`) ist dafuer unerheblich.
+    let mut chats: Vec<&Chat> = sources.chats.iter().collect();
+    chats.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then(left.id.cmp(&right.id))
+    });
+    chats
+        .into_iter()
         .map(|chat| {
             let mut lines = vec![chat.title.trim().to_string()];
             for message in sources.messages.get(&chat.id).into_iter().flatten() {

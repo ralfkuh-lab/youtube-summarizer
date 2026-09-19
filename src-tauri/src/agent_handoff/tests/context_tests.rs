@@ -1,226 +1,11 @@
-//! Integrationsfaelle: A4, A7-A9b, S4 und C1-C5.
+//! C1-C5: Aufbau der Kontextdatei.
 
 use std::collections::BTreeMap;
 
-use crate::models::{Chapter, Chat, ChatMessageRecord, NewChatMessage, NewVideo, Summary, Video};
+use crate::models::{Chapter, NewChatMessage};
 
-use super::super::config::{self, AgentConfig, AgentTemplate};
-use super::super::context::{self, ContextSources};
-use super::super::quote::Shell;
-use super::{sample_video, temp_paths};
-
-const EXPORTED: &str = "2026-09-19T12:00:00Z";
-
-fn render(video: &Video) -> String {
-    render_with(video, &[], &[], &BTreeMap::new(), "latest", false)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_with(
-    video: &Video,
-    summaries: &[Summary],
-    chats: &[Chat],
-    messages: &BTreeMap<i64, Vec<ChatMessageRecord>>,
-    summary_mode: &str,
-    include_chats: bool,
-) -> String {
-    context::render(&ContextSources {
-        video,
-        summaries,
-        chats,
-        messages,
-        summary_mode,
-        include_chats,
-        exported_at: EXPORTED,
-    })
-}
-
-fn integration_video(video_id: &str, title: &str) -> NewVideo {
-    NewVideo {
-        video_id: video_id.to_string(),
-        url: format!("https://www.youtube.com/watch?v={video_id}"),
-        title: title.to_string(),
-        thumbnail_url: "https://example.com/t.jpg".to_string(),
-        thumbnail_data: None,
-        transcript: Some(r#"[{"text":"hallo welt","start":0.0,"time":"0:00"}]"#.to_string()),
-        chapters: None,
-        published_at: None,
-        description: None,
-        transcript_error: None,
-    }
-}
-
-fn store_config(paths: &crate::storage::AppPaths, base: &std::path::Path, template: &str) {
-    let config = AgentConfig {
-        workdir_base: base.to_string_lossy().into_owned(),
-        active_template: "test".to_string(),
-        custom_templates: vec![AgentTemplate {
-            id: "test".to_string(),
-            name: "Test".to_string(),
-            command: template.to_string(),
-        }],
-        ..AgentConfig::default()
-    };
-    config::save(paths, &config).unwrap();
-}
-
-fn read_context(paths: &crate::storage::AppPaths, video_id: i64) -> String {
-    let handoff = super::super::prepare(paths, video_id, None).unwrap();
-    std::fs::read_to_string(handoff.context_file).unwrap()
-}
-
-// --------------------------------------------------------------------------- A --
-
-#[test]
-fn a4_invalid_video_id_writes_nothing() {
-    let (temp, paths) = temp_paths();
-    let video =
-        crate::storage::insert_video(&paths, integration_video("../../etc", "Titel")).unwrap();
-    let base = temp.path().join("agent");
-    store_config(&paths, &base, "cd {workdir} && claude {prompt}");
-
-    let error = super::super::prepare(&paths, video.id, None).unwrap_err();
-    assert_eq!(error, "Ungültige YouTube-ID im Datensatz");
-    assert!(!base.exists(), "es darf nichts angelegt werden");
-}
-
-#[cfg(unix)]
-#[test]
-fn a7_context_file_replaces_a_symlink_and_leaves_siblings() {
-    let (temp, paths) = temp_paths();
-    let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000001", "Titel")).unwrap();
-    let base = temp.path().join("agent");
-    store_config(&paths, &base, "cd {workdir} && claude {prompt}");
-
-    let workdir = base.join("titel-vid00000001");
-    std::fs::create_dir_all(&workdir).unwrap();
-    std::fs::write(workdir.join("notizen.md"), "bleibt").unwrap();
-    let secret = workdir.join("geheim.txt");
-    std::fs::write(&secret, "SECRET").unwrap();
-    std::os::unix::fs::symlink(&secret, workdir.join("context.md")).unwrap();
-
-    let handoff = super::super::prepare(&paths, video.id, None).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(&secret).unwrap(),
-        "SECRET",
-        "das Symlink-Ziel bleibt unberuehrt"
-    );
-    assert_eq!(
-        std::fs::read_to_string(workdir.join("notizen.md")).unwrap(),
-        "bleibt"
-    );
-    let metadata = std::fs::symlink_metadata(&handoff.context_file).unwrap();
-    assert!(
-        metadata.file_type().is_file(),
-        "context.md ist eine regulaere Datei"
-    );
-}
-
-#[test]
-fn a8_title_never_reaches_the_command() {
-    let (temp, paths) = temp_paths();
-    let video = crate::storage::insert_video(
-        &paths,
-        integration_video("vid00000002", "\"; touch /tmp/PWNED"),
-    )
-    .unwrap();
-    let base = temp.path().join("agent");
-    store_config(&paths, &base, "cd {workdir} && claude {prompt}");
-
-    let handoff = super::super::prepare(&paths, video.id, None).unwrap();
-    assert!(!handoff.command.contains("PWNED"), "{}", handoff.command);
-    assert!(
-        !handoff.command.contains("/tmp/PWNED"),
-        "{}",
-        handoff.command
-    );
-    assert!(
-        !handoff.command.contains("\"; touch"),
-        "{}",
-        handoff.command
-    );
-    assert!(handoff.command.contains("claude '"));
-}
-
-#[test]
-fn a9a_workdir_base_with_spaces_and_apostrophe_string_oracle() {
-    let (temp, paths) = temp_paths();
-    let video = crate::storage::insert_video(
-        &paths,
-        integration_video("abc_-123", "Jev explained in 7min.."),
-    )
-    .unwrap();
-    let base = temp.path().join("agent it's");
-    store_config(&paths, &base, "cd {workdir} && claude {prompt}");
-
-    let handoff = super::super::prepare(&paths, video.id, None).unwrap();
-    let workdir = format!("{}/jev-explained-in-7min-abc_-123", base.to_string_lossy());
-    let context_file = format!("{workdir}/context.md");
-    let prompt = super::super::resolve::normalize_prompt(
-        super::super::config::DEFAULT_PROMPT,
-        &context_file,
-    );
-    let expected = format!(
-        "cd '{}' && claude '{}'",
-        workdir.replace('\'', r"'\''"),
-        prompt.replace('\'', r"'\''")
-    );
-    assert_eq!(handoff.command, expected);
-    assert_eq!(handoff.workdir, workdir);
-    assert_eq!(handoff.context_file, context_file);
-}
-
-/// A9b: **einzige** Shell-Ausfuehrung im Testbestand. Sie fuehrt nie ein
-/// aufgeloestes Agenten-Kommando aus, sondern nur den Verzeichniswechsel mit
-/// `pwd` in einem vom Test angelegten Verzeichnis.
-#[cfg(unix)]
-#[test]
-fn a9b_quoted_workdir_works_in_a_shell() {
-    let temp = tempfile::TempDir::new().unwrap();
-    let directory = temp.path().join("agent it's");
-    std::fs::create_dir_all(&directory).unwrap();
-    let quoted = super::super::quote::shell_quote(
-        &directory.to_string_lossy(),
-        super::super::quote::Shell::Posix,
-    )
-    .unwrap();
-    let command = format!("cd {quoted} && pwd");
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{command}");
-    let printed = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(printed.trim_end(), directory.to_string_lossy());
-}
-
-#[test]
-fn s4_control_characters_in_workdir_base_write_nothing() {
-    let (temp, paths) = temp_paths();
-    let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000003", "Titel")).unwrap();
-    let base = temp.path().join("agent\nneu");
-    store_config(&paths, &base, "cd {workdir} && claude {prompt}");
-
-    let error = super::super::prepare(&paths, video.id, None).unwrap_err();
-    assert_eq!(error, "Ungültige Zeichen im Wert workdir");
-    assert!(!base.exists());
-    let entries: Vec<String> = std::fs::read_dir(temp.path())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(
-        entries.len(),
-        2,
-        "nur Datenbank und Konfiguration: {entries:?}"
-    );
-    assert!(entries.iter().any(|name| name == "videos.db"));
-    assert!(entries.iter().any(|name| name == "agent.json"));
-}
-
-// --------------------------------------------------------------------------- C --
+use super::super::config::{self, AgentConfig};
+use super::{integration_video, read_context, render, render_with, sample_video, temp_paths};
 
 #[test]
 fn c1_title_stays_inside_its_block() {
@@ -414,6 +199,66 @@ fn c4_all_summaries_and_chats() {
 }
 
 #[test]
+fn h9_chats_are_ordered_by_created_at() {
+    let (temp, paths) = temp_paths();
+    let video =
+        crate::storage::insert_video(&paths, integration_video("vid00000007", "Titel")).unwrap();
+
+    // Chat "Alt" wurde frueher angelegt, aber spaeter aktualisiert; Chat "Neu"
+    // ist umgekehrt. `list_chats` liefert deshalb "Alt" zuerst.
+    let (older, _) = crate::storage::append_chat_turn(
+        &paths,
+        video.id,
+        None,
+        "Chat Alt",
+        vec![NewChatMessage::user("Frage alt")],
+        None,
+    )
+    .unwrap();
+    let (newer, _) = crate::storage::append_chat_turn(
+        &paths,
+        video.id,
+        None,
+        "Chat Neu",
+        vec![NewChatMessage::user("Frage neu")],
+        None,
+    )
+    .unwrap();
+
+    let conn = rusqlite::Connection::open(&paths.db_path).unwrap();
+    conn.execute(
+        "UPDATE chats SET created_at = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params!["2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z", older.id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE chats SET created_at = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params!["2026-02-01T00:00:00Z", "2026-02-01T00:00:00Z", newer.id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let listed = crate::storage::list_chats(&paths, video.id).unwrap();
+    assert_eq!(
+        listed[0].id, older.id,
+        "Speicherreihenfolge: neuestes updated_at zuerst"
+    );
+
+    let messages = crate::storage::get_chat_messages(&paths, older.id).unwrap();
+    let mut map = BTreeMap::new();
+    map.insert(older.id, messages);
+    map.insert(
+        newer.id,
+        crate::storage::get_chat_messages(&paths, newer.id).unwrap(),
+    );
+    let file = render_with(&video, &[], &listed, &map, "latest", true);
+    let first = file.find("Chat Alt").unwrap();
+    let second = file.find("Chat Neu").unwrap();
+    assert!(first < second, "created_at aufsteigend: {file}");
+    let _ = temp;
+}
+
+#[test]
 fn c4b_latest_summary_uses_the_video_row() {
     let (_temp, paths) = temp_paths();
     let video =
@@ -470,55 +315,4 @@ fn chapters_and_metadata_blocks_keep_their_order() {
         video.video_id
     )));
     assert!(file.contains("Exportiert: 2026-09-19T12:00:00Z"));
-}
-
-#[test]
-fn missing_video_and_template_errors() {
-    let (temp, paths) = temp_paths();
-    let error = super::super::prepare(&paths, 42, None).unwrap_err();
-    assert_eq!(error, "Video nicht gefunden");
-
-    let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000006", "Titel")).unwrap();
-    let config = AgentConfig {
-        workdir_base: temp.path().to_string_lossy().into_owned(),
-        active_template: "weg".to_string(),
-        ..AgentConfig::default()
-    };
-    config::save(&paths, &config).unwrap();
-    assert_eq!(
-        super::super::prepare(&paths, video.id, None).unwrap_err(),
-        "Vorlage nicht gefunden"
-    );
-    assert_eq!(
-        super::super::prepare(&paths, video.id, Some("gibt-es-nicht".to_string())).unwrap_err(),
-        "Vorlage nicht gefunden"
-    );
-    // Die eingebaute Vorlage ist weiterhin waehlbar.
-    assert!(super::super::prepare(&paths, video.id, Some("codex".to_string())).is_ok());
-}
-
-#[test]
-fn write_atomic_targets_a_fresh_path() {
-    let (_temp, paths) = temp_paths();
-    let mut video = sample_video();
-    video.transcript = None;
-    let directory = paths
-        .config_path
-        .parent()
-        .unwrap()
-        .join("agent")
-        .join("slug");
-    let path = directory.join("context.md");
-    context::write_atomic(&path, &render(&video)).unwrap();
-    let first = std::fs::read_to_string(&path).unwrap();
-    context::write_atomic(&path, "zweite Fassung").unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "zweite Fassung");
-    assert!(first.starts_with("# YouTube-Kontext"));
-}
-
-#[test]
-fn shell_selection_matches_the_platform() {
-    assert_eq!(Shell::parse("auto").unwrap(), Shell::platform_default());
-    assert!(Shell::parse("nushell").is_err());
 }

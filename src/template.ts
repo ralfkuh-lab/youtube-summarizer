@@ -224,7 +224,7 @@ export const appTemplate = `
               <label for="agentWorkdirBase">Arbeitsverzeichnis</label>
               <input type="text" id="agentWorkdirBase" class="settings-input" autocomplete="off" spellcheck="false" />
             </div>
-            <p class="settings-hint">Leer lassen für <code id="agentDefaultWorkdir"></code>. Ein führendes <code>~</code> wird zum Home-Verzeichnis aufgelöst.</p>
+            <p class="settings-hint">Leer lassen für <code id="agentDefaultWorkdir"></code>. Ein führendes <code>~</code> wird zum Home-Verzeichnis aufgelöst; relative Angaben gelten ab dem Home-Verzeichnis.</p>
             <div class="settings-row">
               <label for="agentShell">Shell</label>
               <select id="agentShell" class="settings-input">
@@ -253,11 +253,12 @@ export const appTemplate = `
             <div class="settings-row">
               <label for="agentPrompt">Prompt</label>
             </div>
-            <textarea id="agentPrompt" class="settings-input" rows="5"></textarea>
+            <textarea id="agentPrompt" class="settings-input" rows="8"></textarea>
             <div class="settings-ai-toolbar">
+              <button type="button" id="agentPromptUseDefault" class="settings-ai-button">Standard-Prompt übernehmen</button>
               <button type="button" id="agentPromptReset" class="settings-ai-button">Zurücksetzen</button>
-              <span class="settings-hint">Leer = Standard-Prompt</span>
             </div>
+            <p class="settings-hint">Leer = Standard-Prompt (oben als Platzhalter sichtbar).</p>
             <h4 class="settings-section__subtitle">Eigene Vorlagen</h4>
             <div id="agentTemplateList" class="settings-ai-list"></div>
             <div class="settings-ai-toolbar">
@@ -381,7 +382,7 @@ export const appTemplate = `
       <label for="agentCommand">Kommando</label>
       <textarea id="agentCommand" class="agent-command" rows="5" readonly></textarea>
       <p class="settings-hint">Kontextdatei: <code id="agentContextPath"></code></p>
-      <p class="settings-hint">Das Kommando wurde in die Zwischenablage kopiert; die App startet nichts selbst.</p>
+      <p id="agentCopyHint" class="settings-hint"></p>
       <div class="modal-actions">
         <button id="agentCopy">Kopieren</button>
         <button id="agentReveal">Ordner öffnen</button>
