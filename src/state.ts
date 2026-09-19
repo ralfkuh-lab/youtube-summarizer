@@ -77,6 +77,7 @@ export function setBusy(value: boolean, message?: string) {
   state.busy = value;
   $<HTMLButtonElement>("#addBtn").disabled = value;
   $<HTMLButtonElement>("#summarizeBtn").disabled = value;
+  $<HTMLButtonElement>("#agentHandoffBtn").disabled = value;
   $<HTMLButtonElement>("#reloadTranscriptBtn").disabled = value;
   $<HTMLButtonElement>("#deleteBtn").disabled = value;
   $<HTMLButtonElement>("#summaryHistoryDelete").disabled = value;

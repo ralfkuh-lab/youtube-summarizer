@@ -3,6 +3,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import "./styles.css";
 import "./settings-ai.css";
 import { applyConfig, bindAiConfigEvents, initAiConfig, type AiConfig } from "./ai-config";
+import { bindAgentHandoffEvents } from "./agent-handoff";
+import { bindAgentSettingsEvents } from "./agent-settings";
 import { bindChatEvents } from "./chat";
 import { bindDetailEvents, initDetail } from "./detail";
 import { $, errorMessage } from "./dom-utils";
@@ -71,6 +73,8 @@ function bindEvents() {
   bindSummaryViewEvents();
   bindChatEvents();
   bindWebSearchSettingsEvents();
+  bindAgentHandoffEvents();
+  bindAgentSettingsEvents();
 
   bindEscapeToCloseModals();
 
@@ -90,6 +94,7 @@ function bindEvents() {
 // Stapelung ab: liegt ein Dialog ueber einem anderen, geht zuerst der obere zu.
 const ESCAPE_CLOSABLE_MODALS = [
   { modal: "#chatTestModal", close: "#chatTestClose" },
+  { modal: "#agentModal", close: "#agentModalClose" },
   { modal: "#presetEditModal", close: "#presetEditCancel" },
   { modal: "#presetManageModal", close: "#presetManageClose" },
   { modal: "#collectionModal", close: "#collectionCancel" },

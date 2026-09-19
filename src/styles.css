@@ -142,6 +142,7 @@ textarea:focus {
 #addBtn,
 #reloadTranscriptBtn,
 #summarizeBtn,
+#agentHandoffBtn,
 .modal-actions button:first-child {
   min-height: 36px;
   padding: 0 16px;
@@ -155,6 +156,7 @@ textarea:focus {
 #addBtn:hover,
 #reloadTranscriptBtn:hover,
 #summarizeBtn:hover,
+#agentHandoffBtn:hover,
 .modal-actions button:first-child:hover {
   background: var(--accent-strong);
 }
@@ -654,8 +656,64 @@ main {
   font-size: 12px;
 }
 
-#reloadTranscriptBtn + #summarizeBtn {
+#reloadTranscriptBtn + #summarizeBtn,
+#summarizeBtn + #agentHandoffBtn {
   margin-left: 0;
+}
+
+#agentHandoffBtn {
+  font-size: 12px;
+}
+
+.agent-modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-command {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  width: 100%;
+}
+
+.agent-template-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.agent-template-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-template-row button {
+  font-size: 12px;
+}
+
+.settings-agent-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  margin-top: 8px;
+}
+
+.settings-agent-preview {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
+.settings-section__subtitle {
+  margin: 14px 0 4px;
+  font-size: 13px;
 }
 
 #tabContent {

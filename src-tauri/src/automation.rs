@@ -40,6 +40,13 @@ struct ChatRequest {
     context_options: Option<crate::models::ChatContextOptions>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentHandoffRequest {
+    #[serde(default)]
+    template_id: Option<String>,
+}
+
 pub fn start(paths: AppPaths) {
     thread::spawn(move || {
         let listener = match TcpListener::bind("127.0.0.1:0") {
@@ -237,6 +244,14 @@ fn route(
             })();
             write_result(stream, result)
         }
+        _ if method == "POST" && path.starts_with("/api/agent-handoff/") => {
+            let id = parse_id(path, "/api/agent-handoff/")?;
+            let request = parse_body::<AgentHandoffRequest>(body)?;
+            write_result(
+                stream,
+                crate::agent_handoff::prepare(paths, id, request.template_id),
+            )
+        }
         _ if method == "GET" && path.starts_with("/api/chats/") => {
             let video_id = parse_id(path, "/api/chats/")?;
             write_result(stream, storage::list_chats(paths, video_id))
@@ -351,7 +366,7 @@ fn write_json<T: serde::Serialize>(
 
 #[cfg(test)]
 mod tests {
-    use super::ChatRequest;
+    use super::{AgentHandoffRequest, ChatRequest};
 
     /// Der Automation-Endpunkt nimmt den Body in der camelCase-Form der
     /// Tauri-Commands entgegen (chatId/providerId/modelId).
@@ -372,5 +387,16 @@ mod tests {
         assert_eq!(request.chat_id, None);
         assert_eq!(request.provider_id, None);
         assert_eq!(request.model_id, None);
+    }
+
+    /// Der Agenten-Endpunkt nimmt den Body in der camelCase-Form entgegen.
+    #[test]
+    fn r2_agent_handoff_request_accepts_camel_case_body() {
+        let request: AgentHandoffRequest =
+            serde_json::from_str(r#"{"templateId":"codex"}"#).unwrap();
+        assert_eq!(request.template_id.as_deref(), Some("codex"));
+
+        let request: AgentHandoffRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(request.template_id, None);
     }
 }

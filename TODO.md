@@ -39,9 +39,11 @@ tab, and detail tooltip on the 'T' status chip) — spec:
   - [x] Etappe 2a/2b: Websuche per Tool-Calling (SearXNG + Seitenabruf mit Adresssperre, Tool-Schleife, Einstellungs-Tab „Websuche“, Tool-Aktivität im Chat). Reviewt von Grok, Gemini und Opus (Codex fiel wegen Limit aus).
   - [ ] Manuell in der installierten App prüfen: Live-Streaming, Tool-Aktivität während der Anfrage, „Stopp“, Video-/Chatwechsel während einer Anfrage (bisher nur per UI-Tests mit Mock und per Automation-API belegt).
   - [x] Etappe 3: Kontext-Wähler (Transkript an/aus, Mehrfachauswahl der Zusammenfassungs-Versionen pro Chat; Chat auch für Videos ohne Transkript, wenn eine Zusammenfassung existiert). Dazu das Paket aus dem ersten Praxistest: Schlussrunde speichert keine rohe Tool-Syntax mehr (Budget-Ansage, `tool_choice: none`, eine Wiederholung, höchstens 7 Provider-Anfragen), ein aufklappbarer Bereich je Recherche-Schritt, verständliche Websuche-Einstellungen. Reviewt von Grok und Gemini.
-  - [ ] Live-Anzeige während der Generierung: Zwischentexte des Modells erscheinen zwar schon, wirken aber abgeschnitten; nach Abschluss ist die Anzeige korrekt (Beobachtung des Maintainers vom 2026-09-19 mit Websuche). Vor der Umsetzung liefert der Maintainer Screenshots. Vermutete Richtung (ungeprüft): pro Provider-Anfrage beginnt der Stream-Text neu, und die 150-ms-Drossel von `ai:chat_stream` lässt das letzte Stück einer Zwischenrunde aus.
+  - [ ] Live-Anzeige während der Generierung (Beobachtung des Maintainers vom 2026-09-19 mit Screenshot): Es gibt nur eine Live-Blase; bei jeder neuen Provider-Runde beginnt der Stream-Text neu und überschreibt den Zwischentext („Ich recherchiere kurz im Netz“ → „Ich“), die Tool-Zeilen stehen fest darüber. Soll: Live-Anzeige im selben Layout wie die fertige Anzeige (Textblase bleibt stehen, darunter ihre Recherche-Schritte, dann die nächste Blase, Gruppenzeile „Recherche · N Schritte“); Rundennummer im Stream-Event, ungedrosseltes Abschluss-Event je Runde. Auftrag liegt in `.herd/impl-live-auftrag.md`, Umsetzung im Review-Fenster der Agenten-Übergabe.
   - [ ] Später erwägen: Obergrenze für gespeicherte Tool-Ergebnisse (eine voll ausgereizte Recherche-Runde speichert ~240 000 Zeichen, die jede Folgefrage mitsendet); Checkbox „unterstützt Tool-Calling“ für Custom-Modelle (ohne Katalog-Flag bleibt die Websuche ausgegraut).
-- [ ] Video an lokalen Agenten übergeben ([Spec-Entwurf](docs/spec-agent-handoff.md)): Kontextdatei exportieren, Kommando in die Zwischenablage; Spec-Review läuft.
+- [x] Video an lokalen Agenten übergeben ([Spec](docs/spec-agent-handoff.md), Revision 2): Etappe 1 umgesetzt (Backend `src-tauri/src/agent_handoff.rs` + Untermodule, Commands `agent_config_get`/`agent_config_set`/`agent_prepare`/`agent_preview`, Automation-Endpunkt `POST /api/agent-handoff/<id>`, Frontend `src/agent-handoff.ts`/`src/agent-settings.ts`, Einstellungs-Tab „Agent“, UI-Tests G1–G11). Die App startet weiterhin keinen Prozess; das Kommando geht nur in die Zwischenablage.
+  - [ ] Nativer Durchlauf (Linux, WebKitGTK): Export für ein echtes Video, Zwischenablage in der gebauten App prüfen, kopiertes Kommando in einem Terminal ausführen, Agent liest `context.md`. Review und Kreuzreview stehen aus.
+  - [ ] Windows offen: Die PowerShell-Vorlage ist nur als Zeichenkette getestet, nicht unter Windows ausgeführt (siehe `AGENTS.md`).
 - [x] Code-Review vom 2026-09-06 abarbeiten: [Befunde und Abhilfen](docs/code-review-2026-09-06.md).
   - [x] 1: Race Conditions beim Videowechsel und Transkript-Neuladen beheben (Etappe 1).
   - [x] 2: Gemeinsamen KI-Konfigurationszustand verwenden und Speicheränderungen bei Schreibfehlern verhindern (Etappe 2).
@@ -73,6 +75,12 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19 (spät): Agenten-Übergabe, Etappe 1 (Spec Revision 2) umgesetzt. `cargo fmt --check`,
+  `cargo test` (275 bestanden, 4 ignoriert), `npm run build`, `npm run test:ui` (74 bestanden) und
+  `npm run tauri -- build` grün. Fünf Mutationsnachweise (S1, Q2/Q3, Q6/Q9, A4, C2) in einer Kopie
+  unter `/tmp/yts-mut-agent-ds` rot, Referenzläufe grün. Kein nativer Durchlauf mit
+  Zwischenablage/Terminal, kein Agent gestartet; die PowerShell-Vorlage ist nicht ausgeführt.
+  Kein Dev-Server oder Tauri-Prozess läuft.
 - 2026-09-19 (abends): Etappe 3 und Praxistest-Paket abgenommen. `cargo fmt --check`,
   `cargo test` (230 bestanden, 4 ignoriert), `npm run build`, `npm run test:ui`
   (62 bestanden), `npm run tauri -- build` grün. Kein nativer Durchlauf mit echtem Modell

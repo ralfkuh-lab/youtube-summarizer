@@ -109,6 +109,38 @@ export const defaultFixtures = {
     count: 3,
     error: null,
   },
+  agent: {
+    view: {
+      config: {
+        workdirBase: "",
+        shell: "auto",
+        summaries: "latest",
+        includeChats: false,
+        prompt: "",
+        activeTemplate: "claude",
+        customTemplates: [],
+      },
+      builtinTemplates: [
+        { id: "claude", name: "Claude Code", command: "cd {workdir} && claude {prompt}" },
+        { id: "codex", name: "Codex", command: "cd {workdir} && codex {prompt}" },
+      ],
+      defaultWorkdirBase: "/home/user/yt-agent",
+      effectiveShell: "posix",
+    },
+    prepare: {
+      command: "cd '/home/user/yt-agent/video-zwei-vid2' && claude 'Hallo'",
+      workdir: "/home/user/yt-agent/video-zwei-vid2",
+      contextFile: "/home/user/yt-agent/video-zwei-vid2/context.md",
+    },
+    prepareByTemplate: {
+      codex: {
+        command: "cd '/home/user/yt-agent/video-zwei-vid2' && codex 'Hallo'",
+        workdir: "/home/user/yt-agent/video-zwei-vid2",
+        contextFile: "/home/user/yt-agent/video-zwei-vid2/context.md",
+      },
+    },
+    preview: { text: "", error: null },
+  },
 };
 
 export function createMockScript(fixtures = {}, delays = {}) {
@@ -235,6 +267,9 @@ export function createMockScript(fixtures = {}, delays = {}) {
           return null;
         }
         if (cmd === 'plugin:opener|open_url') {
+          return null;
+        }
+        if (cmd === 'plugin:opener|reveal_item_in_dir') {
           return null;
         }
         if (cmd === 'get_videos') {
@@ -394,6 +429,50 @@ export function createMockScript(fixtures = {}, delays = {}) {
             throw new Error(fixture.error);
           }
           return fixture.count !== undefined ? fixture.count : 3;
+        }
+        if (cmd === 'agent_config_get') {
+          const agent = this.fixtures.agent || {};
+          callRecord.result = agent.view;
+          return JSON.parse(JSON.stringify(agent.view));
+        }
+        if (cmd === 'agent_config_set') {
+          const agent = this.fixtures.agent || (this.fixtures.agent = {});
+          if (agent.configSetError) {
+            throw new Error(agent.configSetError);
+          }
+          const config = args?.config || {};
+          const invalid = (config.customTemplates || []).find(
+            (template) => !/\{(prompt|context_file|workdir)\}/.test(template.command || ''),
+          );
+          if (invalid) {
+            // Wie das Backend: ohne Kontext-Platzhalter wird nichts gespeichert.
+            throw new Error('Die Vorlage nutzt keinen Kontext-Platzhalter');
+          }
+          if (agent.view) {
+            agent.view.config = config;
+          }
+          callRecord.result = agent.view;
+          return JSON.parse(JSON.stringify(agent.view));
+        }
+        if (cmd === 'agent_prepare') {
+          const agent = this.fixtures.agent || {};
+          if (agent.prepareError) {
+            throw new Error(agent.prepareError);
+          }
+          const byTemplate = agent.prepareByTemplate || {};
+          const result = (args?.templateId && byTemplate[args.templateId]) || agent.prepare;
+          callRecord.result = result;
+          return JSON.parse(JSON.stringify(result));
+        }
+        if (cmd === 'agent_preview') {
+          const agent = this.fixtures.agent || {};
+          const preview = agent.preview || {};
+          if (preview.error) {
+            throw new Error(preview.error);
+          }
+          const text = preview.text || 'VORSCHAU ' + String(args?.command ?? '');
+          callRecord.result = text;
+          return text;
         }
         if (cmd === 'chat_cancel') {
           cancelledRequests.add(args?.requestId);

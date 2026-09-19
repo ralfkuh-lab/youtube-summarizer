@@ -14,9 +14,12 @@ This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri a
 - `src/types.ts`: shared TypeScript type and interface definitions.
 - `src/utils.ts`: pure utility helpers (formatting, search normalization, collection comparison).
 - `src/ai-config.ts`: settings UI for the "KI-Anbieter" / "KI-Modelle" tabs.
+- `src/agent-handoff.ts`: "An Agent übergeben" button, handoff dialog, clipboard copy (with textarea/`execCommand` fallback), and "Ordner öffnen".
+- `src/agent-settings.ts`: settings UI for the "Agent" tab (workdir, shell, active template, custom templates, prompt, live preview); shares its cached config view with the handoff dialog.
 - `src/styles.css`: frontend styling.
 - `src-tauri/src/commands.rs`: Tauri command layer delegating to domain modules.
 - `src-tauri/src/summarize.rs`: AI summary target resolution, prompt building, untrusted content delimiters, and streaming summary orchestration.
+- `src-tauri/src/agent_handoff.rs` (with `agent_handoff/{config,quote,resolve,context}.rs`, tests in `agent_handoff/tests.rs` and `agent_handoff/tests/context_tests.rs`): local-agent handoff — `agent.json` config and validation, shell quoting, one-pass command resolution, slug/path building, context file rendering and atomic writing, and the `agent_config_get` / `agent_config_set` / `agent_prepare` / `agent_preview` commands. See `docs/spec-agent-handoff.md`.
 - `src-tauri/src/ai/migration.rs`: legacy AI config migration.
 - `src-tauri/src/ai/`: AI provider/model config (models.dev catalog, ai.json, auth.json) and the OpenAI-compatible chat client; ported from folio, see `docs/spec-ai-port.md`.
 - `src-tauri/src/youtube.rs`: YouTube metadata, transcript and chapter fetching.
@@ -65,6 +68,7 @@ cargo test fetches_transcript_from_innertube_caption_url -- --ignored
 - `npm run tauri -- build` writes the installers to `src-tauri/target/release/bundle/nsis/` and `src-tauri/target/release/bundle/msi/`. A local shortcut `youtube-summarizer-setup.lnk` in the project root is ignored by git, like the Linux symlinks.
 - `.gitattributes` forces LF line endings; do not commit CRLF files.
 - `src-tauri/gen/schemas/` is generated per platform on every build and is not tracked.
+- The PowerShell form of the built-in agent templates (`src-tauri/src/agent_handoff/config.rs`) is tested only as a string (quoting and command shape), not executed on Windows; that run is still open.
 
 ## Current Architecture
 

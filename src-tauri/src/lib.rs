@@ -1,3 +1,4 @@
+mod agent_handoff;
 mod ai;
 #[cfg(debug_assertions)]
 mod automation;
@@ -107,7 +108,12 @@ pub fn run() {
             chat::chat_context_set,
             websearch::web_search_config_get,
             websearch::web_search_config_set,
-            websearch::web_search_test
+            websearch::web_search_test,
+            // Agenten-Uebergabe (Stufe 1)
+            agent_handoff::agent_config_get,
+            agent_handoff::agent_config_set,
+            agent_handoff::agent_prepare,
+            agent_handoff::agent_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

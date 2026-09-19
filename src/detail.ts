@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, errorMessage, escapeHtml } from "./dom-utils";
 import { renderChatTab, resetChat } from "./chat";
+import { resetAgentHandoff } from "./agent-handoff";
 import { loadCollections, openCollectionDialog, renderVideoList } from "./library";
 import { getActiveVideo, setBusy, setStatus, state } from "./state";
 import { renderSummaryTab } from "./summary-view";
@@ -24,6 +25,7 @@ export function clearDetail() {
   detailContent.hidden = true;
   detailPlaceholder.hidden = false;
   chaptersPanel.hidden = true;
+  resetAgentHandoff();
   resetChat();
 }
 

@@ -102,6 +102,39 @@ export type SummaryModules = {
 
 export type VideoStatusFilter = "all" | "transcript" | "missing-transcript" | "summary" | "missing-summary";
 
+export type AgentShell = "auto" | "posix" | "fish" | "powershell";
+
+export type AgentSummaries = "latest" | "all" | "none";
+
+export type AgentTemplate = {
+  id: string;
+  name: string;
+  command: string;
+};
+
+export type AgentConfig = {
+  workdirBase: string;
+  shell: AgentShell;
+  summaries: AgentSummaries;
+  includeChats: boolean;
+  prompt: string;
+  activeTemplate: string;
+  customTemplates: AgentTemplate[];
+};
+
+export type AgentConfigView = {
+  config: AgentConfig;
+  builtinTemplates: AgentTemplate[];
+  defaultWorkdirBase: string;
+  effectiveShell: string;
+};
+
+export type AgentHandoff = {
+  command: string;
+  workdir: string;
+  contextFile: string;
+};
+
 export type SummarySettings = {
   detail: string;
   lang: string;
