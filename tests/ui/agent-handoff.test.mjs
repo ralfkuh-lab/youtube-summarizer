@@ -412,3 +412,37 @@ test("G15: Einstellungen speichern Arbeitsverzeichnis und Shell", async () => {
     assert.strictEqual(await page.locator("#statusText").textContent(), "Agent-Einstellungen gespeichert");
   });
 });
+
+test("G16: Ein Videowechsel schließt den offenen Übergabe-Dialog und verwirft die Übergabe", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+    assert.strictEqual(await page.locator("#agentModal").isVisible(), true);
+
+    // Das Modal überdeckt die Liste; der Wechsel kommt hier wie über die Tastatur zustande.
+    await page.evaluate(() => document.querySelector('.video-item[data-id="3"]').click());
+    await mock.waitForPending();
+
+    assert.strictEqual(
+      await page.locator("#agentModal").isVisible(),
+      false,
+      "der Dialog des alten Videos muss geschlossen sein",
+    );
+    assert.strictEqual(
+      await page.locator("#agentCommand").inputValue(),
+      "",
+      "das Kommando des alten Videos darf nicht stehen bleiben",
+    );
+  });
+});
+
+test("G17: Erneutes Anzeigen desselben Videos lässt den Dialog offen", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+    await page.evaluate(() => document.querySelector('.video-item[data-id="2"]').click());
+    await mock.waitForPending();
+    assert.strictEqual(await page.locator("#agentModal").isVisible(), true);
+    assert.strictEqual(await page.locator("#agentCommand").inputValue(), AGENT.prepare.command);
+  });
+});

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, errorMessage, escapeHtml } from "./dom-utils";
 import { renderChatTab, resetChat } from "./chat";
-import { resetAgentHandoff } from "./agent-handoff";
+import { resetAgentHandoff, syncAgentHandoffVideo } from "./agent-handoff";
 import { loadCollections, openCollectionDialog, renderVideoList } from "./library";
 import { getActiveVideo, setBusy, setStatus, state } from "./state";
 import { renderSummaryTab } from "./summary-view";
@@ -322,6 +322,7 @@ export async function refreshActiveTranscript() {
 }
 
 export function showDetail(video: Video) {
+  syncAgentHandoffVideo(video.id);
   detailPlaceholder.hidden = true;
   detailContent.hidden = false;
   $<HTMLImageElement>("#detailThumb").src = video.thumbnail || video.thumbnail_url;

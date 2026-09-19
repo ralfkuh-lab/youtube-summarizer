@@ -10,6 +10,7 @@ import { getActiveVideo, setBusy, setStatus, state } from "./state";
 import type { AgentHandoff, AgentTemplate } from "./types";
 
 let handoff: AgentHandoff | null = null;
+let handoffVideoId: number | null = null;
 /// Zaehlt jede Vorbereitung. Nur die juengste Antwort darf Feld, Zwischenablage
 /// und Status aendern (H4b).
 let prepareGeneration = 0;
@@ -45,6 +46,7 @@ async function prepareAndCopy(templateId: string | null, openDialog: boolean) {
   // (b) Schneller Vorlagenwechsel: die juengere Antwort gewinnt.
   if (generation !== prepareGeneration || getActiveVideo()?.id !== videoId) return;
   handoff = prepared;
+  handoffVideoId = videoId;
   if (openDialog) {
     showModal("#agentModal");
   }
@@ -167,11 +169,21 @@ function renderShellHint() {
 /// stehen bleiben.
 export function resetAgentHandoff() {
   handoff = null;
+  handoffVideoId = null;
   prepareGeneration += 1;
   const field = document.querySelector<HTMLTextAreaElement>("#agentCommand");
   if (field) field.value = "";
   const path = document.querySelector<HTMLElement>("#agentContextPath");
   if (path) path.textContent = "";
+}
+
+/// Beim Wechsel auf ein anderes Video gehoert ein noch offener Dialog zum
+/// alten Video: schliessen und zuruecksetzen, damit „Kopieren“/„Ordner oeffnen“
+/// nie mit einer fremden Uebergabe arbeiten.
+export function syncAgentHandoffVideo(videoId: number) {
+  if (handoffVideoId === null || handoffVideoId === videoId) return;
+  hideModal("#agentModal");
+  resetAgentHandoff();
 }
 
 export function bindAgentHandoffEvents() {
