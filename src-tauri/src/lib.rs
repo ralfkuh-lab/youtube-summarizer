@@ -3,6 +3,7 @@ mod ai;
 mod automation;
 mod chat;
 mod chat_prompt;
+mod chat_runs;
 mod commands;
 mod models;
 mod storage;
@@ -102,6 +103,7 @@ pub fn run() {
             chat::chat_delete,
             chat::chat_send,
             chat::chat_cancel,
+            chat::chat_context_set,
             websearch::web_search_config_get,
             websearch::web_search_config_set,
             websearch::web_search_test

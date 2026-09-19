@@ -42,12 +42,19 @@ export type Collection = {
 
 export type TabName = "transcript" | "summary" | "chat" | "video";
 
+export type ChatContextOptions = {
+  transcript: boolean;
+  /// `null` = neueste Zusammenfassung, `[]` = keine.
+  summaryIds: number[] | null;
+};
+
 export type Chat = {
   id: number;
   videoId: number;
   title: string;
   createdAt: string;
   updatedAt: string;
+  contextOptions: ChatContextOptions;
 };
 
 export type ChatMessageRecord = {

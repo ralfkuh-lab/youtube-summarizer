@@ -100,6 +100,7 @@ export const defaultFixtures = {
     answer: "Antwort vom Mock-Modell",
     error: null,
   },
+  summaries: [],
   webSearchConfig: {
     enabled: false,
     searxngUrl: "",
@@ -136,6 +137,7 @@ export function createMockScript(fixtures = {}, delays = {}) {
           title: entry.title,
           createdAt,
           updatedAt,
+          contextOptions: entry.contextOptions || { transcript: true, summaryIds: null },
         });
         chatStore.messages[id] = (entry.messages || []).map((message, index) => ({
           id: index + 1,
@@ -285,7 +287,20 @@ export function createMockScript(fixtures = {}, delays = {}) {
           return null;
         }
         if (cmd === 'get_summaries') {
-          return [];
+          const rows = (this.fixtures.summaries || []).filter(
+            (row) => row.video_id === args?.videoId,
+          );
+          callRecord.result = rows;
+          return JSON.parse(JSON.stringify(rows));
+        }
+        if (cmd === 'chat_context_set') {
+          const chat = chatStore.chats.find((item) => item.id === args?.chatId);
+          if (!chat) {
+            throw new Error('Chat wurde gelöscht');
+          }
+          chat.contextOptions = args?.options || { transcript: true, summaryIds: null };
+          callRecord.result = chat;
+          return JSON.parse(JSON.stringify(chat));
         }
         if (cmd === 'summary_presets_list') {
           return JSON.parse(JSON.stringify(this.fixtures.summaryPresets || []));
@@ -323,11 +338,16 @@ export function createMockScript(fixtures = {}, delays = {}) {
               title: chatTitle(args.text),
               createdAt: now,
               updatedAt: now,
+              contextOptions:
+                args?.contextOptions || { transcript: true, summaryIds: null },
             };
             chatStore.chats.push(chat);
             chatStore.messages[chat.id] = [];
           } else {
             chat.updatedAt = now;
+            if (args?.contextOptions) {
+              chat.contextOptions = args.contextOptions;
+            }
           }
           const answer = chatFixture.answer !== undefined ? chatFixture.answer : 'Antwort vom Mock-Modell';
           const messages = chatStore.messages[chat.id];

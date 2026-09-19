@@ -25,7 +25,16 @@ import {
   renderToolActivity,
   scrollChatToBottom,
 } from "./chat-render";
-import type { Chat, ChatMessageRecord, ChatTurnResult, Video } from "./types";
+import type { Chat, ChatMessageRecord, ChatTurnResult, SummaryRecord, Video } from "./types";
+import {
+  applyChatContextFor,
+  bindChatContextEvents,
+  closeChatContextMenu,
+  getChatContextOptions,
+  refreshChatContextButton,
+  setChatContextHasTranscript,
+  setChatContextVersions,
+} from "./chat-context";
 import {
   isWebSearchConfigured,
   loadWebSearchConfig,
@@ -104,19 +113,27 @@ function activeRun(video: Video | null): ChatRun | undefined {
 /// vor, damit Videowechsel und andere Aktionen nicht blockiert werden.
 function updateChatControls(video: Video | null) {
   const hasTranscript = hasChatTranscript(video);
+  const hasSummary = !!video?.has_summary;
   const run = activeRun(video);
+  // Etappe 3: Eingabe ist auch ohne Transkript nutzbar, wenn eine
+  // Zusammenfassung existiert (dann nur mit Zusammenfassung im Kontext).
+  const usable = hasTranscript || hasSummary;
   const sendBtn = $<HTMLButtonElement>("#chatSend");
   sendBtn.textContent = run ? "Stopp" : "Senden";
-  sendBtn.disabled = !hasTranscript;
+  sendBtn.disabled = !usable;
   const input = $<HTMLTextAreaElement>("#chatInput");
   // Waehrend einer laufenden Anfrage bleibt nur der Stopp-Button bedienbar.
-  input.disabled = !hasTranscript || !!run;
-  input.placeholder = hasTranscript ? "Frage zum Video…" : "Für den Chat wird ein Transkript benötigt";
-  $("#chatHint").hidden = hasTranscript;
-  $<HTMLButtonElement>("#chatNew").disabled = !!run || !hasTranscript;
+  input.disabled = !usable || !!run;
+  input.placeholder = usable
+    ? "Frage zum Video…"
+    : "Für den Chat wird ein Transkript oder eine Zusammenfassung benötigt";
+  $("#chatHint").hidden = usable;
+  $<HTMLButtonElement>("#chatNew").disabled = !!run || !usable;
   $<HTMLButtonElement>("#chatDelete").disabled =
-    !!run || state.activeChatId === null || !hasTranscript;
+    !!run || state.activeChatId === null || !usable;
   $<HTMLSelectElement>("#chatModel").disabled = !!run;
+  setChatContextHasTranscript(hasTranscript);
+  refreshChatContextButton();
 }
 
 function fillChatSelect() {
@@ -148,8 +165,22 @@ async function refreshChatList(videoId: number, gen: number) {
   fillChatSelect();
 }
 
+async function loadChatContext(video: Video, chatId: number | null) {
+  let summaries: SummaryRecord[] = [];
+  try {
+    summaries = await invoke<SummaryRecord[]>("get_summaries", { videoId: video.id });
+  } catch (error) {
+    setStatus(errorMessage(error));
+  }
+  const stored =
+    chatId === null ? null : (chatList().find((chat) => chat.id === chatId)?.contextOptions ?? null);
+  setChatContextVersions(summaries);
+  applyChatContextFor(chatId, stored);
+}
+
 async function loadActiveChatMessages(video: Video, gen: number) {
   const chatId = state.activeChatId;
+  await loadChatContext(video, chatId);
   let messages: ChatMessageRecord[] = [];
   if (chatId !== null) {
     try {
@@ -208,6 +239,7 @@ function selectChat(chatId: number | null) {
   const video = getActiveVideo();
   // Jede explizite Wahl wird gemerkt, auch wenn sie schon aktiv ist.
   if (video) rememberChatSelection(video.id, chatId);
+  closeChatContextMenu();
   if (state.activeChatId === chatId) return;
   stashInputDraft(video?.id ?? null, state.activeChatId);
   state.activeChatId = chatId;
@@ -221,6 +253,7 @@ function selectChat(chatId: number | null) {
 
 function startNewChat() {
   if (activeRun(getActiveVideo())) return;
+  closeChatContextMenu();
   selectChat(null);
   setStatus("Neuer Chat");
 }
@@ -337,6 +370,7 @@ async function sendChatMessage() {
       modelId,
       requestId,
       webSearch: webSearchRequested(),
+      contextOptions: getChatContextOptions(),
     });
     state.chatRuns.delete(videoId);
     // N3: Die Auswahl folgt dem fertig gewordenen Chat, solange der Benutzer
@@ -354,6 +388,7 @@ async function sendChatMessage() {
       const gen = ++state.chatRenderGen;
       state.activeChatId = result.chat.id;
       await refreshChatList(videoId, gen);
+      applyChatContextFor(result.chat.id, result.chat.contextOptions);
       if (gen === state.chatRenderGen) {
         fillChatSelect();
         await renderChatMessages(result.messages, gen);
@@ -511,6 +546,7 @@ export function bindChatEvents() {
     if (video) void renderChatTab(video);
   });
   bindChatMessagesEvents();
+  bindChatContextEvents();
   void initChatModelPicker();
 }
 

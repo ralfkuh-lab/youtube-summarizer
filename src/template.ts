@@ -76,6 +76,20 @@ export const appTemplate = `
           <div id="tabChat" class="tabPanel">
             <div class="chat-toolbar">
               <select id="chatSelect" aria-label="Chat-Verlauf"></select>
+              <button id="chatContextBtn" class="inline-action chat-context-btn" title="Kontext wählen" aria-haspopup="true" aria-expanded="false">
+                Kontext: <span id="chatContextLabel"></span>
+              </button>
+              <div id="chatContextMenu" class="chat-context-menu" hidden>
+                <label class="chat-context-choice">
+                  <input type="checkbox" id="chatContextTranscript" />
+                  Transkript
+                </label>
+                <p id="chatContextHint" class="settings-hint" hidden></p>
+                <p class="chat-context-title">Zusammenfassungen</p>
+                <div id="chatContextVersions"></div>
+                <p id="chatContextNotice" class="settings-ai-error" hidden></p>
+                <p id="chatContextInvalid" class="settings-ai-error" hidden></p>
+              </div>
               <label id="chatWebSearchLabel" class="chat-websearch" title="">
                 <input type="checkbox" id="chatWebSearch" />
                 Websuche
@@ -85,7 +99,7 @@ export const appTemplate = `
               <select id="chatModel" aria-label="Chat-Modell"></select>
             </div>
             <div id="chatMessages" class="chat-messages"></div>
-            <p id="chatHint" class="chat-hint" hidden>Für den Chat wird ein Transkript benötigt</p>
+            <p id="chatHint" class="chat-hint" hidden>Für den Chat wird ein Transkript oder eine Zusammenfassung benötigt</p>
             <div class="chat-composer">
               <textarea id="chatInput" rows="1" placeholder="Frage zum Video…"></textarea>
               <button id="chatSend">Senden</button>

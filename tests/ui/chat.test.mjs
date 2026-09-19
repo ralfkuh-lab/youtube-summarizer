@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { withApp } from "./harness.mjs";
+import { defaultFixtures } from "./tauri-mock.mjs";
 
 const CHAT_SEND_DELAY = 300;
 
@@ -124,7 +125,9 @@ test("U4: Zeitstempel in der Antwort ist ein Sprunglink in den Video-Tab", async
   );
 });
 
-test("U5: Ohne Transkript ist die Chat-Eingabe deaktiviert und der Hinweis sichtbar", async () => {
+test("U5: Ohne Transkript und ohne Zusammenfassung ist die Eingabe deaktiviert", async () => {
+  // Etappe 3 praezisiert U5: deaktiviert nur, wenn weder Transkript noch
+  // Zusammenfassung existiert (Video 1 hat beides nicht).
   await withApp(async (page, mock) => {
     await openChat(page, 1);
     await mock.waitForPending();
@@ -132,7 +135,10 @@ test("U5: Ohne Transkript ist die Chat-Eingabe deaktiviert und der Hinweis sicht
     assert.strictEqual(await page.locator("#chatInput").isDisabled(), true, "#chatInput muss deaktiviert sein");
     assert.strictEqual(await page.locator("#chatHint").isVisible(), true, "Der Hinweis muss sichtbar sein");
     const hint = await page.locator("#chatHint").textContent();
-    assert.ok(hint?.includes("Für den Chat wird ein Transkript benötigt"), `unerwarteter Hinweis: "${hint}"`);
+    assert.ok(
+      hint?.includes("Für den Chat wird ein Transkript oder eine Zusammenfassung benötigt"),
+      `unerwarteter Hinweis: "${hint}"`,
+    );
   });
 });
 
@@ -1280,5 +1286,385 @@ test("U35: Emoji-Labels werden nicht zerschnitten", async () => {
         },
       },
     },
+  );
+});
+
+// --------------------------------------- Etappe 3: Kontext-Wähler ----------
+
+const SEED_ONE_CHAT = {
+  2: [{ title: "Chat A", messages: [{ role: "user", content: "A" }] }],
+};
+
+const SUMMARY_VERSIONS = [
+  {
+    id: 31,
+    video_id: 2,
+    created_at: "2026-03-01T10:00:00Z",
+    summary: "Neueste Fassung",
+    provider: "openai",
+    model: "gpt-4o",
+    options: '{"presetId":"standard"}',
+  },
+  {
+    id: 30,
+    video_id: 2,
+    created_at: "2026-02-01T10:00:00Z",
+    summary: "Mittlere Fassung",
+    provider: "openai",
+    model: "gpt-4o-mini",
+    options: null,
+  },
+  {
+    id: 29,
+    video_id: 2,
+    created_at: "2026-01-01T10:00:00Z",
+    summary: "Alte Fassung",
+    provider: "openai",
+    model: "gpt-4o-mini",
+    options: '{"presetId":"talk"}',
+  },
+];
+
+async function openContextMenu(page) {
+  await page.locator("#chatContextBtn").click();
+  await page.waitForSelector("#chatContextMenu:not([hidden])");
+}
+
+test("U35: Standardanzeige und Popover-Inhalt mit drei Versionen", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      assert.strictEqual(
+        (await page.locator("#chatContextLabel").textContent())?.trim(),
+        "Kontext: Transkript + neueste",
+      );
+      assert.strictEqual(
+        await page.locator("#chatContextBtn").getAttribute("title"),
+        "Kontext: Transkript + neueste Zusammenfassung",
+      );
+
+      await openContextMenu(page);
+      assert.strictEqual(await page.locator("#chatContextTranscript").isChecked(), true);
+      const choices = await page.locator("#chatContextVersions .chat-context-choice span").allTextContents();
+      assert.strictEqual(choices[0], "Neueste (automatisch)");
+      assert.strictEqual(choices[1], "Keine");
+      assert.strictEqual(choices.length, 5, "drei Versionen plus Neueste/Keine");
+      assert.ok(choices[2].includes("2026-03-01") && choices[2].includes("gpt-4o"));
+      assert.ok(choices[2].includes("standard"), `Preset-Name fehlt: ${choices[2]}`);
+      assert.ok(choices[3].includes("gpt-4o-mini"));
+      assert.strictEqual(
+        await page.locator("#chatContextVersions input:checked").count(),
+        1,
+        "genau eine Auswahl (Neueste)",
+      );
+      // Versionen sind Checkboxen (Mehrfachauswahl), die beiden Sonderfaelle Radios.
+      const types = await page.locator("#chatContextVersions input").evaluateAll((inputs) =>
+        inputs.map((input) => input.type),
+      );
+      assert.deepStrictEqual(types, ["radio", "radio", "checkbox", "checkbox", "checkbox"]);
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS } },
+  );
+});
+
+test("U36: Eine Version wählen speichert per chat_context_set", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+
+      // Bestehender Chat (Fixture) -> sofort speichern.
+      await page.locator("#chatContextVersions input").nth(2).check();
+      await mock.waitForPending();
+
+      const call = await page.evaluate(() =>
+        window.__tauriMock.calls.filter((c) => c.cmd === "chat_context_set").pop(),
+      );
+      assert.deepStrictEqual(call.args.options, { transcript: true, summaryIds: [31] });
+      assert.strictEqual(
+        (await page.locator("#chatContextLabel").textContent())?.trim(),
+        "Kontext: Transkript + 1 Zus.",
+      );
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+test("U37: Keine Zusammenfassung und kein Transkript deaktiviert Senden", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+
+      await page.locator("#chatContextVersions input").nth(1).check();
+      await page.locator("#chatContextTranscript").uncheck();
+      await mock.waitForPending();
+
+      assert.strictEqual(await page.locator("#chatContextInvalid").isVisible(), true);
+      assert.strictEqual(
+        (await page.locator("#chatContextInvalid").textContent())?.trim(),
+        "Kein Kontext gewählt – bitte Transkript oder eine Zusammenfassung aktivieren",
+      );
+      assert.strictEqual(await page.locator("#chatSend").isDisabled(), true, "Senden muss gesperrt sein");
+      assert.strictEqual(
+        (await page.locator("#chatContextLabel").textContent())?.trim(),
+        "Kontext: keine Zusammenfassung",
+      );
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+test("U38: Ein neuer Chat sendet contextOptions mit", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+      await page.locator("#chatContextVersions input").nth(3).check();
+      await page.keyboard.press("Escape"); // Popover schliessen
+      await page.locator("#chatNew").click();
+      await mock.waitForPending();
+      await sendQuestion(page, "Frage mit Auswahl");
+      await mock.waitForPending();
+
+      const sent = (await chatSendCalls(page))[0];
+      assert.deepStrictEqual(sent.args.contextOptions, { transcript: true, summaryIds: [30] });
+      assert.strictEqual(sent.args.chatId, null, "der Chat wird neu angelegt");
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+test("U39: Video ohne Transkript, aber mit Zusammenfassung erlaubt die Eingabe", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 1);
+      await mock.waitForPending();
+
+      assert.strictEqual(await page.locator("#chatInput").isDisabled(), false, "Eingabe muss aktiv sein");
+      assert.strictEqual(await page.locator("#chatHint").isVisible(), false);
+      assert.strictEqual(
+        (await page.locator("#chatContextLabel").textContent())?.trim(),
+        "Kontext: neueste (ohne Transkript)",
+      );
+      await openContextMenu(page);
+      assert.strictEqual(await page.locator("#chatContextTranscript").isDisabled(), true);
+      assert.strictEqual(
+        (await page.locator("#chatContextHint").textContent())?.trim(),
+        "Dieses Video hat kein Transkript",
+      );
+    },
+    {
+      fixtures: {
+        videos: defaultFixtures.videos.map((video) =>
+          video.id === 1
+            ? { ...video, has_summary: true, summary: "Fassung ohne Transkript" }
+            : video,
+        ),
+        summaries: [
+          {
+            id: 41,
+            video_id: 1,
+            created_at: "2026-03-05T10:00:00Z",
+            summary: "Fassung ohne Transkript",
+            provider: "openai",
+            model: "gpt-4o",
+            options: null,
+          },
+        ],
+      },
+    },
+  );
+});
+
+test("U40: Der Chatwechsel zeigt die Optionen des jeweiligen Chats", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      const values = await page.locator("#chatSelect option").evaluateAll((options) =>
+        options.map((option) => ({ value: option.value, label: option.textContent })),
+      );
+      const chatA = values.find((entry) => entry.label.startsWith("Chat A"))?.value;
+      const chatB = values.find((entry) => entry.label.startsWith("Chat B"))?.value;
+      assert.ok(chatA && chatB, `beide Chats erwartet: ${JSON.stringify(values)}`);
+
+      await page.locator("#chatSelect").selectOption(chatA);
+      await mock.waitForPending();
+      const first = (await page.locator("#chatContextLabel").textContent())?.trim();
+      await page.locator("#chatSelect").selectOption(chatB);
+      await mock.waitForPending();
+      const second = (await page.locator("#chatContextLabel").textContent())?.trim();
+
+      assert.strictEqual(first, "Kontext: Transkript + neueste");
+      assert.strictEqual(second, "Kontext: 2 Zus. (ohne Transkript)");
+    },
+    {
+      fixtures: {
+        summaries: SUMMARY_VERSIONS,
+        chatSeed: {
+          2: [
+            {
+              title: "Chat A",
+              contextOptions: { transcript: true, summaryIds: null },
+              messages: [{ role: "user", content: "A" }],
+            },
+            {
+              title: "Chat B",
+              contextOptions: { transcript: false, summaryIds: [31, 30] },
+              messages: [{ role: "user", content: "B" }],
+            },
+          ],
+        },
+      },
+    },
+  );
+});
+
+test("U41: Escape und Klick außerhalb schließen das Popover", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+
+      await openContextMenu(page);
+      await page.keyboard.press("Escape");
+      assert.strictEqual(await page.locator("#chatContextMenu").isVisible(), false, "Escape schließt");
+
+      await openContextMenu(page);
+      // Ausserhalb klicken (Klick auf den Toolbar-Hintergrund, nicht auf das Popover).
+      await page.locator("#tabChat").click({ position: { x: 5, y: 200 } });
+      assert.strictEqual(await page.locator("#chatContextMenu").isVisible(), false, "Klick außerhalb schließt");
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+// --------------------------- Etappe 3, Korrekturen E1/E2 (U42-U45) --------
+
+const SIX_VERSIONS = Array.from({ length: 6 }, (_, index) => ({
+  id: 50 + (5 - index),
+  video_id: 2,
+  created_at: `2026-0${6 - index}-01T10:00:00Z`,
+  summary: `Fassung ${6 - index}`,
+  provider: "openai",
+  model: "gpt-4o",
+  options: null,
+}));
+
+test("U42: Zwei Versionen anhaken speichert beide IDs", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+
+      await page.locator("#chatContextVersions input").nth(2).check();
+      await mock.waitForPending();
+      await page.locator("#chatContextVersions input").nth(3).check();
+      await mock.waitForPending();
+
+      const call = await page.evaluate(() =>
+        window.__tauriMock.calls.filter((c) => c.cmd === "chat_context_set").pop(),
+      );
+      assert.deepStrictEqual(call.args.options, { transcript: true, summaryIds: [31, 30] });
+      assert.strictEqual(
+        (await page.locator("#chatContextLabel").textContent())?.trim(),
+        "Kontext: Transkript + 2 Zus.",
+      );
+      // Die Sonderfaelle sind nicht mehr gewaehlt.
+      const checked = await page
+        .locator("#chatContextVersions input")
+        .evaluateAll((inputs) => inputs.map((input) => input.checked));
+      assert.deepStrictEqual(checked, [false, false, true, true, false]);
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+test("U43: Die letzte Checkbox abwählen fällt auf „Neueste“ zurück", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+
+      await page.locator("#chatContextVersions input").nth(2).check();
+      await mock.waitForPending();
+      await page.locator("#chatContextVersions input").nth(2).uncheck();
+      await mock.waitForPending();
+
+      const calls = await page.evaluate(() =>
+        window.__tauriMock.calls
+          .filter((c) => c.cmd === "chat_context_set")
+          .map((c) => c.args.options),
+      );
+      assert.deepStrictEqual(calls[calls.length - 1], { transcript: true, summaryIds: null });
+      assert.strictEqual(
+        (await page.locator("#chatContextLabel").textContent())?.trim(),
+        "Kontext: Transkript + neueste",
+      );
+      assert.strictEqual(await page.locator("#context-newest").isChecked(), true);
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+test("U44: Eine sechste Version lässt sich nicht anhaken", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+
+      for (const index of [2, 3, 4, 5, 6]) {
+        await page.locator("#chatContextVersions input").nth(index).check();
+        await mock.waitForPending();
+      }
+      const sixth = page.locator("#chatContextVersions input").nth(7);
+      assert.strictEqual(await sixth.isDisabled(), true, "die sechste Checkbox ist gesperrt");
+      // Auch ein erzwungener Klick darf die Auswahl nicht erweitern.
+      await sixth.evaluate((input) => input.click());
+      await mock.waitForPending();
+      assert.strictEqual(await sixth.isChecked(), false);
+
+      assert.strictEqual(
+        (await page.locator("#chatContextLabel").textContent())?.trim(),
+        "Kontext: Transkript + 5 Zus.",
+      );
+      const checked = await page
+        .locator("#chatContextVersions input")
+        .evaluateAll((inputs) => inputs.filter((input) => input.checked).length);
+      assert.strictEqual(checked, 5);
+    },
+    { fixtures: { summaries: SIX_VERSIONS, chatSeed: SEED_ONE_CHAT } },
+  );
+});
+
+test("U45: Das Popover öffnet unter dem Kontext-Button und bleibt im Fenster", async () => {
+  await withApp(
+    async (page, mock) => {
+      await page.setViewportSize({ width: 1000, height: 800 });
+      await openChat(page, 2);
+      await mock.waitForPending();
+      await openContextMenu(page);
+
+      const box = await page.locator("#chatContextMenu").boundingBox();
+      const button = await page.locator("#chatContextBtn").boundingBox();
+      assert.ok(box && button);
+      assert.ok(
+        Math.abs(box.x - button.x) <= 8,
+        `Popover linksbuendig zum Button: ${box.x} vs ${button.x}`,
+      );
+      assert.ok(box.x >= 0 && box.x + box.width <= 1000, `im Viewport: ${JSON.stringify(box)}`);
+      assert.ok(box.y >= button.y + button.height - 4, "unter dem Button");
+    },
+    { fixtures: { summaries: SUMMARY_VERSIONS, chatSeed: SEED_ONE_CHAT } },
   );
 });

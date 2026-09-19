@@ -58,6 +58,30 @@ pub struct Summary {
     pub options: Option<String>,
 }
 
+/// Auswahl des Chat-Kontexts. `summary_ids: None` bedeutet „neueste
+/// Zusammenfassung“ (dynamisch), `Some([])` „keine“.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatContextOptions {
+    #[serde(default = "default_true")]
+    pub transcript: bool,
+    #[serde(default)]
+    pub summary_ids: Option<Vec<i64>>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ChatContextOptions {
+    fn default() -> Self {
+        Self {
+            transcript: true,
+            summary_ids: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Chat {
@@ -66,6 +90,8 @@ pub struct Chat {
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Immer aufgeloest (nie null): gespeicherte Auswahl oder Standard.
+    pub context_options: ChatContextOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

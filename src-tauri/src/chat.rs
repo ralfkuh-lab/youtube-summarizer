@@ -1,28 +1,25 @@
 //! Chat ueber ein Video: Prompt-Aufbau, Domainenfunktion, Laufregister und die
 //! zugehoerigen Tauri-Commands. Etappe 1 des Video-Chats (ohne Tool-Calling).
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, State};
 
 use crate::ai::auth::AuthStore;
+pub use crate::chat_runs::ChatRuns;
+
 use crate::ai::catalog as ai_catalog;
 use crate::ai::client as ai_client;
 use crate::ai::config::AiConfigService;
 use crate::ai::tool_stream;
 use crate::chat_prompt::{build_messages_from_context, chat_title, ChatContext, ExtraParts};
-use crate::models::{Chat, ChatMessageRecord, ChatTurnResult, NewChatMessage};
+use crate::models::{Chat, ChatContextOptions, ChatMessageRecord, ChatTurnResult, NewChatMessage};
 use crate::storage::{self, AppPaths, AppResult};
 use crate::summarize::{self, SummaryTarget};
 use crate::websearch;
 
 /// Hoechstens ein `ai:chat_stream`-Event in diesem Abstand.
 const STREAM_EMIT_INTERVAL: Duration = Duration::from_millis(150);
-/// Vorab abgebrochene Anfragen ohne Lauf verfallen nach dieser Zeit.
-const PENDING_RUN_MAX_AGE: Duration = Duration::from_secs(60);
 /// Laenge des aus der Frage gebildeten Chat-Titels in Unicode-Skalarwerten.
 
 /// Testfassung ohne Websuche-Zusatz (P-Faelle).
@@ -154,6 +151,7 @@ pub async fn chat_send_impl(
     text: String,
     target: SummaryTarget,
     tools: Option<websearch::ToolRuntime>,
+    context_options: Option<ChatContextOptions>,
     mut is_cancelled: impl FnMut() -> bool,
     mut on_delta: impl FnMut(&str),
     mut on_tool: impl FnMut(websearch::ToolEvent),
@@ -185,7 +183,17 @@ pub async fn chat_send_impl(
     };
     history.push(NewChatMessage::user(question));
 
-    let context = ChatContext::new(&video)?;
+    // Auswahl: mitgegebene Optionen gewinnen, sonst die des Chats, sonst
+    // Standard. Gespeichert wird erst mit der Runde (Commit nach Erfolg).
+    let stored_options = match chat_id {
+        Some(id) => storage::get_chat(paths, id)?
+            .map(|chat| chat.context_options)
+            .unwrap_or_default(),
+        None => ChatContextOptions::default(),
+    };
+    let effective_options = context_options.clone().unwrap_or(stored_options);
+    let summaries = storage::get_summaries(paths, video_id)?;
+    let context = ChatContext::resolve(&video, &summaries, &effective_options)?;
     // Rohteile einmal pro Aufruf: in der Schleife wird nur noch entliehen.
     let raw_parts = context.raw_parts();
     let mut round_messages: Vec<NewChatMessage> = Vec::new();
@@ -343,123 +351,18 @@ pub async fn chat_send_impl(
     turn.extend(round_messages);
     turn.push(assistant);
 
-    let (chat, _) =
-        storage::append_chat_turn(paths, video_id, chat_id, &chat_title(question), turn)?;
+    let (chat, _) = storage::append_chat_turn(
+        paths,
+        video_id,
+        chat_id,
+        &chat_title(question),
+        turn,
+        context_options.as_ref(),
+    )?;
     // Die Runde ist gespeichert; der Aufrufer bekommt den vollstaendigen
     // Verlauf nach der Runde (nicht nur die neuen Nachrichten).
     let messages = storage::get_chat_messages(paths, chat.id)?;
     Ok(ChatTurnResult { chat, messages })
-}
-
-#[derive(Debug)]
-struct RunEntry {
-    video_id: Option<i64>,
-    flag: Arc<AtomicBool>,
-    created: Instant,
-}
-
-/// Laufregister des Video-Chats: hoechstens eine Anfrage pro Video, jede
-/// Anfrage ueber ihre `request_id` abbrechbar.
-#[derive(Debug, Clone, Default)]
-pub struct ChatRuns {
-    entries: Arc<Mutex<HashMap<String, RunEntry>>>,
-}
-
-impl ChatRuns {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, RunEntry>> {
-        self.entries
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Erste Aktion von `chat_send`: prueft und reserviert den Lauf.
-    pub fn begin(&self, request_id: &str, video_id: i64) -> AppResult<ChatRunGuard> {
-        if request_id.trim().is_empty() {
-            return Err("Ungültige Anfrage-ID".to_string());
-        }
-        let mut entries = self.lock();
-        entries.retain(|_, entry| {
-            entry.video_id.is_some() || entry.created.elapsed() < PENDING_RUN_MAX_AGE
-        });
-        if let Some(entry) = entries.get(request_id) {
-            if entry.video_id.is_none() {
-                entries.remove(request_id);
-                return Err("KI-Antwort abgebrochen".to_string());
-            }
-            return Err("Anfrage-ID bereits in Verwendung".to_string());
-        }
-        if entries
-            .values()
-            .any(|entry| entry.video_id == Some(video_id))
-        {
-            return Err("Es läuft bereits eine Chat-Anfrage für dieses Video".to_string());
-        }
-        let flag = Arc::new(AtomicBool::new(false));
-        entries.insert(
-            request_id.to_string(),
-            RunEntry {
-                video_id: Some(video_id),
-                flag: flag.clone(),
-                created: Instant::now(),
-            },
-        );
-        Ok(ChatRunGuard {
-            runs: self.clone(),
-            request_id: request_id.to_string(),
-            flag,
-        })
-    }
-
-    /// Bricht eine bekannte Anfrage ab. Unbekannte IDs werden als vorab
-    /// abgebrochen vermerkt, damit ein spaeterer `chat_send` sofort stoppt.
-    pub fn cancel(&self, request_id: &str) {
-        let mut entries = self.lock();
-        match entries.get_mut(request_id) {
-            Some(entry) => entry.flag.store(true, Ordering::SeqCst),
-            None => {
-                entries.insert(
-                    request_id.to_string(),
-                    RunEntry {
-                        video_id: None,
-                        flag: Arc::new(AtomicBool::new(true)),
-                        created: Instant::now(),
-                    },
-                );
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
-    }
-}
-
-/// Entfernt beim Verlassen den eigenen Registereintrag, aber nur wenn dort
-/// noch das eigene Flag steht (kein Entfernen fremder Laeufe).
-#[derive(Debug)]
-pub struct ChatRunGuard {
-    runs: ChatRuns,
-    request_id: String,
-    flag: Arc<AtomicBool>,
-}
-
-impl ChatRunGuard {
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.flag.load(Ordering::SeqCst)
-    }
-}
-
-impl Drop for ChatRunGuard {
-    fn drop(&mut self) {
-        let mut entries = self.runs.lock();
-        let is_own = entries
-            .get(&self.request_id)
-            .is_some_and(|entry| Arc::ptr_eq(&entry.flag, &self.flag));
-        if is_own {
-            entries.remove(&self.request_id);
-        }
-    }
 }
 
 #[tauri::command]
@@ -496,6 +399,7 @@ pub async fn chat_send(
     model_id: Option<String>,
     request_id: String,
     web_search: Option<bool>,
+    context_options: Option<ChatContextOptions>,
 ) -> AppResult<ChatTurnResult> {
     // Registrierung vor Zielaufloesung und jedem await.
     let guard = runs.begin(&request_id, video_id)?;
@@ -538,6 +442,7 @@ pub async fn chat_send(
         text,
         target,
         tools,
+        context_options,
         || guard.is_cancelled(),
         move |accumulated| {
             let now = Instant::now();
@@ -575,6 +480,16 @@ pub async fn chat_send(
         },
     )
     .await
+}
+
+/// Aendert die Kontext-Auswahl eines bestehenden Chats ohne zu senden.
+#[tauri::command]
+pub fn chat_context_set(
+    paths: State<'_, AppPaths>,
+    chat_id: i64,
+    options: ChatContextOptions,
+) -> AppResult<Chat> {
+    storage::set_chat_context(&paths, chat_id, &options)
 }
 
 #[tauri::command]

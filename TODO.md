@@ -72,6 +72,31 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Korrekturen Etappe 3 (E1–E3): Versionen im Kontext-Popover sind jetzt
+  **Checkboxen** (Mehrfachauswahl bis 5, „Neueste“/„Keine“ als Radios, letzte Checkbox
+  abgewählt → „Neueste“; Hinweis „Höchstens 5 Zusammenfassungen“), kompakte
+  Button-Beschriftung mit vollem Text im `title` (`Kontext: Transkript + 2 Zus.`), Popover
+  öffnet linksbündig unter dem Kontext-Button und bleibt im Viewport, Laufregister nach
+  `src-tauri/src/chat_runs.rs` ausgelagert (`chat.rs` jetzt 502 Zeilen). Tests U42–U45.
+  Gates: `cargo fmt --check` sauber, `cargo test` (216 bestanden, 4 ignoriert, ohne
+  Warnungen), `npm run build`, `npm run test:ui` (52 bestanden) und `npm run tauri -- build`
+  grün. Mutationsbeleg M13 (Radio statt Checkbox) → U42/U43 rot. Bericht:
+  `.herd/impl-3-korrekturen-bericht.md`. Installation per
+  `sudo dpkg -i youtube-summarizer.deb` steht beim Maintainer aus.
+
+- 2026-09-19: Video-Chat Etappe 3 (Kontext-Wähler): Spalte `chats.context_options`
+  (nachgerüstet per `ensure_table_column`, X12), `ChatContextOptions` in Modell/Chat,
+  `ChatContext::resolve` (gewählte Versionen älteste zuerst, fremde/gelöschte IDs entfallen,
+  max. 5, `NO_TRANSCRIPT_ADDENDUM`, `Kein Kontext gewählt …`), eindeutige Delimiter je
+  Geschwisterblock, Optionen werden mit der Runde gespeichert (X10) und `chat_context_set`;
+  Frontend-Popover `#chatContextBtn`/`#chatContextMenu` (`src/chat-context.ts`), U5
+  präzisiert (Eingabe ohne Transkript nutzbar, wenn eine Zusammenfassung existiert). Tests
+  X1–X12 und U35–U41. Gates: `cargo fmt --check` sauber, `cargo test` (216 bestanden,
+  4 ignoriert, ohne Warnungen), `npm run build`, `npm run test:ui` (48 bestanden) und
+  `npm run tauri -- build` grün. Mutationsbelege M11 (X3/X11) und M12 (X10) in
+  `/tmp/yts-mut-3-ds`. Bericht: `.herd/impl-3-bericht.md`. Installation per
+  `sudo dpkg -i youtube-summarizer.deb` steht beim Maintainer aus.
+
 - 2026-09-19: Abnahme Etappe 2 Video-Chat (Websuche). Nativer Durchlauf mit
   `npm run tauri dev` (isoliertes `XDG_DATA_HOME`, danach gelöscht) über die
   Automation-API gegen OpenRouter `deepseek/deepseek-v4.1-flash` und das lokale SearXNG

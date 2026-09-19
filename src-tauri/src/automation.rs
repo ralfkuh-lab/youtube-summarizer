@@ -36,6 +36,8 @@ struct ChatRequest {
     model_id: Option<String>,
     #[serde(default)]
     web_search: bool,
+    #[serde(default)]
+    context_options: Option<crate::models::ChatContextOptions>,
 }
 
 pub fn start(paths: AppPaths) {
@@ -288,6 +290,7 @@ fn route(
                     request.text,
                     target,
                     tools,
+                    request.context_options,
                     || false,
                     |_| {},
                     |_| {},

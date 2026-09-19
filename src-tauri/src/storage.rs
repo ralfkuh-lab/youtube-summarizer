@@ -7,7 +7,8 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::models::{
-    Chapter, Chat, ChatMessageRecord, Collection, NewChatMessage, NewVideo, Summary, Video,
+    Chapter, Chat, ChatContextOptions, ChatMessageRecord, Collection, NewChatMessage, NewVideo,
+    Summary, Video,
 };
 
 pub type AppResult<T> = Result<T, String>;
@@ -107,6 +108,7 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
             title TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
+            context_options TEXT,
             FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
         );
 
@@ -130,6 +132,8 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
     .map_err(|err| format!("Datenbank konnte nicht initialisiert werden: {err}"))?;
     ensure_video_column(&conn, "description", "TEXT")?;
     ensure_video_column(&conn, "transcript_error", "TEXT")?;
+    // Etappe 3: Kontext-Wahl je Chat (NULL = Standard).
+    ensure_table_column(&conn, "chats", "context_options", "TEXT")?;
     backfill_legacy_summaries(&conn)?;
     Ok(())
 }
@@ -137,13 +141,25 @@ pub fn init_db(paths: &AppPaths) -> AppResult<()> {
 /// Adds a column to an existing videos table; CREATE TABLE IF NOT EXISTS
 /// only covers fresh databases.
 fn ensure_video_column(conn: &Connection, name: &str, column_type: &str) -> AppResult<()> {
+    ensure_table_column(conn, "videos", name, column_type)
+}
+
+/// Ergaenzt eine Spalte in einer bestehenden Tabelle (nachgeruestete Spalten).
+fn ensure_table_column(
+    conn: &Connection,
+    table: &str,
+    name: &str,
+    column_type: &str,
+) -> AppResult<()> {
     let exists = conn
-        .prepare("SELECT 1 FROM pragma_table_info('videos') WHERE name = ?1")
+        .prepare(&format!(
+            "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"
+        ))
         .and_then(|mut stmt| stmt.exists(params![name]))
-        .map_err(|err| format!("Videotabelle konnte nicht geprüft werden: {err}"))?;
+        .map_err(|err| format!("Tabelle {table} konnte nicht geprüft werden: {err}"))?;
     if !exists {
         conn.execute(
-            &format!("ALTER TABLE videos ADD COLUMN {name} {column_type}"),
+            &format!("ALTER TABLE {table} ADD COLUMN {name} {column_type}"),
             [],
         )
         .map_err(|err| format!("Spalte {name} konnte nicht ergänzt werden: {err}"))?;
@@ -404,7 +420,7 @@ pub fn set_transcript_error(paths: &AppPaths, id: i64, error: &str) -> AppResult
     get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())
 }
 
-const CHAT_COLUMNS: &str = "id, video_id, title, created_at, updated_at";
+const CHAT_COLUMNS: &str = "id, video_id, title, created_at, updated_at, context_options";
 
 const CHAT_MESSAGE_COLUMNS: &str =
     "id, chat_id, role, content, tool_calls, tool_call_id, provider, model, created_at";
@@ -457,6 +473,7 @@ pub fn append_chat_turn(
     chat_id: Option<i64>,
     title: &str,
     messages: Vec<NewChatMessage>,
+    context_options: Option<&ChatContextOptions>,
 ) -> AppResult<(Chat, Vec<ChatMessageRecord>)> {
     let mut conn = open_db(paths)?;
     let now = Utc::now().to_rfc3339();
@@ -495,14 +512,26 @@ pub fn append_chat_turn(
             }
         }
         None => {
+            let options = context_options.cloned().unwrap_or_default();
             tx.execute(
-                "INSERT INTO chats (video_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-                params![video_id, title, now],
+                "INSERT INTO chats (video_id, title, created_at, updated_at, context_options) \
+                 VALUES (?1, ?2, ?3, ?3, ?4)",
+                params![video_id, title, now, serde_json::to_string(&options).ok()],
             )
             .map_err(|err| format!("Chat konnte nicht angelegt werden: {err}"))?;
             tx.last_insert_rowid()
         }
     };
+
+    // Eine mitgegebene Auswahl ueberschreibt die gespeicherte - in derselben
+    // Transaktion wie die Runde (Commit nach Erfolg).
+    if let Some(options) = context_options {
+        tx.execute(
+            "UPDATE chats SET context_options = ?1 WHERE id = ?2",
+            params![serde_json::to_string(options).ok(), chat_id],
+        )
+        .map_err(|err| format!("Kontext-Auswahl konnte nicht gespeichert werden: {err}"))?;
+    }
 
     let mut records = Vec::with_capacity(messages.len());
     for message in messages {
@@ -563,13 +592,42 @@ pub fn delete_chat(paths: &AppPaths, chat_id: i64) -> AppResult<()> {
 }
 
 fn row_to_chat(row: &Row<'_>) -> rusqlite::Result<Chat> {
+    let options: Option<String> = row.get("context_options")?;
     Ok(Chat {
         id: row.get("id")?,
         video_id: row.get("video_id")?,
         title: row.get("title")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        context_options: parse_context_options(options.as_deref()),
     })
+}
+
+/// Gespeicherte Auswahl; NULL oder defektes JSON -> Standard.
+fn parse_context_options(raw: Option<&str>) -> ChatContextOptions {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default()
+}
+
+/// `chat_context_set`: Auswahl eines bestehenden Chats speichern.
+pub fn set_chat_context(
+    paths: &AppPaths,
+    chat_id: i64,
+    options: &ChatContextOptions,
+) -> AppResult<Chat> {
+    let conn = open_db(paths)?;
+    let changed = conn
+        .execute(
+            "UPDATE chats SET context_options = ?1 WHERE id = ?2",
+            params![serde_json::to_string(options).ok(), chat_id],
+        )
+        .map_err(|err| format!("Kontext-Auswahl konnte nicht gespeichert werden: {err}"))?;
+    if changed == 0 {
+        return Err("Chat wurde gelöscht".to_string());
+    }
+    get_chat(paths, chat_id)?.ok_or_else(|| "Chat wurde gelöscht".to_string())
 }
 
 fn row_to_chat_message(row: &Row<'_>) -> rusqlite::Result<ChatMessageRecord> {
