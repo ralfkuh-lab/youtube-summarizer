@@ -1,6 +1,13 @@
 import { $ } from "./dom-utils";
 import type { Collection, TabName, Video, VideoStatusFilter } from "./types";
 
+/// Ein Werkzeug-Schritt einer laufenden Chat-Anfrage (Event `ai:chat_tool`).
+export interface ChatToolStep {
+  kind: "search" | "fetch";
+  label: string;
+  status: "start" | "ok" | "error";
+}
+
 /// Laufende Chat-Anfrage eines Videos. `chatId` ist der Chat, fuer den
 /// gesendet wurde (`null` = neuer Chat), `answer` der bisher gestreamte Text.
 export interface ChatRun {
@@ -8,6 +15,7 @@ export interface ChatRun {
   chatId: number | null;
   question: string;
   answer: string;
+  tools: ChatToolStep[];
 }
 
 export interface AppState {

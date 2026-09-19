@@ -859,7 +859,7 @@ export function initSettingsAi(): void {
 }
 
 // --- Model picker (ported from folio ai-model-picker.ts) ---
-export type CatalogModelPicker = { id: string; name?: string };
+export type CatalogModelPicker = { id: string; name?: string; tool_call?: boolean; };
 export type CatalogProviderPicker = {
     id: string;
     name?: string;
@@ -963,9 +963,20 @@ export function fillModelPicker(
     if (match) selectElement.value = preferred;
 }
 
+/// Ob das im Auswahlfeld gewaehlte Modell Tool-Calling unterstuetzt (Katalog).
+export function modelSupportsToolCall(modelValue: string): boolean {
+    if (!modelValue || !catalogResult) return false;
+    try {
+        const [providerId, modelId] = JSON.parse(modelValue) as [string, string];
+        return catalogResult.catalog[providerId]?.models?.[modelId]?.tool_call === true;
+    } catch {
+        return false;
+    }
+}
+
 // --- Glue for youtube-summarizer: open, apply, chat test (kept as extension) ---
 
-function activateSettingsTab(slug: string) {
+export function activateSettingsTab(slug: string) {
   const tabs = document.querySelectorAll<HTMLButtonElement>('[id^="settings-tab-"]');
   tabs.forEach((t) => {
     const active = t.id === `settings-tab-${slug}`;

@@ -34,6 +34,8 @@ struct ChatRequest {
     text: String,
     provider_id: Option<String>,
     model_id: Option<String>,
+    #[serde(default)]
+    web_search: bool,
 }
 
 pub fn start(paths: AppPaths) {
@@ -265,6 +267,13 @@ fn route(
                 )?;
                 let key = crate::ai::auth::AuthStore::load(paths).get_key(&selected.provider);
                 let provider_label = summarize::provider_label(&ai, &catalog, &selected.provider);
+                let tools = crate::chat::web_search_runtime(
+                    paths,
+                    &catalog,
+                    &selected.provider,
+                    &selected.model,
+                    Some(request.web_search),
+                );
                 let target = summarize::SummaryTarget {
                     provider_label,
                     model: selected.model,
@@ -278,7 +287,9 @@ fn route(
                     request.chat_id,
                     request.text,
                     target,
+                    tools,
                     || false,
+                    |_| {},
                     |_| {},
                 ))
             })();

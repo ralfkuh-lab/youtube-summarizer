@@ -2,6 +2,7 @@ mod ai;
 #[cfg(debug_assertions)]
 mod automation;
 mod chat;
+mod chat_prompt;
 mod commands;
 mod models;
 mod storage;
@@ -100,7 +101,10 @@ pub fn run() {
             chat::chat_messages,
             chat::chat_delete,
             chat::chat_send,
-            chat::chat_cancel
+            chat::chat_cancel,
+            websearch::web_search_config_get,
+            websearch::web_search_config_set,
+            websearch::web_search_test
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

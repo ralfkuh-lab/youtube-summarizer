@@ -1,22 +1,71 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ensureAiData, fillModelPicker } from "./ai-config";
+import { ensureAiData, fillModelPicker, modelSupportsToolCall } from "./ai-config";
+import {
+  deleteChatDraft,
+  forgetChatSelection,
+  forgetChatState,
+  getChatList,
+  prependChatDraft,
+  readChatDraft,
+  rememberChatSelection,
+  resolveChatSelection,
+  setChatList,
+  stashChatDraft,
+} from "./chat-state";
 import { seekVideo } from "./detail";
 import { $, confirmDialog, errorMessage } from "./dom-utils";
-import { getActiveVideo, setStatus, state, type ChatRun } from "./state";
-import { renderMarkdownInto } from "./summary-view";
+import { getActiveVideo, setStatus, state, type ChatRun, type ChatToolStep } from "./state";
+import {
+  appendProvisionalMessages,
+  clearChatMessages,
+  removeProvisionalMessages,
+  renderChatMessages,
+  renderStreamingAnswer,
+  renderToolActivity,
+  scrollChatToBottom,
+} from "./chat-render";
 import type { Chat, ChatMessageRecord, ChatTurnResult, Video } from "./types";
+import {
+  isWebSearchConfigured,
+  loadWebSearchConfig,
+  onWebSearchConfigChanged,
+} from "./websearch-settings";
+
+export { forgetChatState };
 
 const CHAT_MODEL_KEY = "chatModel";
+const CHAT_WEB_SEARCH_KEY = "chatWebSearch";
 const STREAM_EVENT = "ai:chat_stream";
-const AUTOSCROLL_TOLERANCE_PX = 40;
+const TOOL_EVENT = "ai:chat_tool";
 const INPUT_MAX_LINES = 6;
 
-let chatList: Chat[] = [];
 let lastChatVideoId: number | null = null;
 
-function chatContextKey(videoId: number, chatId: number | null): string {
-  return `${videoId}:${chatId ?? "new"}`;
+function chatList(): Chat[] {
+  return getChatList();
+}
+
+/// Der Schalter ist nur bedienbar, wenn die Websuche konfiguriert ist und das
+/// gewaehlte Modell Tool-Calling unterstuetzt.
+export function updateWebSearchToggle() {
+  const checkbox = $<HTMLInputElement>("#chatWebSearch");
+  const label = $<HTMLLabelElement>("#chatWebSearchLabel");
+  const configured = isWebSearchConfigured();
+  const modelSupports = modelSupportsToolCall($<HTMLSelectElement>("#chatModel").value);
+  const available = configured && modelSupports;
+  checkbox.disabled = !available;
+  checkbox.checked = available && localStorage.getItem(CHAT_WEB_SEARCH_KEY) === "1";
+  label.title = available
+    ? "Websuche fuer diese Frage nutzen"
+    : configured
+      ? "Modell unterstützt kein Tool-Calling"
+      : "Websuche ist nicht konfiguriert";
+}
+
+function webSearchRequested(): boolean {
+  const checkbox = $<HTMLInputElement>("#chatWebSearch");
+  return !checkbox.disabled && checkbox.checked;
 }
 
 function parseModelValue(value: string): [string | null, string | null] {
@@ -75,151 +124,15 @@ function fillChatSelect() {
   select.textContent = "";
   const empty = document.createElement("option");
   empty.value = "";
-  empty.textContent = chatList.length ? "Neuer Chat" : "Noch kein Chat";
+  empty.textContent = chatList().length ? "Neuer Chat" : "Noch kein Chat";
   select.append(empty);
-  for (const chat of chatList) {
+  for (const chat of chatList()) {
     const option = document.createElement("option");
     option.value = String(chat.id);
     option.textContent = `${chat.title} – ${formatChatDate(chat.updatedAt)}`;
     select.append(option);
   }
   select.value = state.activeChatId === null ? "" : String(state.activeChatId);
-}
-
-function chatMessagesEl(): HTMLElement {
-  return $("#chatMessages");
-}
-
-function isChatAtBottom(root: HTMLElement): boolean {
-  return root.scrollHeight - root.scrollTop - root.clientHeight < AUTOSCROLL_TOLERANCE_PX;
-}
-
-function scrollChatToBottom(force = false) {
-  const root = chatMessagesEl();
-  if (force || isChatAtBottom(root)) {
-    root.scrollTop = root.scrollHeight;
-  }
-}
-
-function buildMessageRow(role: "user" | "assistant"): HTMLDivElement {
-  const row = document.createElement("div");
-  // Eigener Klassenname: `.chat-message` gehoert dem Modell-Testchat in den
-  // Einstellungen und stylt dort jeden Absatz als eigenen Kasten.
-  row.className = `chat-row chat-row--${role}`;
-  return row;
-}
-
-function buildBubble(text: string): HTMLDivElement {
-  const bubble = document.createElement("div");
-  bubble.className = "chat-bubble";
-  // Benutzertext ausschliesslich als Text - niemals als HTML.
-  bubble.textContent = text;
-  return bubble;
-}
-
-function buildAssistantMessage(
-  provider: string | null,
-  model: string | null,
-): { row: HTMLDivElement; bubble: HTMLDivElement } {
-  const row = buildMessageRow("assistant");
-  const bubble = document.createElement("div");
-  bubble.className = "chat-bubble";
-  row.append(bubble);
-  const label = [provider, model].filter((part): part is string => !!part && !!part.trim()).join(" · ");
-  if (label) {
-    const meta = document.createElement("div");
-    meta.className = "chat-meta";
-    meta.textContent = label;
-    row.append(meta);
-  }
-  return { row, bubble };
-}
-
-function buildToolMessage(content: string, provider: string | null, model: string | null): HTMLDivElement {
-  const row = buildMessageRow("assistant");
-  const details = document.createElement("details");
-  details.className = "chat-tool";
-  const summary = document.createElement("summary");
-  summary.textContent = [provider, model].filter(Boolean).join(" · ") || "Werkzeug";
-  const body = document.createElement("div");
-  body.className = "chat-tool-body";
-  body.textContent = content;
-  details.append(summary, body);
-  row.append(details);
-  return row;
-}
-
-function removeProvisionalMessages(requestId: string) {
-  chatMessagesEl()
-    .querySelectorAll<HTMLElement>(`.chat-row[data-request-id="${requestId}"]`)
-    .forEach((node) => node.remove());
-}
-
-/// Zeigt Frage und (leere) Antwortblase sofort an, waehrend die Anfrage laeuft.
-function appendProvisionalMessages(run: ChatRun) {
-  const root = chatMessagesEl();
-  root.querySelector(".chat-empty")?.remove();
-  const questionRow = buildMessageRow("user");
-  questionRow.dataset.requestId = run.requestId;
-  questionRow.append(buildBubble(run.question));
-  const { row: answerRow, bubble } = buildAssistantMessage(null, null);
-  answerRow.dataset.requestId = run.requestId;
-  bubble.dataset.streaming = run.requestId;
-  root.append(questionRow, answerRow);
-  scrollChatToBottom(true);
-}
-
-async function renderStreamingAnswer(run: ChatRun, mermaid: boolean, gen: number) {
-  const bubble = chatMessagesEl().querySelector<HTMLElement>(
-    `.chat-bubble[data-streaming="${run.requestId}"]`,
-  );
-  if (!bubble) return;
-  await renderMarkdownInto(bubble, run.answer, {
-    mermaid,
-    gen,
-    stripFence: false,
-    target: "chat",
-  });
-}
-
-async function renderChatMessages(messages: ChatMessageRecord[], gen: number) {
-  const root = chatMessagesEl();
-  const wasAtBottom = isChatAtBottom(root);
-  root.textContent = "";
-  if (!messages.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty chat-empty";
-    empty.textContent = "Noch keine Nachrichten";
-    root.append(empty);
-    return;
-  }
-  for (const message of messages) {
-    if (gen !== state.chatRenderGen) return;
-    if (message.role === "user") {
-      const row = buildMessageRow("user");
-      row.append(buildBubble(message.content));
-      root.append(row);
-      continue;
-    }
-    if (message.role === "assistant") {
-      const { row, bubble } = buildAssistantMessage(
-        message.provider ?? null,
-        message.model ?? null,
-      );
-      root.append(row);
-      await renderMarkdownInto(bubble, message.content, {
-        mermaid: true,
-        gen,
-        stripFence: false,
-        target: "chat",
-      });
-      continue;
-    }
-    root.append(
-      buildToolMessage(message.content, message.provider ?? null, message.model ?? null),
-    );
-  }
-  if (gen === state.chatRenderGen && wasAtBottom) scrollChatToBottom(true);
 }
 
 async function refreshChatList(videoId: number, gen: number) {
@@ -231,7 +144,7 @@ async function refreshChatList(videoId: number, gen: number) {
     return;
   }
   if (gen !== state.chatRenderGen || getActiveVideo()?.id !== videoId) return;
-  chatList = chats;
+  setChatList(chats);
   fillChatSelect();
 }
 
@@ -260,29 +173,15 @@ async function loadActiveChatMessages(video: Video, gen: number) {
   updateChatControls(video);
 }
 
-/// Uebernimmt die gemerkte Chat-Wahl eines Videos, wenn sie noch gueltig ist.
-/// Reihenfolge: laufende Anfrage, gemerkte Wahl, sonst der neueste Chat.
-function resolveChatSelection(videoId: number): number | null {
-  const run = state.chatRuns.get(videoId);
-  if (run) return run.chatId;
-  if (state.chatSelection.has(videoId)) {
-    const remembered = state.chatSelection.get(videoId) ?? null;
-    if (remembered === null || chatList.some((chat) => chat.id === remembered)) {
-      return remembered;
-    }
-  }
-  return chatList[0]?.id ?? null;
-}
-
 /// Baut den Chat-Tab fuer ein Video neu auf (auch beim Aktivieren des Tabs).
 export async function renderChatTab(video: Video) {
   const gen = ++state.chatRenderGen;
   if (lastChatVideoId !== video.id) {
     // Beim Videowechsel gehoert der getippte Text noch zum verlassenen Chat.
-    stashChatDraft(lastChatVideoId, state.activeChatId);
+    stashInputDraft(lastChatVideoId, state.activeChatId);
     lastChatVideoId = video.id;
   }
-  chatList = [];
+  setChatList([]);
   fillChatSelect();
   updateChatControls(video);
   await refreshChatList(video.id, gen);
@@ -296,10 +195,10 @@ export async function renderChatTab(video: Video) {
 /// Leert den Chat-Tab beim Schliessen der Detailansicht.
 export function resetChat() {
   state.activeChatId = null;
-  chatList = [];
+  setChatList([]);
   lastChatVideoId = null;
   state.chatRenderGen += 1;
-  chatMessagesEl().textContent = "";
+  clearChatMessages();
   clearChatInput();
   fillChatSelect();
   updateChatControls(null);
@@ -308,9 +207,9 @@ export function resetChat() {
 function selectChat(chatId: number | null) {
   const video = getActiveVideo();
   // Jede explizite Wahl wird gemerkt, auch wenn sie schon aktiv ist.
-  if (video) state.chatSelection.set(video.id, chatId);
+  if (video) rememberChatSelection(video.id, chatId);
   if (state.activeChatId === chatId) return;
-  stashChatDraft(video?.id ?? null, state.activeChatId);
+  stashInputDraft(video?.id ?? null, state.activeChatId);
   state.activeChatId = chatId;
   fillChatSelect();
   if (!video) return;
@@ -330,7 +229,7 @@ async function deleteChat() {
   const video = getActiveVideo();
   const chatId = state.activeChatId;
   if (!video || chatId === null) return;
-  const chat = chatList.find((item) => item.id === chatId);
+  const chat = chatList().find((item) => item.id === chatId);
   if (
     !(await confirmDialog(
       chat ? `Chat "${chat.title}" wirklich löschen?` : "Diesen Chat wirklich löschen?",
@@ -346,8 +245,8 @@ async function deleteChat() {
     return;
   }
   if (getActiveVideo()?.id !== video.id) return;
-  state.chatSelection.delete(video.id);
-  state.chatDrafts.delete(chatContextKey(video.id, chatId));
+  forgetChatSelection(video.id);
+  deleteChatDraft(video.id, chatId);
   const gen = ++state.chatRenderGen;
   await refreshChatList(video.id, gen);
   if (gen !== state.chatRenderGen || getActiveVideo()?.id !== video.id) return;
@@ -383,36 +282,20 @@ function clearChatInput() {
 /// geloescht wird er beim erfolgreichen Senden aus diesem Chat oder wenn der
 /// Benutzer das Feld leert und den Chat verlaesst.
 function restoreChatDraft(videoId: number, chatId: number | null) {
-  const draft = state.chatDrafts.get(chatContextKey(videoId, chatId));
+  const draft = readChatDraft(videoId, chatId);
   if (draft === undefined) return;
   const input = $<HTMLTextAreaElement>("#chatInput");
   input.value = draft;
   resizeChatInput();
 }
 
-/// Merkt den nichtleeren Inhalt des Eingabefelds beim Verlassen eines Chats
-/// und leert das Feld; ein leeres Feld entfernt den Entwurf dieses Chats.
-function stashChatDraft(videoId: number | null, chatId: number | null) {
+/// Merkt den Inhalt des Eingabefelds beim Verlassen eines Chats und leert es.
+function stashInputDraft(videoId: number | null, chatId: number | null) {
   if (videoId === null) return;
   const input = $<HTMLTextAreaElement>("#chatInput");
-  const value = input.value;
-  const key = chatContextKey(videoId, chatId);
-  if (value.trim() === "") {
-    state.chatDrafts.delete(key);
-  } else {
-    state.chatDrafts.set(key, value);
-  }
+  stashChatDraft(videoId, chatId, input.value);
   input.value = "";
   resizeChatInput();
-}
-
-/// Vergisst Auswahl und Entwuerfe eines geloeschten Videos.
-export function forgetChatState(videoId: number) {
-  state.chatSelection.delete(videoId);
-  const prefix = `${videoId}:`;
-  for (const key of [...state.chatDrafts.keys()]) {
-    if (key.startsWith(prefix)) state.chatDrafts.delete(key);
-  }
 }
 
 async function sendChatMessage() {
@@ -425,7 +308,13 @@ async function sendChatMessage() {
   if (state.chatRuns.has(video.id)) return;
 
   const requestId = crypto.randomUUID();
-  const run: ChatRun = { requestId, chatId: state.activeChatId, question: text, answer: "" };
+  const run: ChatRun = {
+    requestId,
+    chatId: state.activeChatId,
+    question: text,
+    answer: "",
+    tools: [],
+  };
   state.chatRuns.set(video.id, run);
   input.value = "";
   resizeChatInput();
@@ -447,6 +336,7 @@ async function sendChatMessage() {
       providerId,
       modelId,
       requestId,
+      webSearch: webSearchRequested(),
     });
     state.chatRuns.delete(videoId);
     // N3: Die Auswahl folgt dem fertig gewordenen Chat, solange der Benutzer
@@ -458,7 +348,7 @@ async function sendChatMessage() {
       state.chatSelection.set(videoId, result.chat.id);
     }
     // Der Text ist abgeschickt; fuer diesen Chat gibt es keinen Entwurf mehr.
-    state.chatDrafts.delete(chatContextKey(videoId, runChatId));
+    deleteChatDraft(videoId, runChatId);
     if (isVisibleContext()) {
       // Frische Generation: der Sendezeitpunkt kann lange zurueckliegen.
       const gen = ++state.chatRenderGen;
@@ -483,9 +373,7 @@ async function sendChatMessage() {
       focusInput = true;
     } else {
       // Die Frage gehoert in ihren Chat; ein vorhandener Entwurf bleibt erhalten.
-      const key = chatContextKey(videoId, runChatId);
-      const existing = state.chatDrafts.get(key);
-      state.chatDrafts.set(key, existing ? `${text}\n\n${existing}` : text);
+      prependChatDraft(videoId, runChatId, text);
     }
     const message = errorMessage(error);
     setStatus(isActiveVideo() ? message : `Chat zu „${video.title}“: ${message}`);
@@ -519,8 +407,26 @@ function onChatStream(event: {
   scrollChatToBottom();
 }
 
+function onChatTool(event: {
+  payload: { requestId: string; videoId: number; kind: string; label: string; status: string };
+}) {
+  const { requestId, videoId, kind, label, status } = event.payload;
+  const run = state.chatRuns.get(videoId);
+  // Fremde requestIds duerfen die angezeigte Blase nicht veraendern.
+  if (!run || run.requestId !== requestId) return;
+  const step: ChatToolStep = {
+    kind: kind === "fetch" ? "fetch" : "search",
+    label,
+    status: status === "ok" || status === "error" ? status : "start",
+  };
+  run.tools.push(step);
+  if (getActiveVideo()?.id !== videoId || state.activeChatId !== run.chatId) return;
+  renderToolActivity(run);
+  scrollChatToBottom();
+}
+
 function bindChatMessagesEvents() {
-  chatMessagesEl().addEventListener("click", (event) => {
+  $<HTMLElement>("#chatMessages").addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     const link = target.closest<HTMLElement>("[data-seek]");
@@ -536,6 +442,15 @@ function bindChatMessagesEvents() {
 export function bindChatEvents() {
   void listen<{ requestId: string; videoId: number; text: string }>(STREAM_EVENT, onChatStream).catch(
     (error) => console.error("ai:chat_stream konnte nicht abonniert werden", error),
+  );
+  void listen<{
+    requestId: string;
+    videoId: number;
+    kind: string;
+    label: string;
+    status: string;
+  }>(TOOL_EVENT, onChatTool).catch((error) =>
+    console.error("ai:chat_tool konnte nicht abonniert werden", error),
   );
 
   $("#chatSend").addEventListener("click", () => {
@@ -565,7 +480,15 @@ export function bindChatEvents() {
     if (target instanceof HTMLSelectElement) {
       localStorage.setItem(CHAT_MODEL_KEY, target.value);
     }
+    updateWebSearchToggle();
   });
+  $<HTMLInputElement>("#chatWebSearch").addEventListener("change", (event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement) {
+      localStorage.setItem(CHAT_WEB_SEARCH_KEY, target.checked ? "1" : "0");
+    }
+  });
+  onWebSearchConfigChanged(() => updateWebSearchToggle());
   $('.tab[data-tab="chat"]').addEventListener("click", () => {
     const video = getActiveVideo();
     if (video) void renderChatTab(video);
@@ -582,4 +505,6 @@ async function initChatModelPicker() {
     return;
   }
   fillModelPicker($<HTMLSelectElement>("#chatModel"), localStorage.getItem(CHAT_MODEL_KEY));
+  await loadWebSearchConfig();
+  updateWebSearchToggle();
 }

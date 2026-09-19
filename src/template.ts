@@ -76,6 +76,10 @@ export const appTemplate = `
           <div id="tabChat" class="tabPanel">
             <div class="chat-toolbar">
               <select id="chatSelect" aria-label="Chat-Verlauf"></select>
+              <label id="chatWebSearchLabel" class="chat-websearch" title="">
+                <input type="checkbox" id="chatWebSearch" />
+                Websuche
+              </label>
               <button id="chatNew" class="inline-action">Neuer Chat</button>
               <button id="chatDelete" class="delete-icon-btn" title="Chat löschen" aria-label="Chat löschen">🗑</button>
               <select id="chatModel" aria-label="Chat-Modell"></select>
@@ -123,6 +127,7 @@ export const appTemplate = `
         <div class="settings-dialog__tabs" role="tablist" aria-label="KI Einstellungen">
           <button id="settings-tab-ki-anbieter" role="tab" aria-selected="true" aria-controls="settings-panel-ki-anbieter" tabindex="0" class="settings-dialog__tab settings-dialog__tab--active">KI-Anbieter</button>
           <button id="settings-tab-ki-modelle" role="tab" aria-selected="false" aria-controls="settings-panel-ki-modelle" tabindex="-1" class="settings-dialog__tab">KI-Modelle</button>
+          <button id="settings-tab-websuche" role="tab" aria-selected="false" aria-controls="settings-panel-websuche" tabindex="-1" class="settings-dialog__tab">Websuche</button>
         </div>
         <div class="settings-dialog__tabpanel settings-ai-panel" id="settings-panel-ki-anbieter" role="tabpanel" aria-labelledby="settings-tab-ki-anbieter" data-settings-tab="ki-anbieter" hidden>
           <section class="settings-section">
@@ -175,6 +180,25 @@ export const appTemplate = `
           </section>
           <section class="settings-section">
             <div id="ai-model-list" class="settings-ai-model-list" aria-live="polite"></div>
+          </section>
+        </div>
+        <div class="settings-dialog__tabpanel settings-ai-panel" id="settings-panel-websuche" role="tabpanel" aria-labelledby="settings-tab-websuche" data-settings-tab="websuche" hidden>
+          <section class="settings-section">
+            <h3 class="settings-section__title">Websuche</h3>
+            <label class="summary-module">
+              <input type="checkbox" id="webSearchEnabled" />
+              Websuche aktivieren
+            </label>
+            <div class="settings-row">
+              <label for="webSearchUrl">SearXNG-URL</label>
+              <input type="url" id="webSearchUrl" class="settings-input" placeholder="http://127.0.0.1:8080" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="settings-ai-toolbar">
+              <button type="button" id="webSearchTest" class="settings-ai-button">Verbindung testen</button>
+              <span id="webSearchTestResult" class="settings-hint"></span>
+            </div>
+            <p class="settings-hint">Seitenabrufe gehen direkt ins Internet; lokale und private Adressen sind gesperrt.</p>
+            <p id="webSearchError" class="settings-ai-error" hidden></p>
           </section>
         </div>
       </div>

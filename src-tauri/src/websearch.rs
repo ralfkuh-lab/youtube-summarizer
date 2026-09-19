@@ -10,18 +10,25 @@
 #![allow(dead_code)]
 
 mod address;
+pub mod config;
 mod html;
 
+use std::future::Future;
 use std::net::IpAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+
+use tauri::State;
 
 use futures_util::StreamExt;
 use reqwest::redirect::Policy;
 use reqwest::{Client, Url};
 use serde_json::{json, Value};
 
+use crate::storage::{AppPaths, AppResult};
 use address::{check_fetch_url, FilteredResolver};
+use config::WebSearchConfig;
 
 pub use address::is_blocked_ip;
 pub use html::html_to_text;
@@ -37,6 +44,7 @@ const FETCH_BUDGET: Duration = Duration::from_secs(30);
 const MAX_SEARCH_RESULTS: usize = 8;
 const MAX_SNIPPET_CHARS: usize = 300;
 const MAX_PAGE_CHARS: usize = 12_000;
+const MAX_TOOL_LABEL_CHARS: usize = 120;
 const USER_AGENT: &str = "Mozilla/5.0 YouTubeSummarizer/0.1";
 
 pub const WEB_SEARCH_TOOL: &str = "web_search";
@@ -70,11 +78,18 @@ pub enum WebError {
 impl WebError {
     /// Text, den das Modell als Tool-Ergebnis sieht.
     pub fn model_message(&self) -> String {
+        format!("Fehler: {}", self.short_reason())
+    }
+
+    /// Kurze Ursache ohne Praefix (die Schleife setzt `Fehler: ` davor).
+    pub fn short_reason(&self) -> String {
         match self {
             WebError::AddressNotAllowed | WebError::NoAllowedAddress => {
-                "Fehler: Adresse nicht erlaubt".to_string()
+                "Adresse nicht erlaubt".to_string()
             }
-            other => format!("Fehler: {other}"),
+            // Eine unbrauchbare URL ist ein Argumentfehler des Modells.
+            WebError::InvalidUrl => INVALID_ARGUMENTS_MESSAGE.to_string(),
+            other => other.to_string(),
         }
     }
 }
@@ -358,6 +373,172 @@ fn text_field(item: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+// ---------------------------------------------------------- Werkzeug-Lauf --
+
+/// Ergebnis eines Werkzeug-Aufrufs an die Chat-Schleife: `Ok(text)` wird
+/// verpackt an das Modell gegeben, `Err(kurze Ursache)` als `Fehler: …`.
+pub type ToolFuture = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
+pub type ToolExecutor = Arc<dyn Fn(String, String) -> ToolFuture + Send + Sync>;
+
+/// Laufzeit der Webtools fuer eine Chat-Runde.
+#[derive(Clone)]
+pub struct ToolRuntime {
+    pub execute: ToolExecutor,
+}
+
+impl std::fmt::Debug for ToolRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ToolRuntime")
+    }
+}
+
+/// Aktivitaet eines Werkzeug-Aufrufs (Event `ai:chat_tool`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolEvent {
+    pub kind: &'static str,
+    pub label: String,
+    pub status: &'static str,
+}
+
+/// Feste Meldungen der Schleife, wenn ein Aufruf nicht ausgefuehrt werden kann.
+pub const TOOL_LIMIT_MESSAGE: &str = "Tool-Limit pro Runde erreicht";
+pub const UNKNOWN_TOOL_MESSAGE: &str = "unbekanntes Tool";
+pub const INVALID_ARGUMENTS_MESSAGE: &str = "ungültige Tool-Argumente";
+
+/// Laufzeit mit den echten Webtools (SearXNG + Seitenabruf).
+pub fn production_runtime(searxng_url: String) -> ToolRuntime {
+    ToolRuntime {
+        execute: Arc::new(move |name: String, arguments: String| {
+            let searxng_url = searxng_url.clone();
+            Box::pin(async move {
+                match name.as_str() {
+                    WEB_SEARCH_TOOL => {
+                        let query = string_argument(&arguments, "query")?;
+                        let results = web_search(&searxng_url, &query)
+                            .await
+                            .map_err(|error| error.short_reason())?;
+                        Ok(search_results_text(&results))
+                    }
+                    FETCH_PAGE_TOOL => {
+                        let url = string_argument(&arguments, "url")?;
+                        fetch_page(&url).await.map_err(|error| error.short_reason())
+                    }
+                    _ => Err(UNKNOWN_TOOL_MESSAGE.to_string()),
+                }
+            })
+        }),
+    }
+}
+
+pub(crate) fn string_argument(arguments: &str, key: &str) -> Result<String, String> {
+    let value: Value =
+        serde_json::from_str(arguments).map_err(|_| INVALID_ARGUMENTS_MESSAGE.to_string())?;
+    match value.get(key).and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => Ok(text.to_string()),
+        _ => Err(INVALID_ARGUMENTS_MESSAGE.to_string()),
+    }
+}
+
+/// Kurzes Label fuer die Aktivitaetszeile (`kind == "search"` -> Suchanfrage,
+/// sonst `host/pfad`), auf 120 Unicode-Skalarwerte gekuerzt.
+pub fn tool_label(name: &str, arguments: &str) -> String {
+    let value = serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
+    let raw = match name {
+        WEB_SEARCH_TOOL => value
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        FETCH_PAGE_TOOL => value
+            .get("url")
+            .and_then(Value::as_str)
+            .map(fetch_label)
+            .unwrap_or_default(),
+        other => other.to_string(),
+    };
+    truncate_chars(&raw, MAX_TOOL_LABEL_CHARS)
+}
+
+pub fn tool_kind(name: &str) -> &'static str {
+    if name == FETCH_PAGE_TOOL {
+        "fetch"
+    } else {
+        "search"
+    }
+}
+
+fn fetch_label(url: &str) -> String {
+    match Url::parse(url) {
+        Ok(parsed) => {
+            let host = parsed.host_str().unwrap_or_default();
+            match parsed.path() {
+                "" | "/" => host.to_string(),
+                path => format!("{host}{path}"),
+            }
+        }
+        Err(_) => url.to_string(),
+    }
+}
+
+/// Kompakter Text der Trefferliste fuer das Modell.
+pub fn search_results_text(results: &[SearchResult]) -> String {
+    if results.is_empty() {
+        return "Keine Treffer.".to_string();
+    }
+    results
+        .iter()
+        .enumerate()
+        .map(|(index, result)| {
+            format!(
+                "{}. {}\n{}\n{}",
+                index + 1,
+                result.title,
+                result.url,
+                result.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+// --------------------------------------------------------------- Commands --
+
+#[tauri::command]
+pub fn web_search_config_get(paths: State<'_, AppPaths>) -> AppResult<WebSearchConfig> {
+    Ok(config::load(&paths))
+}
+
+#[tauri::command]
+pub fn web_search_config_set(
+    paths: State<'_, AppPaths>,
+    config: WebSearchConfig,
+) -> AppResult<WebSearchConfig> {
+    config::save(&paths, &config)
+}
+
+/// Eine Testsuche gegen die angegebene URL; liefert die Anzahl der Treffer.
+#[tauri::command]
+pub async fn web_search_test(url: String) -> AppResult<usize> {
+    let endpoint = config::normalize_url(&url)?;
+    if endpoint.is_empty() {
+        return Err("Ungültige SearXNG-URL".to_string());
+    }
+    let results = web_search(&endpoint, "test")
+        .await
+        .map_err(test_error_text)?;
+    Ok(results.len())
+}
+
+fn test_error_text(error: WebError) -> String {
+    match error {
+        WebError::HttpStatus(403) => {
+            "SearXNG lehnt JSON ab – in settings.yml unter search.formats „json“ erlauben"
+                .to_string()
+        }
+        other => other.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------- Schemas --

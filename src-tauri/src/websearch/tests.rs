@@ -896,3 +896,36 @@ fn q1_large_inputs_stay_linear() {
     }
     assert!(slow.is_empty(), "zu langsam (Schranke 2 s): {slow:?}");
 }
+
+// ------------------------------------------------- K2b: Testsuche/403 -------
+
+#[tokio::test]
+async fn web_search_test_counts_hits() {
+    let server = TestServer::start(|stream| {
+        respond(
+            stream,
+            "200 OK",
+            "application/json",
+            r#"{"results":[{"title":"A"},{"title":"B"}]}"#,
+        )
+    });
+    assert_eq!(web_search_test(server.url("")).await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn web_search_test_explains_a_403() {
+    let server = TestServer::start(|stream| respond(stream, "403 Forbidden", "text/html", "nope"));
+    let error = web_search_test(server.url("")).await.unwrap_err();
+    assert_eq!(
+        error,
+        "SearXNG lehnt JSON ab – in settings.yml unter search.formats „json“ erlauben"
+    );
+}
+
+#[tokio::test]
+async fn web_search_test_rejects_an_empty_url() {
+    assert_eq!(
+        web_search_test("   ".to_string()).await.unwrap_err(),
+        "Ungültige SearXNG-URL"
+    );
+}

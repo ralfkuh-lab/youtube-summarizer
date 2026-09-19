@@ -100,6 +100,14 @@ export const defaultFixtures = {
     answer: "Antwort vom Mock-Modell",
     error: null,
   },
+  webSearchConfig: {
+    enabled: false,
+    searxngUrl: "",
+  },
+  webSearchTest: {
+    count: 3,
+    error: null,
+  },
 };
 
 export function createMockScript(fixtures = {}, delays = {}) {
@@ -134,8 +142,8 @@ export function createMockScript(fixtures = {}, delays = {}) {
           chatId: id,
           role: message.role,
           content: message.content,
-          toolCalls: null,
-          toolCallId: null,
+          toolCalls: message.toolCalls !== undefined ? message.toolCalls : null,
+          toolCallId: message.toolCallId !== undefined ? message.toolCallId : null,
           provider: message.provider !== undefined ? message.provider : null,
           model: message.model !== undefined ? message.model : null,
           createdAt,
@@ -348,6 +356,24 @@ export function createMockScript(fixtures = {}, delays = {}) {
           const result = { chat, messages };
           callRecord.result = result;
           return JSON.parse(JSON.stringify(result));
+        }
+        if (cmd === 'web_search_config_get') {
+          const config = this.fixtures.webSearchConfig || { enabled: false, searxngUrl: '' };
+          callRecord.result = config;
+          return JSON.parse(JSON.stringify(config));
+        }
+        if (cmd === 'web_search_config_set') {
+          const config = args?.config || { enabled: false, searxngUrl: '' };
+          this.fixtures.webSearchConfig = config;
+          callRecord.result = config;
+          return JSON.parse(JSON.stringify(config));
+        }
+        if (cmd === 'web_search_test') {
+          const fixture = this.fixtures.webSearchTest || {};
+          if (fixture.error) {
+            throw new Error(fixture.error);
+          }
+          return fixture.count !== undefined ? fixture.count : 3;
         }
         if (cmd === 'chat_cancel') {
           cancelledRequests.add(args?.requestId);

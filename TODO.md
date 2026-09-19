@@ -70,6 +70,20 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Last Verified State
 
+- 2026-09-19: Video-Chat Etappe 2b (Websuche am Chat): Frontend-Modulschnitt
+  (`src/chat-state.ts`, `src/chat-render.ts`), `websearch.json` mit Commands
+  `web_search_config_get/set/test`, Tool-Schleife in `chat.rs` (max. 5 Runden, max. 4
+  Calls, Schlussanfrage ohne `tools`, feste Fehlertexte, `WEB RESULT`-Verpackung,
+  Commit nach Erfolg), Event `ai:chat_tool`, `webSearch` in `chat_send` und in
+  `POST /api/chat/<id>`, Einstellungs-Tab „Websuche“ (`src/websearch-settings.ts`),
+  Chat-Schalter `#chatWebSearch`, Tool-Aktivität und eingeklappte Tool-Schritte im
+  Verlauf. Tests L1–L10 (+L8b/L10b) und U25–U31. Gates: `cargo fmt --check` sauber,
+  `cargo test` (192 bestanden, 3 ignoriert), `npm run build` und `npm run test:ui`
+  (37 bestanden) grün, `npm run tauri -- build` erfolgreich. Mutationsbelege M6 (L1),
+  M7 (L6), M8 (L5) in `/tmp/yts-mut-2b`. Bericht: `.herd/impl-2b-bericht.md`.
+  Installation per `sudo dpkg -i youtube-summarizer.deb` steht beim Maintainer aus;
+  kein Dev-Server oder Tauri-Prozess gestartet.
+
 - 2026-09-19: Video-Chat Korrekturpaket 2 zu Etappe 2a (Nachprüfungen Opus/Grok):
   `html_to_text` ist jetzt ein einziger Vorwärtsdurchlauf (vorab letztes `>`, letztes
   Kommentarende, letzte Abschluss-Tags; anführungsbewusstes Tag-Ende; Rohtext ohne

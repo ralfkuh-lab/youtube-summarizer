@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::client::{self, ChatError, ChatMessage, SseStep};
 
@@ -22,6 +22,21 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+}
+
+impl ToolCall {
+    /// OpenAI-Form fuer die naechste Anfrage (`type` ist immer `function`).
+    pub fn to_openai_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": self.arguments}
+        })
+    }
+
+    pub fn list_to_openai_json(calls: &[ToolCall]) -> Value {
+        Value::Array(calls.iter().map(ToolCall::to_openai_json).collect())
+    }
 }
 
 /// Ergebnis einer Runde: Text und/oder Tool-Aufrufe.
