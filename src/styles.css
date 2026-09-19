@@ -706,6 +706,16 @@ main {
   margin-top: 8px;
 }
 
+/* `display: flex` oben darf das hidden-Attribut nicht aushebeln (H8). */
+.settings-agent-editor[hidden] {
+  display: none;
+}
+
+#agentPrompt {
+  min-height: 120px;
+  resize: vertical;
+}
+
 .settings-agent-preview {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   word-break: break-all;
@@ -1754,13 +1764,13 @@ select option:hover {
   opacity: 0.6;
 }
 
-.chat-tool-activity {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 6px;
-  font-size: 11px;
-  color: var(--muted);
+/* Live-Schritte einer laufenden Anfrage: gleiche Optik wie gespeicherte
+   Schritte, aber nicht aufklappbar (nur Kopfzeile mit Statuszeichen). */
+.chat-tool-step--live > .chat-tool-live-step {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .chat-tool-live-step--start::before {

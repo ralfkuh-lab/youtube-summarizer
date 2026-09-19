@@ -3,7 +3,8 @@
 // den Markdown-/DOMPurify-Pfad.
 
 import { $ } from "./dom-utils";
-import { state, type ChatRun } from "./state";
+import { liveBlocks } from "./chat-live";
+import { state, type ChatRun, type ChatToolStep } from "./state";
 import { renderMarkdownInto } from "./summary-view";
 import type { ChatMessageRecord } from "./types";
 
@@ -212,66 +213,77 @@ export function buildToolSteps(
 
 export function removeProvisionalMessages(requestId: string) {
   chatMessagesEl()
-    .querySelectorAll<HTMLElement>(`.chat-row[data-request-id="${requestId}"]`)
+    .querySelectorAll<HTMLElement>(`[data-request-id="${requestId}"]`)
     .forEach((node) => node.remove());
 }
 
-/// Werkzeug-Aktivitaeten waehrend der Anfrage (Sucht/Liest, Status).
-export function buildToolActivity(run: ChatRun): HTMLDivElement | null {
-  if (!run.tools.length) return null;
-  const list = document.createElement("div");
-  list.className = "chat-tool-activity chat-tool-steps";
-  list.dataset.toolActivity = run.requestId;
-  for (const step of run.tools) {
-    const line = document.createElement("div");
-    line.className = `chat-tool-live-step chat-tool-live-step--${step.status}`;
-    const prefix = step.kind === "search" ? "Sucht" : step.kind === "fetch" ? "Liest" : "";
-    line.textContent = prefix ? `${prefix}: ${step.label}` : step.label;
-    list.append(line);
-  }
-  return list;
+/// Kopfzeile eines Live-Schritts: dieselbe Regel wie beim gespeicherten Schritt
+/// („Sucht: …“/„Liest: …“).
+function liveStepHeadline(step: ChatToolStep): string {
+  const prefix = step.kind === "search" ? "Sucht" : step.kind === "fetch" ? "Liest" : "";
+  return prefix ? `${prefix}: ${step.label}` : step.label;
 }
 
-/// Zeigt Frage und (leere) Antwortblase sofort an, waehrend die Anfrage laeuft.
+/// Ein Live-Schritt: gleiche Bausteine und Optik wie ein gespeicherter Schritt,
+/// aber nicht aufklappbar (nur Kopfzeile mit Statuszeichen).
+export function buildLiveToolStep(step: ChatToolStep): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = "chat-tool chat-tool-step chat-tool-step--live";
+  const headline = document.createElement("span");
+  headline.className = `chat-tool-live-step chat-tool-live-step--${step.status}`;
+  // Labels kommen vom Modell: ausschliesslich als Text.
+  headline.textContent = liveStepHeadline(step);
+  row.append(headline);
+  return row;
+}
+
+/// Die Live-Segmente einer laufenden Anfrage im Layout der fertigen Anzeige:
+/// je Runde eine Textblase, darunter ihre Recherche-Schritte (Markdown ohne
+/// Mermaid). Nur die Live-Knoten dieser Anfrage werden ersetzt.
+export async function renderLiveRun(run: ChatRun, gen: number) {
+  const root = chatMessagesEl();
+  root
+    .querySelectorAll<HTMLElement>(`[data-live-answer="${run.requestId}"]`)
+    .forEach((node) => node.remove());
+  for (const block of liveBlocks(run)) {
+    if (gen !== state.chatRenderGen) return;
+    if (block.kind === "bubble") {
+      const row = buildMessageRow("assistant");
+      row.dataset.liveAnswer = run.requestId;
+      // Auch als provisorische Zeile markiert: `removeProvisionalMessages`
+      // raeumt bei Fehler oder Abbruch alles zu dieser Anfrage ab.
+      row.dataset.requestId = run.requestId;
+      const bubble = document.createElement("div");
+      bubble.className = "chat-bubble";
+      row.append(bubble);
+      root.append(row);
+      await renderMarkdownInto(bubble, block.text, {
+        mermaid: false,
+        gen,
+        stripFence: false,
+        target: "chat",
+      });
+      continue;
+    }
+    const group = document.createElement("div");
+    group.className = "chat-tool-steps";
+    group.dataset.liveAnswer = run.requestId;
+    group.dataset.requestId = run.requestId;
+    group.append(buildToolGroup(block.steps.length));
+    for (const step of block.steps) group.append(buildLiveToolStep(step));
+    root.append(group);
+  }
+}
+
+/// Zeigt die Frage sofort als Blase an, waehrend die Anfrage laeuft.
 export function appendProvisionalMessages(run: ChatRun) {
   const root = chatMessagesEl();
   root.querySelector(".chat-empty")?.remove();
   const questionRow = buildMessageRow("user");
   questionRow.dataset.requestId = run.requestId;
   questionRow.append(buildBubble(run.question));
-  const { row: answerRow, bubble } = buildAssistantMessage(null, null);
-  answerRow.dataset.requestId = run.requestId;
-  bubble.dataset.streaming = run.requestId;
-  root.append(questionRow, answerRow);
-  renderToolActivity(run);
+  root.append(questionRow);
   scrollChatToBottom(true);
-}
-
-export function renderToolActivity(run: ChatRun) {
-  const root = chatMessagesEl();
-  const answerRow = root.querySelector<HTMLElement>(`.chat-row[data-request-id="${run.requestId}"]:last-child`);
-  const existing = root.querySelector<HTMLElement>(`[data-tool-activity="${run.requestId}"]`);
-  existing?.remove();
-  const activity = buildToolActivity(run);
-  if (!activity) return;
-  if (answerRow) {
-    answerRow.prepend(activity);
-  } else {
-    root.append(activity);
-  }
-}
-
-export async function renderStreamingAnswer(run: ChatRun, mermaid: boolean, gen: number) {
-  const bubble = chatMessagesEl().querySelector<HTMLElement>(
-    `.chat-bubble[data-streaming="${run.requestId}"]`,
-  );
-  if (!bubble) return;
-  await renderMarkdownInto(bubble, run.answer, {
-    mermaid,
-    gen,
-    stripFence: false,
-    target: "chat",
-  });
 }
 
 export async function renderChatMessages(messages: ChatMessageRecord[], gen: number) {

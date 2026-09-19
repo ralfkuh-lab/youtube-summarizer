@@ -1,6 +1,6 @@
 # Spec: Chat über ein Video, optional mit Webrecherche
 
-Stand: 2026-09-19, Revision 6 (Reviews der Etappen 1, 2a und 2b eingearbeitet; Etappe 3 Kontext-Wähler ergänzt).
+Stand: 2026-09-19, Revision 7 (Reviews eingearbeitet; Etappe 3 Kontext-Wähler; Schlussrunde und Live-Anzeige nach dem ersten Praxistest).
 
 ## Ziel
 
@@ -548,6 +548,37 @@ Schritt mit Kopfzeile („Sucht: …“/„Liest: …“) und Inhalt ohne Delimi
 Labels und Inhalte **nur** per `textContent`.
 UI-Fälle: Schalter deaktiviert + Tooltip bei Modell ohne `tool_call`;
 `label` mit HTML erscheint als Text.
+
+## Nachträge aus dem Praxistest (2026-09-19)
+
+**Schlussrunde.** Der Websuche-Zusatz nennt das Budget (höchstens 5
+Recherche-Runden mit je höchstens 4 Aufrufen). Die letzte `tool`-Nachricht der
+5. Runde erhält außerhalb des WEB-RESULT-Blocks die feste Zeile `Hinweis der
+App: Das war die letzte Recherche-Runde. Antworte jetzt abschließend.` Die
+Schlussanfrage sendet `tools` mit `tool_choice: "none"` und eine **nicht
+gespeicherte** Abschluss-Nachricht; lehnt der Provider das mit 400/422 ab, gilt
+für den Rest der Frage die Form ohne `tools`. Beginnt eine Antwort mit roher
+Tool-Syntax (`looks_like_tool_markup`: Text außerhalb von Code-Auszeichnung
+beginnt mit `<|DSML|`, `<tool_call`, `<|tool▁calls`, `<|tool_calls`,
+`<function_calls`, `<invoke name=`, besteht nur aus einem JSON-Objekt mit
+`name` und `arguments`, oder enthält `|DSML|` nach weniger als 200
+Unicode-Skalaren Vorspann), wird sie verworfen und genau einmal neu
+angefordert; danach Fehler `Das Modell hat nach der Recherche keine Antwort
+geliefert – bitte erneut versuchen`. Pro Frage höchstens **7**
+Provider-Anfragen (harter Zähler). Fälle L13–L20.
+
+**Live-Anzeige.** `ai:chat_stream` trägt `round` (Zähler der Provider-Anfragen
+der Frage) und `final`; am Ende jeder Anfrage kommt ein ungedrosseltes Event
+mit dem vollständigen Text (`final: true`, bei verworfener Antwort zusätzlich
+`discarded: true`). `ai:chat_tool` trägt dieselbe `round`. Das Frontend führt
+Live-Abschnitte je Runde und zeigt sie im Layout der fertigen Anzeige:
+Textblase → Gruppenzeile `Recherche · N Schritte` → Schrittzeilen → nächste
+Blase; Runden ohne Text erzeugen keine Blase. Der Übergang zum gespeicherten
+Verlauf ändert die Reihenfolge der sichtbaren Elemente nicht. Fälle U60–U65.
+
+**Tool-Schritte im Verlauf.** Ein `<details>` je Schritt, Kopfzeile `Sucht:
+<query>` bzw. `Liest: <host/pfad>`, Fehler direkt in der Kopfzeile (ohne
+aufklappbaren Körper); Anzeige ohne Delimiter-Zeilen und ohne den App-Hinweis.
 
 ## Etappe 3: Kontext-Wähler
 

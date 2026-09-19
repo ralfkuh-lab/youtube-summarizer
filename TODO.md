@@ -81,6 +81,15 @@ tab, and detail tooltip on the 'T' status chip) — spec:
   unter `/tmp/yts-mut-agent-ds` rot, Referenzläufe grün. Kein nativer Durchlauf mit
   Zwischenablage/Terminal, kein Agent gestartet; die PowerShell-Vorlage ist nicht ausgeführt.
   Kein Dev-Server oder Tauri-Prozess läuft.
+- 2026-09-19 (Nachtrag): Korrekturpaket zur Agenten-Übergabe (H1–H9 aus dem Review) umgesetzt:
+  U+2028/U+2029 gelten als Steuerzeichen, relativer `workdirBase` wird gegen Home aufgelöst, die
+  Dialog-Hinweiszeile hängt am Kopiererfolg, Videowechsel und schneller Vorlagenwechsel verwerfen
+  veraltete Antworten, reservierte Windows-Namen gelten für den ganzen Slug, `defaultPrompt` in der
+  Ansicht (Platzhalter + „Standard-Prompt übernehmen“), Tabulator im Prompt wird zu einem Leerzeichen,
+  Chat-Blöcke nach `created_at` aufsteigend, Vorlagenformular im Anfangszustand verborgen.
+  Bericht: `.herd/impl-agent-korrekturen-bericht.md`. Gates grün (`cargo fmt --check`,
+  `cargo test` 282, `npm run build`, `npm run test:ui` 84); `npm run tauri -- build` macht der
+  Orchestrator. Sechs Rust- und sechs UI-Mutationen in `/tmp` rot belegt, Repo unmutiert.
 - 2026-09-19 (abends): Etappe 3 und Praxistest-Paket abgenommen. `cargo fmt --check`,
   `cargo test` (230 bestanden, 4 ignoriert), `npm run build`, `npm run test:ui`
   (62 bestanden), `npm run tauri -- build` grün. Kein nativer Durchlauf mit echtem Modell

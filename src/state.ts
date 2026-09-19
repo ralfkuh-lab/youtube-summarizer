@@ -8,14 +8,23 @@ export interface ChatToolStep {
   status: "start" | "ok" | "error";
 }
 
+/// Eine Provider-Runde der laufenden Anfrage: bisheriger oder vollstaendiger
+/// Text und die Recherche-Schritte, die ihr Assistant-Turn ausgeloest hat.
+export interface ChatLiveSegment {
+  round: number;
+  text: string;
+  final: boolean;
+  tools: ChatToolStep[];
+}
+
 /// Laufende Chat-Anfrage eines Videos. `chatId` ist der Chat, fuer den
-/// gesendet wurde (`null` = neuer Chat), `answer` der bisher gestreamte Text.
+/// gesendet wurde (`null` = neuer Chat), `segments` sind die Live-Runden in
+/// Reihenfolge (Text und Schritte je Provider-Anfrage).
 export interface ChatRun {
   requestId: string;
   chatId: number | null;
   question: string;
-  answer: string;
-  tools: ChatToolStep[];
+  segments: ChatLiveSegment[];
 }
 
 export interface AppState {

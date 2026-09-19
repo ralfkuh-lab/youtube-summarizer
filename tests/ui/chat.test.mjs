@@ -173,6 +173,24 @@ test("U7: Stopp während der Anfrage ruft chat_cancel mit derselben requestId", 
       );
 
       assert.strictEqual(await page.locator("#chatSend").textContent(), "Stopp");
+      // Live-Segmente vor dem Stopp: Abbruch muss auch sie abraeumen.
+      const { requestId } = (await chatSendCalls(page))[0].args;
+      await page.evaluate((data) => window.__tauriMock.emit("ai:chat_stream", data), {
+        requestId,
+        videoId: 2,
+        round: 0,
+        text: "Angefangene Antwort",
+        final: false,
+      });
+      await page.evaluate((data) => window.__tauriMock.emit("ai:chat_tool", data), {
+        requestId,
+        videoId: 2,
+        round: 0,
+        kind: "search",
+        label: "halbfertig",
+        status: "start",
+      });
+      await page.waitForSelector("#chatMessages .chat-tool-live-step");
       await page.locator("#chatSend").click();
       await mock.waitForPending();
 
@@ -192,6 +210,11 @@ test("U7: Stopp während der Anfrage ruft chat_cancel mit derselben requestId", 
         await page.locator("#chatMessages .chat-bubble").count(),
         0,
         "Nach dem Stopp darf keine Blase übrig bleiben",
+      );
+      assert.strictEqual(
+        await page.locator("#chatMessages .chat-tool-steps").count(),
+        0,
+        "Nach dem Stopp darf keine Recherche-Gruppe übrig bleiben",
       );
       assert.strictEqual(
         await page.locator("#chatInput").inputValue(),
@@ -944,6 +967,12 @@ test("U28: Ein Tool-Label mit HTML erscheint als Text", async () => {
       const text = await page.locator("#chatMessages .chat-tool-live-step").first().textContent();
       assert.ok(text?.includes("<img src=x onerror=alert(1)>"), `Label als Text erwartet: "${text}"`);
       assert.strictEqual(await page.locator("#chatMessages img").count(), 0);
+      // Neues Layout: der Live-Schritt steht in der Recherche-Gruppe.
+      assert.strictEqual(
+        await page.locator("#chatMessages .chat-tool-steps .chat-tool-live-step").count(),
+        1,
+        "der Live-Schritt gehoert in die Recherche-Gruppe",
+      );
 
       await mock.waitForPending();
     },
@@ -1073,6 +1102,11 @@ test("U31: Ein Tool-Event mit fremder requestId wird ignoriert", async () => {
       });
       const steps = await page.locator("#chatMessages .chat-tool-live-step").allTextContents();
       assert.deepEqual(steps, ["Sucht: echte Suche"]);
+      assert.strictEqual(
+        (await page.locator("#chatMessages .chat-tool-group").textContent())?.trim(),
+        "Recherche · 1 Schritt",
+        "das fremde Event darf die Gruppe nicht veraendern",
+      );
 
       await mock.waitForPending();
     },
@@ -1100,11 +1134,16 @@ test("U32: Tool-Status aktualisiert die offene Zeile", async () => {
       await emit({ requestId, videoId: 2, kind: "search", label: "rust sse", status: "ok" });
       const single = await page.locator("#chatMessages .chat-tool-live-step").all();
       assert.strictEqual(single.length, 1, "ok darf keine zweite Zeile erzeugen");
-      assert.strictEqual(
-        await single[0].getAttribute("class"),
-        "chat-tool-live-step chat-tool-live-step--ok",
+      assert.ok(
+        (await single[0].getAttribute("class"))?.includes("chat-tool-live-step--ok"),
+        "ok muss die offene Zeile aktualisieren",
       );
       assert.strictEqual((await single[0].textContent())?.trim(), "Sucht: rust sse");
+      assert.strictEqual(
+        (await page.locator("#chatMessages .chat-tool-group").textContent())?.trim(),
+        "Recherche · 1 Schritt",
+        "die Gruppe nennt die Schrittzahl",
+      );
 
       await emit({ requestId, videoId: 2, kind: "fetch", label: "example.com/a", status: "start" });
       const both = await page.locator("#chatMessages .chat-tool-live-step").allTextContents();
@@ -2116,5 +2155,275 @@ test("U55: Der letzte Schritt der 5. Runde zeigt weder Delimiter noch App-Hinwei
         },
       },
     },
+  );
+});
+
+// ----------------------- Etappe 4: Live-Anzeige (U60-U65) ------------------
+
+/// Die sichtbaren Kinder von `#chatMessages` als stabile Textmarken.
+async function chatNodes(page) {
+  return page.locator("#chatMessages > *").evaluateAll((children) =>
+    children.map((child) => {
+      if (child.classList.contains("chat-row--user")) {
+        return `user:${child.querySelector(".chat-bubble")?.textContent?.trim() ?? ""}`;
+      }
+      if (child.classList.contains("chat-tool-steps")) {
+        const group = child.querySelector(".chat-tool-group")?.textContent?.trim() ?? "-";
+        const heads = [
+          ...child.querySelectorAll(".chat-tool-live-step, details.chat-tool-step > summary"),
+        ].map((node) => node.textContent?.trim() ?? "");
+        return `group:${group}|${heads.join(",")}`;
+      }
+      const bubble = child.querySelector(".chat-bubble");
+      return bubble ? `bubble:${bubble.textContent?.trim() ?? ""}` : "?";
+    }),
+  );
+}
+
+/// Sendet eine Frage und liefert Emitter fuer die Live-Events ihrer Anfrage.
+async function startLiveTurn(page, mock, text) {
+  await sendQuestion(page, text);
+  await page.waitForFunction(() =>
+    window.__tauriMock.calls.some((call) => call.cmd === "chat_send"),
+  );
+  const { requestId } = (await chatSendCalls(page))[0].args;
+  return {
+    requestId,
+    stream: (payload) =>
+      page.evaluate(
+        (data) => window.__tauriMock.emit("ai:chat_stream", data),
+        { requestId, videoId: 2, round: 0, text: "", final: false, ...payload },
+      ),
+    tool: (payload) =>
+      page.evaluate(
+        (data) => window.__tauriMock.emit("ai:chat_tool", data),
+        { requestId, videoId: 2, round: 0, kind: "search", label: "", status: "start", ...payload },
+      ),
+  };
+}
+
+test("U60: Die Live-Anzeige ordnet Blase, Recherche-Schritte und naechste Blase", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+      const live = await startLiveTurn(page, mock, "Frage Sechzig");
+
+      await live.stream({ round: 0, text: "Ich recherchiere kurz im Netz.", final: true });
+      await live.tool({ round: 0, kind: "search", label: "rust sse", status: "start" });
+      await live.tool({ round: 0, kind: "search", label: "rust sse", status: "ok" });
+      await live.tool({ round: 0, kind: "fetch", label: "example.com/a", status: "start" });
+      await live.tool({ round: 0, kind: "fetch", label: "example.com/a", status: "ok" });
+      await live.stream({ round: 1, text: "Ich", final: false });
+      await page.waitForFunction(
+        () => document.querySelectorAll("#chatMessages .chat-tool-live-step").length === 2,
+      );
+
+      assert.deepEqual(await chatNodes(page), [
+        "user:Frage Sechzig",
+        "bubble:Ich recherchiere kurz im Netz.",
+        "group:Recherche · 2 Schritte|Sucht: rust sse,Liest: example.com/a",
+        "bubble:Ich",
+      ]);
+
+      await mock.waitForPending();
+    },
+    { delays: { chat_send: { 2: 1500 } } },
+  );
+});
+
+test("U61: Nach dem Abschluss bleibt die Reihenfolge der Live-Anzeige", async () => {
+  const turnMessages = [
+    {
+      role: "assistant",
+      content: "Ich recherchiere kurz im Netz.",
+      toolCalls: [
+        {
+          id: "c1",
+          type: "function",
+          function: { name: "web_search", arguments: '{"query":"rust sse"}' },
+        },
+      ],
+    },
+    { role: "tool", content: "Treffer", toolCallId: "c1" },
+    { role: "assistant", content: "Hier ist die Antwort." },
+  ];
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+      const live = await startLiveTurn(page, mock, "Frage Einundsechzig");
+
+      await live.stream({ round: 0, text: "Ich recherchiere kurz im Netz.", final: true });
+      await live.tool({ round: 0, kind: "search", label: "rust sse", status: "start" });
+      await live.tool({ round: 0, kind: "search", label: "rust sse", status: "ok" });
+      await live.stream({ round: 1, text: "Hier ist die Antwort.", final: true });
+      await page.waitForFunction(
+        () => document.querySelectorAll("#chatMessages .chat-tool-live-step").length === 1,
+      );
+      const before = await chatNodes(page);
+
+      await mock.waitForPending();
+
+      const after = await chatNodes(page);
+      assert.deepEqual(after, [
+        "user:Frage Einundsechzig",
+        "bubble:Ich recherchiere kurz im Netz.",
+        "group:Recherche · 1 Schritt|Sucht: rust sse",
+        "bubble:Hier ist die Antwort.",
+      ]);
+      assert.deepEqual(after, before, "live und fertig zeigen dieselbe Reihenfolge");
+      assert.strictEqual(await page.locator("#chatMessages .chat-row--user").count(), 1);
+      assert.strictEqual(
+        await page.locator("#chatMessages .chat-row--assistant").count(),
+        2,
+        "keine Dubletten",
+      );
+      assert.strictEqual(await page.locator("#chatMessages details.chat-tool-step").count(), 1);
+    },
+    { fixtures: { chat: { turnMessages } }, delays: { chat_send: { 2: 800 } } },
+  );
+});
+
+test("U62: Runden ohne Text erzeugen keine leere Blase", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+      const live = await startLiveTurn(page, mock, "Frage Zweiundsechzig");
+
+      await live.stream({ round: 0, text: "", final: true });
+      await live.tool({ round: 0, kind: "search", label: "a", status: "start" });
+      await live.tool({ round: 0, kind: "search", label: "a", status: "ok" });
+      await live.tool({ round: 0, kind: "fetch", label: "b.example", status: "start" });
+      await live.tool({ round: 0, kind: "fetch", label: "b.example", status: "ok" });
+      await live.stream({ round: 1, text: "", final: true });
+      await live.tool({ round: 1, kind: "search", label: "c", status: "start" });
+      await live.tool({ round: 1, kind: "search", label: "c", status: "ok" });
+      await live.stream({ round: 2, text: "Fazit", final: true });
+      await page.waitForFunction(
+        () => document.querySelectorAll("#chatMessages .chat-tool-live-step").length === 3,
+      );
+
+      assert.deepEqual(await chatNodes(page), [
+        "user:Frage Zweiundsechzig",
+        "group:Recherche · 3 Schritte|Sucht: a,Liest: b.example,Sucht: c",
+        "bubble:Fazit",
+      ]);
+      assert.strictEqual(
+        await page.locator("#chatMessages .chat-row--assistant .chat-bubble").count(),
+        1,
+        "keine leere Blase fuer textlose Runden",
+      );
+
+      await mock.waitForPending();
+    },
+    { delays: { chat_send: { 2: 1500 } } },
+  );
+});
+
+test("U63: Eine verworfene Runde verschwindet aus der Live-Anzeige", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+      const live = await startLiveTurn(page, mock, "Frage Dreiundsechzig");
+
+      await live.stream({ round: 0, text: "Erste Recherche.", final: true });
+      await live.tool({ round: 0, kind: "search", label: "a", status: "start" });
+      await live.tool({ round: 0, kind: "search", label: "a", status: "ok" });
+      await live.stream({ round: 1, text: "<|DSML|calls>", final: true });
+      await live.stream({ round: 1, text: "", final: true, discarded: true });
+      await live.stream({ round: 2, text: "Antwort.", final: true });
+      await page.waitForFunction(
+        () => document.querySelectorAll("#chatMessages .chat-bubble").length === 3,
+      );
+
+      assert.deepEqual(await chatNodes(page), [
+        "user:Frage Dreiundsechzig",
+        "bubble:Erste Recherche.",
+        "group:Recherche · 1 Schritt|Sucht: a",
+        "bubble:Antwort.",
+      ]);
+      assert.ok(
+        !(await page.locator("#chatMessages").textContent())?.includes("DSML"),
+        "die verworfene Runde darf nicht sichtbar bleiben",
+      );
+
+      await mock.waitForPending();
+    },
+    { delays: { chat_send: { 2: 1500 } } },
+  );
+});
+
+test("U64: Live-Events mit fremder requestId aendern nichts", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+      const live = await startLiveTurn(page, mock, "Frage Vierundsechzig");
+
+      await live.stream({ round: 0, text: "Echt", final: false });
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#chatMessages .chat-row--assistant .chat-bubble")
+          ?.textContent?.includes("Echt"),
+      );
+      const before = await chatNodes(page);
+
+      await page.evaluate((data) => window.__tauriMock.emit("ai:chat_stream", data), {
+        requestId: "fremde-anfrage",
+        videoId: 2,
+        round: 0,
+        text: "FREMD",
+        final: true,
+      });
+      await page.evaluate((data) => window.__tauriMock.emit("ai:chat_tool", data), {
+        requestId: "fremde-anfrage",
+        videoId: 2,
+        round: 0,
+        kind: "search",
+        label: "FREMD",
+        status: "start",
+      });
+
+      assert.deepEqual(await chatNodes(page), before);
+      assert.strictEqual(await page.locator("#chatMessages .chat-tool-live-step").count(), 0);
+
+      await mock.waitForPending();
+    },
+    { delays: { chat_send: { 2: 800 } } },
+  );
+});
+
+test("U65: Nach dem Videowechsel sind alle Live-Segmente wieder da", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+      const live = await startLiveTurn(page, mock, "Frage Fünfundsechzig");
+
+      await live.stream({ round: 0, text: "Erste Runde.", final: true });
+      await live.tool({ round: 0, kind: "search", label: "a", status: "start" });
+      await live.tool({ round: 0, kind: "search", label: "a", status: "ok" });
+      await live.stream({ round: 1, text: "Zweite", final: false });
+      await page.waitForFunction(
+        () => document.querySelectorAll("#chatMessages .chat-tool-live-step").length === 1,
+      );
+      const before = await chatNodes(page);
+
+      await page.locator('.video-item[data-id="3"]').click();
+      await page.locator('.tab[data-tab="chat"]').click();
+      await page.locator('.video-item[data-id="2"]').click();
+      await page.locator('.tab[data-tab="chat"]').click();
+      await page.waitForFunction(
+        () => document.querySelectorAll("#chatMessages .chat-tool-live-step").length === 1,
+      );
+
+      assert.deepEqual(await chatNodes(page), before, "alle Segmente in derselben Reihenfolge");
+
+      await mock.waitForPending();
+    },
+    { delays: { chat_send: { 2: 1500 } } },
   );
 });

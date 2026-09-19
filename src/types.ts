@@ -126,6 +126,8 @@ export type AgentConfigView = {
   config: AgentConfig;
   builtinTemplates: AgentTemplate[];
   defaultWorkdirBase: string;
+  /// Standard-Prompt des Backends: wird bei leerem Feld als Platzhalter gezeigt.
+  defaultPrompt: string;
   effectiveShell: string;
 };
 

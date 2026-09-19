@@ -15,14 +15,14 @@ import {
 } from "./chat-state";
 import { seekVideo } from "./detail";
 import { $, confirmDialog, errorMessage } from "./dom-utils";
-import { getActiveVideo, setStatus, state, type ChatRun, type ChatToolStep } from "./state";
+import { getActiveVideo, setStatus, state, type ChatRun } from "./state";
+import { applyStreamEvent, applyToolEvent, createChatRun } from "./chat-live";
 import {
   appendProvisionalMessages,
   clearChatMessages,
   removeProvisionalMessages,
   renderChatMessages,
-  renderStreamingAnswer,
-  renderToolActivity,
+  renderLiveRun,
   scrollChatToBottom,
 } from "./chat-render";
 import type { Chat, ChatMessageRecord, ChatTurnResult, SummaryRecord, Video } from "./types";
@@ -200,7 +200,7 @@ async function loadActiveChatMessages(video: Video, gen: number) {
   const run = state.chatRuns.get(video.id);
   if (run && run.chatId === chatId) {
     appendProvisionalMessages(run);
-    await renderStreamingAnswer(run, false, gen);
+    await renderLiveRun(run, gen);
   }
   updateChatControls(video);
 }
@@ -347,13 +347,7 @@ async function sendChatMessage() {
   closeChatContextMenu();
 
   const requestId = crypto.randomUUID();
-  const run: ChatRun = {
-    requestId,
-    chatId: state.activeChatId,
-    question: text,
-    answer: "",
-    tools: [],
-  };
+  const run: ChatRun = createChatRun({ requestId, chatId: state.activeChatId, question: text });
   state.chatRuns.set(video.id, run);
   input.value = "";
   resizeChatInput();
@@ -435,51 +429,41 @@ async function cancelChatRun() {
 }
 
 function onChatStream(event: {
-  payload: { requestId: string; videoId: number; text: string };
+  payload: {
+    requestId: string;
+    videoId: number;
+    round: number;
+    text: string;
+    final: boolean;
+    discarded?: boolean;
+  };
 }) {
-  const { requestId, videoId, text } = event.payload;
-  const run = state.chatRuns.get(videoId);
+  const run = state.chatRuns.get(event.payload.videoId);
   // Fremde requestIds (z. B. nach einem Neustart der Anfrage) duerfen die
   // angezeigte Blase nicht veraendern.
-  if (!run || run.requestId !== requestId) return;
-  run.answer = text;
-  if (getActiveVideo()?.id !== videoId || state.activeChatId !== run.chatId) return;
-  void renderStreamingAnswer(run, false, state.chatRenderGen);
+  if (!run || run.requestId !== event.payload.requestId) return;
+  applyStreamEvent(run, event.payload);
+  if (getActiveVideo()?.id !== event.payload.videoId || state.activeChatId !== run.chatId) return;
+  void renderLiveRun(run, state.chatRenderGen);
   scrollChatToBottom();
 }
 
 function onChatTool(event: {
-  payload: { requestId: string; videoId: number; kind: string; label: string; status: string };
-}) {
-  const { requestId, videoId, kind, label, status } = event.payload;
-  const run = state.chatRuns.get(videoId);
-  // Fremde requestIds duerfen die angezeigte Blase nicht veraendern.
-  if (!run || run.requestId !== requestId) return;
-  const step: ChatToolStep = {
-    kind: kind === "fetch" ? "fetch" : kind === "other" ? "other" : "search",
-    label,
-    status: status === "ok" || status === "error" ? status : "start",
+  payload: {
+    requestId: string;
+    videoId: number;
+    round: number;
+    kind: string;
+    label: string;
+    status: string;
   };
-  if (step.status === "start") {
-    run.tools.push(step);
-  } else {
-    // ok/error aktualisiert die zuletzt offene Zeile mit gleichem kind+label.
-    let openIndex = -1;
-    for (let index = run.tools.length - 1; index >= 0; index -= 1) {
-      const entry = run.tools[index];
-      if (entry.status === "start" && entry.kind === step.kind && entry.label === step.label) {
-        openIndex = index;
-        break;
-      }
-    }
-    if (openIndex >= 0) {
-      run.tools[openIndex] = step;
-    } else {
-      run.tools.push(step);
-    }
-  }
-  if (getActiveVideo()?.id !== videoId || state.activeChatId !== run.chatId) return;
-  renderToolActivity(run);
+}) {
+  const run = state.chatRuns.get(event.payload.videoId);
+  // Fremde requestIds duerfen die angezeigte Blase nicht veraendern.
+  if (!run || run.requestId !== event.payload.requestId) return;
+  applyToolEvent(run, event.payload);
+  if (getActiveVideo()?.id !== event.payload.videoId || state.activeChatId !== run.chatId) return;
+  void renderLiveRun(run, state.chatRenderGen);
   scrollChatToBottom();
 }
 
@@ -498,12 +482,20 @@ function bindChatMessagesEvents() {
 }
 
 export function bindChatEvents() {
-  void listen<{ requestId: string; videoId: number; text: string }>(STREAM_EVENT, onChatStream).catch(
+  void listen<{
+    requestId: string;
+    videoId: number;
+    round: number;
+    text: string;
+    final: boolean;
+    discarded?: boolean;
+  }>(STREAM_EVENT, onChatStream).catch(
     (error) => console.error("ai:chat_stream konnte nicht abonniert werden", error),
   );
   void listen<{
     requestId: string;
     videoId: number;
+    round: number;
     kind: string;
     label: string;
     status: string;

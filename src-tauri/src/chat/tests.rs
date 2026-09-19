@@ -1162,7 +1162,7 @@ async fn send_tool_turn(
         None,
         || guard.is_cancelled(),
         |_| {},
-        move |event| events.lock().unwrap().push(event),
+        move |event| events.lock().unwrap().push(event.event),
     )
     .await;
     drop(guard);
@@ -3080,4 +3080,184 @@ async fn g4_fallback_is_remembered_for_later_final_rounds() {
     assert!(server.body(2).get("tool_choice").is_none());
     assert_eq!(server.requests(), 3, "kein zweiter Fehlversuch");
     assert_eq!(budget.remaining(), MAX_PROVIDER_REQUESTS - 3);
+}
+
+// --------------------------- Etappe 4: Live-Ereignisse ----------------------
+
+/// Aufgezeichnetes Live-Text-Ereignis (nur die fuer die Anzeige relevanten
+/// Felder von `ChatDelta`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiveText {
+    round: usize,
+    text: String,
+    final_text: bool,
+    discarded: bool,
+}
+
+fn live_text(round: usize, text: &str, final_text: bool, discarded: bool) -> LiveText {
+    LiveText {
+        round,
+        text: text.to_string(),
+        final_text,
+        discarded,
+    }
+}
+
+/// Fuehrt eine Frage mit Websuche aus und zeichnet die Live-Ereignisse auf.
+async fn send_live_turn(
+    paths: &AppPaths,
+    http: &reqwest::Client,
+    server: &ScriptServer,
+    video_id: i64,
+    tools: Option<websearch::ToolRuntime>,
+) -> (
+    Result<ChatTurnResult, String>,
+    Vec<LiveText>,
+    Vec<super::ChatToolEvent>,
+) {
+    let runs = ChatRuns::default();
+    let guard = runs.begin("req-live", video_id).expect("Lauf registrieren");
+    let texts: Arc<Mutex<Vec<LiveText>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded: Arc<Mutex<Vec<super::ChatToolEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let texts_ref = texts.clone();
+    let tools_ref = recorded.clone();
+    let result = chat_send_impl(
+        paths,
+        http,
+        video_id,
+        None,
+        "Frage".to_string(),
+        server.target(),
+        tools,
+        None,
+        || guard.is_cancelled(),
+        move |delta| {
+            texts_ref.lock().unwrap().push(LiveText {
+                round: delta.round,
+                text: delta.text.to_string(),
+                final_text: delta.final_text,
+                discarded: delta.discarded,
+            })
+        },
+        move |event| tools_ref.lock().unwrap().push(event),
+    )
+    .await;
+    let texts = texts.lock().unwrap().clone();
+    let recorded = recorded.lock().unwrap().clone();
+    (result, texts, recorded)
+}
+
+/// SSE mit Zwischentext und einem Tool-Aufruf (eine Assistant-Runde).
+fn text_and_tool_stream(text: &str, name: &str, arguments: &str, id: &str) -> String {
+    sse(&[
+        json!({"choices":[{"delta":{"content":text}}]}).to_string(),
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":id,"function":{"name":name,"arguments":arguments}}]}}]})
+            .to_string(),
+        json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}).to_string(),
+        "[DONE]".to_string(),
+    ])
+}
+
+#[tokio::test]
+async fn live_a_two_tool_rounds_report_text_and_tools_per_round() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let server = ScriptServer::start(vec![
+        text_and_tool_stream(
+            "Ich recherchiere kurz.",
+            "web_search",
+            "{\"query\":\"a\"}",
+            "c1",
+        ),
+        text_and_tool_stream(
+            "Ich lese eine Seite.",
+            "fetch_page",
+            "{\"url\":\"https://example.com/a\"}",
+            "c2",
+        ),
+        text_stream("Fertige Antwort"),
+    ]);
+    let http = reqwest::Client::new();
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+
+    let (result, texts, tools) =
+        send_live_turn(&paths, &http, &server, video.id, Some(runtime)).await;
+    result.unwrap();
+
+    assert_eq!(
+        texts,
+        vec![
+            live_text(0, "Ich recherchiere kurz.", false, false),
+            live_text(0, "Ich recherchiere kurz.", true, false),
+            live_text(1, "Ich lese eine Seite.", false, false),
+            live_text(1, "Ich lese eine Seite.", true, false),
+            live_text(2, "Fertige Antwort", false, false),
+            live_text(2, "Fertige Antwort", true, false),
+        ]
+    );
+    let tool_events: Vec<(usize, &str, &str)> = tools
+        .iter()
+        .map(|event| (event.round, event.event.label.as_str(), event.event.status))
+        .collect();
+    assert_eq!(
+        tool_events,
+        vec![
+            (0, "a", "start"),
+            (0, "a", "ok"),
+            (1, "example.com/a", "start"),
+            (1, "example.com/a", "ok"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn live_b_round_without_text_closes_with_an_empty_text() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let server = ScriptServer::start(vec![
+        tool_call_stream("web_search", "{\"query\":\"a\"}", "c1"),
+        text_stream("Antwort"),
+    ]);
+    let http = reqwest::Client::new();
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+
+    let (result, texts, tools) =
+        send_live_turn(&paths, &http, &server, video.id, Some(runtime)).await;
+    result.unwrap();
+
+    assert_eq!(
+        texts,
+        vec![
+            live_text(0, "", true, false),
+            live_text(1, "Antwort", false, false),
+            live_text(1, "Antwort", true, false),
+        ]
+    );
+    assert!(tools.iter().all(|event| event.round == 0), "{tools:?}");
+}
+
+#[tokio::test]
+async fn live_c_markup_answer_is_discarded_before_the_retry() {
+    let (_temp, paths, video) = make_video(video_fixture("Mein Video"));
+    let server = ScriptServer::start(vec![
+        text_stream(DSML_MARKUP),
+        text_stream("Fertige Antwort"),
+    ]);
+    let http = reqwest::Client::new();
+    let runtime = runtime_with(|_name, _arguments| Ok("Treffer".to_string()));
+
+    let (result, texts, _tools) =
+        send_live_turn(&paths, &http, &server, video.id, Some(runtime)).await;
+    assert_eq!(
+        result.unwrap().messages.last().unwrap().content,
+        "Fertige Antwort"
+    );
+    assert_eq!(
+        texts,
+        vec![
+            live_text(0, DSML_MARKUP, false, false),
+            live_text(0, DSML_MARKUP, true, false),
+            live_text(0, "", true, true),
+            live_text(1, "Fertige Antwort", false, false),
+            live_text(1, "Fertige Antwort", true, false),
+        ]
+    );
 }

@@ -1,6 +1,11 @@
 //! Chat ueber ein Video: Prompt-Aufbau, Domainenfunktion, Laufregister und die
 //! zugehoerigen Tauri-Commands. Etappe 1 des Video-Chats (ohne Tool-Calling).
 
+// Bausteine der Schleife (Live-Ereignisse, Werkzeug-Ausfuehrung) liegen im
+// eigenen Modul; der Pfad haelt die Datei bei den uebrigen `chat*.rs`.
+#[path = "chat_loop.rs"]
+mod chat_loop;
+
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, State};
@@ -8,6 +13,13 @@ use tauri::{AppHandle, Emitter, State};
 use crate::ai::auth::AuthStore;
 pub use crate::chat_runs::ChatRuns;
 
+pub(crate) use self::chat_loop::tool_error_text;
+#[cfg(test)]
+pub(crate) use self::chat_loop::MAX_TOOL_CALLS_PER_ROUND;
+use self::chat_loop::{
+    discard_round, execute_with_cancel, finish_round, precheck_tool_call, tool_event, ChatDelta,
+    ChatToolEvent, CANCELLED_MESSAGE,
+};
 use crate::ai::catalog as ai_catalog;
 use crate::ai::client as ai_client;
 use crate::ai::client::ChatMessage;
@@ -62,88 +74,10 @@ pub fn web_search_runtime(
     Some(websearch::production_runtime(config.searxng_url))
 }
 
-const CANCELLED_MESSAGE: &str = "KI-Antwort abgebrochen";
 const MAX_TOOL_ROUNDS: usize = 5;
-const MAX_TOOL_CALLS_PER_ROUND: usize = 4;
-const MAX_TOOL_ERROR_CHARS: usize = 200;
 /// Meldung, wenn die Schlussanfrage ohne Werkzeuge keinen Text liefert.
 const EMPTY_FINAL_ANSWER_MESSAGE: &str =
     "Das Modell hat nach der Recherche keine Antwort geliefert – bitte erneut versuchen";
-
-/// Prueft Tool-Name, Argumente und Rundenlimit, bevor der Executor laeuft.
-/// Liefert bei Nichtausfuehrung den Modelltext und das feste Event-Label.
-fn precheck_tool_call(
-    index: usize,
-    name: &str,
-    arguments: &str,
-) -> Result<(), (&'static str, &'static str)> {
-    if index >= MAX_TOOL_CALLS_PER_ROUND {
-        return Err((websearch::TOOL_LIMIT_MESSAGE, "Tool-Limit erreicht"));
-    }
-    let arguments_ok = match name {
-        websearch::WEB_SEARCH_TOOL => websearch::string_argument(arguments, "query").is_ok(),
-        websearch::FETCH_PAGE_TOOL => websearch::string_argument(arguments, "url").is_ok(),
-        _ => return Err((websearch::UNKNOWN_TOOL_MESSAGE, "unbekanntes Tool")),
-    };
-    if !arguments_ok {
-        return Err((websearch::INVALID_ARGUMENTS_MESSAGE, "ungültige Argumente"));
-    }
-    Ok(())
-}
-
-/// Laesst den Tool-Aufruf laufen und bricht ihn ab, wenn das Abbruch-Flag
-/// gesetzt wird (Abfrage alle 250 ms).
-async fn execute_with_cancel(
-    runtime: &websearch::ToolRuntime,
-    name: &str,
-    arguments: &str,
-    is_cancelled: &mut impl FnMut() -> bool,
-) -> AppResult<Result<String, String>> {
-    let running = (runtime.execute)(name.to_string(), arguments.to_string());
-    tokio::pin!(running);
-    loop {
-        tokio::select! {
-            result = &mut running => return Ok(result),
-            _ = tokio::time::sleep(ai_client::CANCEL_POLL_INTERVAL) => {
-                if is_cancelled() {
-                    return Err(CANCELLED_MESSAGE.to_string());
-                }
-            }
-        }
-    }
-}
-
-/// Modelltext eines Fehlers: hoechstens 200 Skalarwerte, ohne Laeufe von drei
-/// oder mehr `=` (damit sich keine Delimiter einschleusen lassen).
-fn tool_error_text(reason: &str) -> String {
-    let shortened: String = reason.trim().chars().take(MAX_TOOL_ERROR_CHARS).collect();
-    let neutralized = neutralize_equals(&shortened);
-    if neutralized.starts_with("Fehler:") {
-        neutralized
-    } else {
-        format!("Fehler: {neutralized}")
-    }
-}
-
-fn neutralize_equals(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut run = 0usize;
-    for ch in text.chars() {
-        if ch == '=' {
-            run += 1;
-            continue;
-        }
-        if run > 0 {
-            out.extend(std::iter::repeat_n('=', run.min(2)));
-            run = 0;
-        }
-        out.push(ch);
-    }
-    if run > 0 {
-        out.extend(std::iter::repeat_n('=', run.min(2)));
-    }
-    out
-}
 
 /// Eine Chat-Runde: Verlauf + neue Frage als Prompt senden und erst nach
 /// erfolgreichem Abschluss speichern. Der Fehler des Clients wird unveraendert
@@ -159,8 +93,8 @@ pub async fn chat_send_impl(
     tools: Option<websearch::ToolRuntime>,
     context_options: Option<ChatContextOptions>,
     mut is_cancelled: impl FnMut() -> bool,
-    mut on_delta: impl FnMut(&str),
-    mut on_tool: impl FnMut(websearch::ToolEvent),
+    mut on_delta: impl FnMut(ChatDelta<'_>),
+    mut on_tool: impl FnMut(ChatToolEvent),
 ) -> AppResult<ChatTurnResult> {
     let question = text.trim();
     if question.is_empty() {
@@ -203,7 +137,12 @@ pub async fn chat_send_impl(
     // Rohteile einmal pro Aufruf: in der Schleife wird nur noch entliehen.
     let raw_parts = context.raw_parts();
     let mut round_messages: Vec<NewChatMessage> = Vec::new();
+    // Runde der Tool-Schleife (zaehlt nur Anfragen mit Werkzeugen).
     let mut round = 0usize;
+    // Live-Runde: zaehlt jede Provider-Anfrage dieser Frage, auch die
+    // Schlussanfrage und jede Wiederholung. Die Live-Anzeige ordnet Text und
+    // Werkzeug-Schritte darueber einander zu.
+    let mut live_round = 0usize;
     // Hartes Budget ueber alle Provider-Aufrufe dieser Frage.
     let mut budget = RequestBudget::new(MAX_PROVIDER_REQUESTS);
     // Wird nach dem ersten 400/422 gemerkt: danach direkt die Rueckfallform.
@@ -226,21 +165,33 @@ pub async fn chat_send_impl(
         // `tools`, aber `tool_choice: "none"` und die nicht gespeicherte
         // Abschluss-Nachricht; Tool-Aufrufe werden dort nicht ausgewertet.
         let with_tools = tools.is_some() && round < MAX_TOOL_ROUNDS;
+        // Jede Provider-Anfrage bekommt eine eigene Live-Runde.
+        let round_index = live_round;
+        live_round += 1;
         let turn = if with_tools {
             budget.take()?;
             let definitions = websearch::tool_definitions();
-            tool_stream::chat_stream_with_tools_cancellable(
+            let turn = tool_stream::chat_stream_with_tools_cancellable(
                 http,
                 &target.base_url,
                 target.api_key.as_deref(),
                 &target.model,
                 &messages,
                 &definitions,
-                &mut on_delta,
+                &mut |text: &str| {
+                    on_delta(ChatDelta {
+                        round: round_index,
+                        text,
+                        final_text: false,
+                        discarded: false,
+                    })
+                },
                 &mut is_cancelled,
             )
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+            finish_round(&mut on_delta, round_index, &turn.content);
+            turn
         } else if tools.is_some() {
             // Schlussanfrage der Websuche.
             let mut final_messages = messages.clone();
@@ -253,10 +204,18 @@ pub async fn chat_send_impl(
                 &definitions,
                 &mut tool_choice_supported,
                 &mut budget,
-                &mut on_delta,
+                &mut |text: &str| {
+                    on_delta(ChatDelta {
+                        round: round_index,
+                        text,
+                        final_text: false,
+                        discarded: false,
+                    })
+                },
                 &mut is_cancelled,
             )
             .await?;
+            finish_round(&mut on_delta, round_index, &turn.content);
 
             // Tool-Aufrufe der Schlussanfrage werden ignoriert; es zaehlt der
             // Text. Sicherheitsnetz: leerer Text oder Tool-Markup ist keine
@@ -266,6 +225,12 @@ pub async fn chat_send_impl(
             let text = if usable(&answer_text) {
                 answer_text
             } else {
+                if !answer_text.trim().is_empty() {
+                    // Verworfene Antwort: die Live-Runde verschwindet wieder.
+                    discard_round(&mut on_delta, round_index);
+                }
+                let retry_round = live_round;
+                live_round += 1;
                 let retry = final_round_request(
                     http,
                     &target,
@@ -273,10 +238,18 @@ pub async fn chat_send_impl(
                     &definitions,
                     &mut tool_choice_supported,
                     &mut budget,
-                    &mut on_delta,
+                    &mut |text: &str| {
+                        on_delta(ChatDelta {
+                            round: retry_round,
+                            text,
+                            final_text: false,
+                            discarded: false,
+                        })
+                    },
                     &mut is_cancelled,
                 )
                 .await?;
+                finish_round(&mut on_delta, retry_round, &retry.content);
                 if usable(&retry.content) {
                     retry.content
                 } else {
@@ -296,11 +269,19 @@ pub async fn chat_send_impl(
                 target.api_key.as_deref(),
                 &target.model,
                 &messages,
-                &mut on_delta,
+                &mut |text: &str| {
+                    on_delta(ChatDelta {
+                        round: round_index,
+                        text,
+                        final_text: false,
+                        discarded: false,
+                    })
+                },
                 &mut is_cancelled,
             )
             .await
             .map_err(|error| error.to_string())?;
+            finish_round(&mut on_delta, round_index, &text);
             tool_stream::ChatTurn {
                 content: text,
                 tool_calls: Vec::new(),
@@ -317,9 +298,15 @@ pub async fn chat_send_impl(
             // Markup in einer regulaeren Runde (ohne tool_calls): nicht speichern,
             // sondern einmalig die Schlussanfrage stellen.
             if tools.is_some() && looks_like_tool_markup(&content) {
+                // Die gestreamte Markup-Antwort wird verworfen: erst danach
+                // startet die Wiederholung als neue Live-Runde.
+                discard_round(&mut on_delta, round_index);
                 let mut final_messages = messages.clone();
                 final_messages.push(ChatMessage::user(FINAL_ROUND_REQUEST));
                 let definitions = websearch::tool_definitions();
+                // Letzte Anfrage dieser Frage: die Wiederholung beendet die
+                // Schleife in jedem Fall, deshalb ohne weiteres Hochzaehlen.
+                let retry_round = live_round;
                 let retry = final_round_request(
                     http,
                     &target,
@@ -327,10 +314,18 @@ pub async fn chat_send_impl(
                     &definitions,
                     &mut tool_choice_supported,
                     &mut budget,
-                    &mut on_delta,
+                    &mut |text: &str| {
+                        on_delta(ChatDelta {
+                            round: retry_round,
+                            text,
+                            final_text: false,
+                            discarded: false,
+                        })
+                    },
                     &mut is_cancelled,
                 )
                 .await?;
+                finish_round(&mut on_delta, retry_round, &retry.content);
                 if retry.tool_calls.is_empty()
                     && !looks_like_tool_markup(&retry.content)
                     && !retry.content.trim().is_empty()
@@ -363,21 +358,13 @@ pub async fn chat_send_impl(
             // modellgesteuerten Namen.
             let content = match precheck_tool_call(index, &call.name, &call.arguments) {
                 Err((reason, label)) => {
-                    on_tool(websearch::ToolEvent {
-                        kind: "other",
-                        label: label.to_string(),
-                        status: "error",
-                    });
+                    on_tool(tool_event(round_index, "other", label.to_string(), "error"));
                     tool_error_text(reason)
                 }
                 Ok(()) => {
                     let label = websearch::tool_label(&call.name, &call.arguments);
                     let kind = websearch::tool_kind(&call.name);
-                    on_tool(websearch::ToolEvent {
-                        kind,
-                        label: label.clone(),
-                        status: "start",
-                    });
+                    on_tool(tool_event(round_index, kind, label.clone(), "start"));
                     let result = execute_with_cancel(
                         runtime,
                         &call.name,
@@ -392,19 +379,11 @@ pub async fn chat_send_impl(
                                 history.iter().chain(round_messages.iter()),
                             );
                             let refs = parts.refs();
-                            on_tool(websearch::ToolEvent {
-                                kind,
-                                label,
-                                status: "ok",
-                            });
+                            on_tool(tool_event(round_index, kind, label, "ok"));
                             summarize::wrap_untrusted("WEB RESULT", &text, &refs)
                         }
                         Err(reason) => {
-                            on_tool(websearch::ToolEvent {
-                                kind,
-                                label,
-                                status: "error",
-                            });
+                            on_tool(tool_event(round_index, kind, label, "error"));
                             tool_error_text(&reason)
                         }
                     }
@@ -536,18 +515,24 @@ pub async fn chat_send(
         tools,
         context_options,
         || guard.is_cancelled(),
-        move |accumulated| {
-            let now = Instant::now();
-            if last_emit.is_some_and(|last| now.duration_since(last) < STREAM_EMIT_INTERVAL) {
-                return;
+        move |delta: ChatDelta<'_>| {
+            // Zwischenstaende hoechstens alle 150 ms; das Rundenende immer.
+            if !delta.final_text {
+                let now = Instant::now();
+                if last_emit.is_some_and(|last| now.duration_since(last) < STREAM_EMIT_INTERVAL) {
+                    return;
+                }
+                last_emit = Some(now);
             }
-            last_emit = Some(now);
             if let Err(error) = app.emit(
                 "ai:chat_stream",
                 serde_json::json!({
                     "requestId": event_request_id,
                     "videoId": video_id,
-                    "text": accumulated,
+                    "round": delta.round,
+                    "text": delta.text,
+                    "final": delta.final_text,
+                    "discarded": delta.discarded,
                 }),
             ) {
                 if !emit_error_logged {
@@ -556,15 +541,16 @@ pub async fn chat_send(
                 }
             }
         },
-        move |tool: websearch::ToolEvent| {
+        move |tool: ChatToolEvent| {
             if let Err(error) = tool_app.emit(
                 "ai:chat_tool",
                 serde_json::json!({
                     "requestId": tool_request_id,
                     "videoId": video_id,
-                    "kind": tool.kind,
-                    "label": tool.label,
-                    "status": tool.status,
+                    "round": tool.round,
+                    "kind": tool.event.kind,
+                    "label": tool.event.label,
+                    "status": tool.event.status,
                 }),
             ) {
                 eprintln!("ai:chat_tool emit failed: {error}");
