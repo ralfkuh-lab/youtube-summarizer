@@ -14,7 +14,7 @@ fn a4_invalid_video_id_writes_nothing() {
     let base = temp.path().join("agent");
     store_config(&paths, &base, "cd {workdir} && claude {prompt}");
 
-    let error = super::super::prepare(&paths, video.id, None).unwrap_err();
+    let error = super::super::prepare(&paths, video.id, None, None).unwrap_err();
     assert_eq!(error, "Ungültige YouTube-ID im Datensatz");
     assert!(!base.exists(), "es darf nichts angelegt werden");
 }
@@ -35,7 +35,7 @@ fn a7_context_file_replaces_a_symlink_and_leaves_siblings() {
     std::fs::write(&secret, "SECRET").unwrap();
     std::os::unix::fs::symlink(&secret, workdir.join("context.md")).unwrap();
 
-    let handoff = super::super::prepare(&paths, video.id, None).unwrap();
+    let handoff = super::super::prepare(&paths, video.id, None, None).unwrap();
     assert_eq!(
         std::fs::read_to_string(&secret).unwrap(),
         "SECRET",
@@ -63,7 +63,7 @@ fn a8_title_never_reaches_the_command() {
     let base = temp.path().join("agent");
     store_config(&paths, &base, "cd {workdir} && claude {prompt}");
 
-    let handoff = super::super::prepare(&paths, video.id, None).unwrap();
+    let handoff = super::super::prepare(&paths, video.id, None, None).unwrap();
     assert!(!handoff.command.contains("PWNED"), "{}", handoff.command);
     assert!(
         !handoff.command.contains("/tmp/PWNED"),
@@ -89,7 +89,7 @@ fn a9a_workdir_base_with_spaces_and_apostrophe_string_oracle() {
     let base = temp.path().join("agent it's");
     store_config(&paths, &base, "cd {workdir} && claude {prompt}");
 
-    let handoff = super::super::prepare(&paths, video.id, None).unwrap();
+    let handoff = super::super::prepare(&paths, video.id, None, None).unwrap();
     let workdir = format!("{}/jev-explained-in-7min-abc_-123", base.to_string_lossy());
     let context_file = format!("{workdir}/context.md");
     let prompt = super::super::resolve::normalize_prompt(
@@ -139,7 +139,7 @@ fn s4_control_characters_in_workdir_base_write_nothing() {
         let base = temp.path().join(format!("agent{forbidden}neu"));
         store_config(&paths, &base, "cd {workdir} && claude {prompt}");
 
-        let error = super::super::prepare(&paths, video.id, None).unwrap_err();
+        let error = super::super::prepare(&paths, video.id, None, None).unwrap_err();
         assert_eq!(
             error, "Ungültige Zeichen im Wert workdir",
             "Zeichen {forbidden:?}"
@@ -187,7 +187,7 @@ fn h2_relative_workdir_base_is_resolved_against_home() {
     };
     config::save(&paths, &config).unwrap();
 
-    let handoff = super::super::prepare_with_home(&paths, video.id, None, &home).unwrap();
+    let handoff = super::super::prepare_with_home(&paths, video.id, None, None, &home).unwrap();
     let expected = home.join("yt-agent").join("titel-vid00000008");
     assert_eq!(handoff.workdir, expected.to_string_lossy());
     assert!(std::path::Path::new(&handoff.workdir).is_absolute());
@@ -203,7 +203,7 @@ fn h2_relative_workdir_base_is_resolved_against_home() {
 #[test]
 fn missing_video_and_template_errors() {
     let (temp, paths) = temp_paths();
-    let error = super::super::prepare(&paths, 42, None).unwrap_err();
+    let error = super::super::prepare(&paths, 42, None, None).unwrap_err();
     assert_eq!(error, "Video nicht gefunden");
 
     let video =
@@ -215,15 +215,16 @@ fn missing_video_and_template_errors() {
     };
     config::save(&paths, &config).unwrap();
     assert_eq!(
-        super::super::prepare(&paths, video.id, None).unwrap_err(),
+        super::super::prepare(&paths, video.id, None, None).unwrap_err(),
         "Vorlage nicht gefunden"
     );
     assert_eq!(
-        super::super::prepare(&paths, video.id, Some("gibt-es-nicht".to_string())).unwrap_err(),
+        super::super::prepare(&paths, video.id, Some("gibt-es-nicht".to_string()), None)
+            .unwrap_err(),
         "Vorlage nicht gefunden"
     );
     // Die eingebaute Vorlage ist weiterhin waehlbar.
-    assert!(super::super::prepare(&paths, video.id, Some("codex".to_string())).is_ok());
+    assert!(super::super::prepare(&paths, video.id, Some("codex".to_string()), None).is_ok());
 }
 
 #[test]

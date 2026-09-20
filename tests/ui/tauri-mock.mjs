@@ -115,6 +115,7 @@ export const defaultFixtures = {
         workdirBase: "",
         shell: "auto",
         summaries: "latest",
+        includeTranscript: true,
         includeChats: false,
         prompt: "",
         activeTemplate: "claude",
@@ -133,6 +134,50 @@ export const defaultFixtures = {
       command: "cd '/home/user/yt-agent/video-zwei-vid2' && claude 'Hallo'",
       workdir: "/home/user/yt-agent/video-zwei-vid2",
       contextFile: "/home/user/yt-agent/video-zwei-vid2/context.md",
+    },
+    // Revision 3: Kontextdaten je Video. Der Mock loest die Auswahl wie das
+    // Backend auf (Filter auf das Video, Duplikate weg, aelteste zuerst) und
+    // rechnet eine Zeichenzahl aus, die von der Auswahl abhaengt.
+    context: {
+      1: {
+        available: { hasTranscript: false, hasLatestSummary: false, summaries: [], chats: [] },
+      },
+      2: {
+        available: {
+          hasTranscript: true,
+          hasLatestSummary: true,
+          summaries: [
+            {
+              id: 302,
+              createdAt: "2026-03-01T10:00:00Z",
+              provider: "openai",
+              model: "gpt-4o",
+              options: null,
+            },
+            {
+              id: 301,
+              createdAt: "2026-02-01T10:00:00Z",
+              provider: "openai",
+              model: "gpt-4o-mini",
+              options: null,
+            },
+          ],
+          chats: [
+            {
+              id: 402,
+              title: "Überprüfe mal kurz im Internet, ob diese Harness tatsächlich…",
+              firstQuestion:
+                "Überprüfe mal kurz im Internet, ob diese Harness tatsächlich so gut ist, wie im Video behauptet wird, und nenne Quellen.",
+              createdAt: "2026-05-02T10:00:00Z",
+              messageCount: 4,
+            },
+            { id: 401, title: "Chat Eins", createdAt: "2026-04-02T10:00:00Z", messageCount: 1 },
+          ],
+        },
+      },
+      3: {
+        available: { hasTranscript: true, hasLatestSummary: false, summaries: [], chats: [] },
+      },
     },
     prepareByTemplate: {
       claude: {
@@ -203,6 +248,74 @@ export function createMockScript(fixtures = {}, delays = {}) {
     return chars.length > 60 ? chars.slice(0, 60).join('') + '…' : normalized;
   }
 
+  const EMPTY_AGENT_AVAILABLE = {
+    hasTranscript: false,
+    hasLatestSummary: false,
+    summaries: [],
+    chats: [],
+  };
+  function agentContextEntry(agent, videoId) {
+    const table = (agent && agent.context) || {};
+    const entry = table[videoId] || {};
+    const available = entry.available || EMPTY_AGENT_AVAILABLE;
+    return {
+      available,
+      preset: entry.preset || agentPreset(agent, available),
+    };
+  }
+
+  // Wie selection.rs::preset: Vorbelegung aus agent.config. Nur Fixtures mit
+  // explizitem preset weichen davon ab.
+  function agentPreset(agent, available) {
+    const config = (agent && agent.view && agent.view.config) || {};
+    const summaries = config.summaries;
+    return {
+      transcript: config.includeTranscript !== false,
+      summaryIds:
+        summaries === 'none'
+          ? []
+          : summaries === 'all'
+            ? available.summaries.map((row) => row.id)
+            : null,
+      chatIds: config.includeChats ? available.chats.map((chat) => chat.id) : [],
+    };
+  }
+
+  // Wie das Backend: nur IDs dieses Videos, ohne Duplikate, createdAt
+  // aufsteigend (dann id).
+  function resolveAgentIds(rows, ids) {
+    const wanted = new Set(ids || []);
+    return rows
+      .filter((row) => wanted.has(row.id))
+      .sort((a, b) => {
+        if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+        return a.id - b.id;
+      })
+      .map((row) => row.id);
+  }
+
+  function agentContextChars(available, selection) {
+    let chars = 100;
+    if (selection.transcript && available.hasTranscript) chars += 200;
+    if (selection.summaryIds === null) chars += available.hasLatestSummary ? 100 : 0;
+    else chars += 80 * selection.summaryIds.length;
+    chars += 40 * selection.chatIds.length;
+    return chars;
+  }
+
+  function resolveAgentContext(agent, videoId, requested) {
+    const entry = agentContextEntry(agent, videoId);
+    const available = entry.available;
+    const want = requested || entry.preset;
+    const summaryIds =
+      want.summaryIds === null || want.summaryIds === undefined
+        ? null
+        : resolveAgentIds(available.summaries, want.summaryIds);
+    const chatIds = resolveAgentIds(available.chats, want.chatIds || []);
+    const selection = { transcript: !!want.transcript, summaryIds, chatIds };
+    return { selection, available, contextChars: agentContextChars(available, selection) };
+  }
+
   function chatMessagesOf(chatId) {
     return chatStore.messages[chatId] || [];
   }
@@ -223,6 +336,7 @@ export function createMockScript(fixtures = {}, delays = {}) {
   window.__tauriMock = {
     pending: 0,
     calls: [],
+    callCounts: {},
     delays: initialDelays,
     fixtures: initialFixtures,
     listeners: [],
@@ -247,6 +361,10 @@ export function createMockScript(fixtures = {}, delays = {}) {
           const d = this.delays[cmd];
           if (typeof d === 'number') {
             delayMs = d;
+          } else if (Array.isArray(d)) {
+            // Nach Aufrufreihenfolge je Befehl: [0, 300, 0] verzoegert den zweiten Aufruf.
+            const index = this.callCounts[cmd] || 0;
+            delayMs = d[index] ?? 0;
           } else if (typeof d === 'object' && d !== null) {
             const id = args?.id ?? args?.videoId ?? args?.chatId;
             if (id !== undefined && d[id] !== undefined) {
@@ -256,6 +374,7 @@ export function createMockScript(fixtures = {}, delays = {}) {
             }
           }
         }
+        this.callCounts[cmd] = (this.callCounts[cmd] || 0) + 1;
 
         if (delayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -472,15 +591,23 @@ export function createMockScript(fixtures = {}, delays = {}) {
         }
         if (cmd === 'agent_prepare') {
           const agent = this.fixtures.agent || {};
-          if (agent.prepareError) {
+          const prepareIndex = (this.callCounts['agent_prepare'] || 1) - 1;
+          if (agent.prepareErrorFrom !== undefined && prepareIndex >= agent.prepareErrorFrom) {
+            throw new Error(agent.prepareError || 'agent_prepare fehlgeschlagen');
+          }
+          if (agent.prepareError && agent.prepareErrorFrom === undefined) {
             throw new Error(agent.prepareError);
           }
           const byTemplate = agent.prepareByTemplate || {};
-          const result = (args?.templateId && byTemplate[args.templateId]) || agent.prepare;
+          const result = { ...((args?.templateId && byTemplate[args.templateId]) || agent.prepare) };
           const extraDelay = (agent.prepareDelays || {})[args?.templateId];
           if (extraDelay) {
             await new Promise((resolve) => setTimeout(resolve, extraDelay));
           }
+          const context = resolveAgentContext(agent, args?.videoId, args?.selection);
+          result.selection = context.selection;
+          result.available = context.available;
+          result.contextChars = context.contextChars;
           callRecord.result = result;
           return JSON.parse(JSON.stringify(result));
         }

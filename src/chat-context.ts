@@ -5,9 +5,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, errorMessage } from "./dom-utils";
 import { getActiveVideo, setStatus, state } from "./state";
+import { formatShortDateTime } from "./utils";
 import type { ChatContextOptions, SummaryRecord } from "./types";
 
 const DEFAULT_OPTIONS: ChatContextOptions = { transcript: true, summaryIds: null };
+
+/// Beschriftung einer Zusammenfassungs-Version; auch der Übergabe-Dialog nutzt
+/// sie (Revision 3). Die Felder sind bewusst Serde-Form (`created_at`), damit
+/// `SummaryRecord` unverändert bleibt.
+export type SummaryLabelInput = {
+  created_at: string;
+  model?: string | null;
+  provider?: string | null;
+  options?: string | null;
+};
 /// Wie im Backend: hoechstens so viele Versionen im Kontext.
 const MAX_VERSIONS = 5;
 const TOO_MANY_VERSIONS = "Höchstens 5 Zusammenfassungen";
@@ -65,9 +76,9 @@ export function isChatContextValid(): boolean {
   return options.summaryIds.length > 0;
 }
 
-function labelFor(row: SummaryRecord): string {
+export function labelFor(row: SummaryLabelInput): string {
   const model = row.model?.trim() || row.provider?.trim() || "unbekannt";
-  const date = row.created_at.split(/[T ]/)[0] ?? row.created_at;
+  const date = formatShortDateTime(row.created_at);
   const preset = presetName(row.options);
   return preset ? `${date} – ${model} · ${preset}` : `${date} – ${model}`;
 }

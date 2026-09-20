@@ -3,8 +3,10 @@
 //! Kontextdatei liegen in den Untermodulen.
 
 mod context_tests;
+mod fixtures;
 mod prepare_tests;
 mod quoting_tests;
+mod selection_tests;
 
 use std::collections::BTreeMap;
 
@@ -17,6 +19,7 @@ use super::config::{self, AgentConfig, AgentTemplate, DEFAULT_PROMPT, MAX_PROMPT
 use super::context::{self, ContextSources};
 use super::quote::Shell;
 use super::resolve::{normalize_prompt, slug, title_slug, Values};
+use super::selection::{self, HandoffSelection};
 
 pub(crate) fn temp_paths() -> (TempDir, AppPaths) {
     let temp = TempDir::new().unwrap();
@@ -31,25 +34,29 @@ pub(crate) fn temp_paths() -> (TempDir, AppPaths) {
 pub(crate) const EXPORTED: &str = "2026-09-19T12:00:00Z";
 
 pub(crate) fn render(video: &Video) -> String {
-    render_with(video, &[], &[], &BTreeMap::new(), "latest", false)
+    render_with(
+        video,
+        &[],
+        &[],
+        &BTreeMap::new(),
+        &HandoffSelection::default(),
+    )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_with(
     video: &Video,
     summaries: &[Summary],
     chats: &[Chat],
     messages: &BTreeMap<i64, Vec<ChatMessageRecord>>,
-    summary_mode: &str,
-    include_chats: bool,
+    selection: &HandoffSelection,
 ) -> String {
+    let resolved = selection::resolve(selection, summaries, chats);
     context::render(&ContextSources {
         video,
-        summaries,
-        chats,
+        summaries: &resolved.summaries,
+        chats: &resolved.chats,
         messages,
-        summary_mode,
-        include_chats,
+        selection: &resolved.selection,
         exported_at: EXPORTED,
     })
 }
@@ -66,6 +73,20 @@ pub(crate) fn integration_video(video_id: &str, title: &str) -> NewVideo {
         published_at: None,
         description: None,
         transcript_error: None,
+    }
+}
+
+/// Auswahl mit allen Feldern gesetzt (Serde-Defaults sind in den Tests nicht
+/// gemeint).
+pub(crate) fn selection(
+    transcript: bool,
+    summary_ids: Option<Vec<i64>>,
+    chat_ids: Vec<i64>,
+) -> HandoffSelection {
+    HandoffSelection {
+        transcript,
+        summary_ids,
+        chat_ids,
     }
 }
 
@@ -88,7 +109,7 @@ pub(crate) fn store_config(
 }
 
 pub(crate) fn read_context(paths: &crate::storage::AppPaths, video_id: i64) -> String {
-    let handoff = super::prepare(paths, video_id, None).unwrap();
+    let handoff = super::prepare(paths, video_id, None, None).unwrap();
     std::fs::read_to_string(handoff.context_file).unwrap()
 }
 
@@ -275,6 +296,7 @@ fn config_roundtrip_is_atomic_and_stores_all_fields() {
         workdir_base: "~/yt".to_string(),
         shell: "fish".to_string(),
         summaries: "all".to_string(),
+        include_transcript: false,
         include_chats: true,
         prompt: "Lies {context_file}".to_string(),
         active_template: "mein-agent".to_string(),
@@ -362,6 +384,23 @@ fn config_rejects_unknown_shell_and_summaries() {
         ..AgentConfig::default()
     };
     assert!(config::save(&paths, &config).is_err());
+}
+
+#[test]
+fn h10_missing_include_transcript_field_defaults_to_true() {
+    let (_temp, paths) = temp_paths();
+    let path = config::config_path(&paths);
+    std::fs::write(
+        &path,
+        r#"{"shell":"posix","summaries":"latest","includeChats":false,"prompt":"","activeTemplate":"claude","customTemplates":[]}"#,
+    )
+    .unwrap();
+
+    let config = config::load(&paths);
+    assert!(config.include_transcript, "fehlendes Feld bedeutet true");
+    config::save(&paths, &config).unwrap();
+    let stored = std::fs::read_to_string(&path).unwrap();
+    assert!(stored.contains("\"includeTranscript\": true"), "{stored}");
 }
 
 #[test]

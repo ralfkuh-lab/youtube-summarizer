@@ -45,6 +45,9 @@ struct ChatRequest {
 struct AgentHandoffRequest {
     #[serde(default)]
     template_id: Option<String>,
+    /// Fehlt die Auswahl, gilt die Vorbelegung aus `agent.json`.
+    #[serde(default)]
+    selection: Option<crate::agent_handoff::HandoffSelection>,
 }
 
 pub fn start(paths: AppPaths) {
@@ -249,7 +252,7 @@ fn route(
             let request = parse_body::<AgentHandoffRequest>(body)?;
             write_result(
                 stream,
-                crate::agent_handoff::prepare(paths, id, request.template_id),
+                crate::agent_handoff::prepare(paths, id, request.template_id, request.selection),
             )
         }
         _ if method == "GET" && path.starts_with("/api/chats/") => {
@@ -398,5 +401,25 @@ mod tests {
 
         let request: AgentHandoffRequest = serde_json::from_str("{}").unwrap();
         assert_eq!(request.template_id, None);
+    }
+
+    /// H12: Die Auswahl im Body ist optional. Fehlt sie ganz, gilt die
+    /// Vorbelegung aus `agent.json`; fehlende Einzelfelder bekommen die
+    /// Serde-Defaults der Auswahl.
+    #[test]
+    fn h12_agent_handoff_request_accepts_an_optional_selection() {
+        let request: AgentHandoffRequest =
+            serde_json::from_str(r#"{"templateId":"codex"}"#).unwrap();
+        assert_eq!(
+            request.selection, None,
+            "ohne selection gilt die Vorbelegung"
+        );
+
+        let request: AgentHandoffRequest =
+            serde_json::from_str(r#"{"selection":{"transcript":false}}"#).unwrap();
+        let selection = request.selection.unwrap();
+        assert!(!selection.transcript);
+        assert_eq!(selection.summary_ids, None);
+        assert!(selection.chat_ids.is_empty());
     }
 }

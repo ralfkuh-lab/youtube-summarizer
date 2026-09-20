@@ -238,6 +238,11 @@ export const appTemplate = `
               <label for="agentActiveTemplate">Aktive Vorlage</label>
               <select id="agentActiveTemplate" class="settings-input"></select>
             </div>
+            <h4 class="settings-section__subtitle">Vorbelegung des Kontexts (im Übergabe-Dialog änderbar)</h4>
+            <label class="summary-module">
+              <input type="checkbox" id="agentIncludeTranscript" />
+              Transkript aufnehmen
+            </label>
             <div class="settings-row">
               <label for="agentSummaries">Zusammenfassungen</label>
               <select id="agentSummaries" class="settings-input">
@@ -376,12 +381,20 @@ export const appTemplate = `
   <div id="agentModal" class="modal" hidden>
     <div class="modal-content modal-wide agent-modal-content">
       <h2>An Agent übergeben</h2>
-      <p id="agentShellHint" class="settings-hint"></p>
       <label for="agentTemplate">Vorlage</label>
       <select id="agentTemplate"></select>
-      <label for="agentCommand">Kommando</label>
-      <textarea id="agentCommand" class="agent-command" rows="5" readonly></textarea>
-      <p class="settings-hint">Kontextdatei: <code id="agentContextPath"></code></p>
+      <p class="agent-field-label">Kontext</p>
+      <div id="agentContext" class="agent-context">
+        <label class="agent-context-row">
+          <input type="checkbox" id="agentCtxTranscript" />
+          <span id="agentCtxTranscriptLabel">Transkript</span>
+        </label>
+        <div id="agentCtxSummaries" class="agent-context-section"></div>
+        <div id="agentCtxChats" class="agent-context-section"></div>
+      </div>
+      <label for="agentCommand">Kommando <span id="agentShellHint" class="agent-shell-hint"></span></label>
+      <textarea id="agentCommand" class="agent-command" rows="4" readonly></textarea>
+      <p class="settings-hint">Kontextdatei: <code id="agentContextPath"></code><span id="agentContextChars"></span></p>
       <p id="agentCopyHint" class="settings-hint"></p>
       <div class="modal-actions">
         <button id="agentCopy">Kopieren</button>

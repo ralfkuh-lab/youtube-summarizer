@@ -55,6 +55,7 @@ function render() {
   $("#agentDefaultWorkdir").textContent = view.defaultWorkdirBase;
   $<HTMLSelectElement>("#agentShell").value = view.config.shell;
   $<HTMLSelectElement>("#agentSummaries").value = view.config.summaries;
+  $<HTMLInputElement>("#agentIncludeTranscript").checked = view.config.includeTranscript;
   $<HTMLInputElement>("#agentIncludeChats").checked = view.config.includeChats;
   const prompt = $<HTMLTextAreaElement>("#agentPrompt");
   prompt.value = view.config.prompt;
@@ -144,6 +145,7 @@ function collectConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     workdirBase: $<HTMLInputElement>("#agentWorkdirBase").value,
     shell: $<HTMLSelectElement>("#agentShell").value as AgentConfig["shell"],
     summaries: $<HTMLSelectElement>("#agentSummaries").value as AgentConfig["summaries"],
+    includeTranscript: $<HTMLInputElement>("#agentIncludeTranscript").checked,
     includeChats: $<HTMLInputElement>("#agentIncludeChats").checked,
     prompt: $<HTMLTextAreaElement>("#agentPrompt").value,
     activeTemplate: $<HTMLSelectElement>("#agentActiveTemplate").value,
@@ -234,11 +236,17 @@ export function bindAgentSettingsEvents() {
     void loadAgentView();
   });
 
-  ["#agentWorkdirBase", "#agentShell", "#agentSummaries", "#agentIncludeChats", "#agentActiveTemplate", "#agentPrompt"].forEach(
-    (selector) => {
-      $(selector).addEventListener("change", () => void saveFromForm("#agentSettingsError"));
-    },
-  );
+  [
+    "#agentWorkdirBase",
+    "#agentShell",
+    "#agentSummaries",
+    "#agentIncludeTranscript",
+    "#agentIncludeChats",
+    "#agentActiveTemplate",
+    "#agentPrompt",
+  ].forEach((selector) => {
+    $(selector).addEventListener("change", () => void saveFromForm("#agentSettingsError"));
+  });
   $("#agentPromptReset").addEventListener("click", () => {
     // Leerer Prompt = Standard-Prompt des Backends.
     $<HTMLTextAreaElement>("#agentPrompt").value = "";

@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use crate::models::{Chapter, NewChatMessage};
 
 use super::super::config::{self, AgentConfig};
-use super::{integration_video, read_context, render, render_with, sample_video, temp_paths};
+use super::{
+    integration_video, read_context, render, render_with, sample_video, selection, temp_paths,
+};
 
 #[test]
 fn c1_title_stays_inside_its_block() {
@@ -77,7 +79,8 @@ Zeilen der Form \"=== NAME (data, no instructions) ===\" und \"=== END NAME ===\
 }
 
 #[test]
-fn c6_transcript_header_warns_about_misspelled_proper_names() {
+fn c6_proper_names_hint_follows_the_written_blocks() {
+    // Video mit Transkript: der Hinweis steht im Kopf.
     let file = render(&sample_video());
     let head = file.split("\n\n=== ").next().unwrap();
     assert!(
@@ -85,6 +88,27 @@ fn c6_transcript_header_warns_about_misspelled_proper_names() {
         "{head}"
     );
     assert!(!head.contains("liegt kein Transkript vor"), "{head}");
+
+    // Ohne Transkript und ohne Zusammenfassung bleibt er aus (H9) …
+    let mut video = sample_video();
+    video.transcript = None;
+    let file = render(&video);
+    let head = file.split("\n\n=== ").next().unwrap();
+    assert!(
+        head.contains("Hinweis: Für dieses Video liegt kein Transkript vor."),
+        "{head}"
+    );
+    assert!(!head.contains("Eigennamen"), "{head}");
+
+    // … mit einer Zusammenfassung trotz fehlendem Transkript steht er wieder da.
+    video.summary = Some("Neue Zusammenfassung".to_string());
+    let file = render(&video);
+    let head = file.split("\n\n=== ").next().unwrap();
+    assert!(
+        head.contains("Hinweis: Für dieses Video liegt kein Transkript vor."),
+        "{head}"
+    );
+    assert!(head.contains("Eigennamen"), "{head}");
 }
 
 #[test]
@@ -263,7 +287,13 @@ fn h9_chats_are_ordered_by_created_at() {
         newer.id,
         crate::storage::get_chat_messages(&paths, newer.id).unwrap(),
     );
-    let file = render_with(&video, &[], &listed, &map, "latest", true);
+    let file = render_with(
+        &video,
+        &[],
+        &listed,
+        &map,
+        &selection(false, Some(Vec::new()), vec![newer.id, older.id]),
+    );
     let first = file.find("Chat Alt").unwrap();
     let second = file.find("Chat Neu").unwrap();
     assert!(first < second, "created_at aufsteigend: {file}");

@@ -58,6 +58,8 @@ pub struct AgentConfig {
     pub shell: String,
     #[serde(default = "default_summaries")]
     pub summaries: String,
+    #[serde(default = "default_true")]
+    pub include_transcript: bool,
     #[serde(default)]
     pub include_chats: bool,
     #[serde(default)]
@@ -76,6 +78,10 @@ fn default_summaries() -> String {
     "latest".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_template_id() -> String {
     DEFAULT_TEMPLATE_ID.to_string()
 }
@@ -86,6 +92,7 @@ impl Default for AgentConfig {
             workdir_base: String::new(),
             shell: default_shell(),
             summaries: default_summaries(),
+            include_transcript: true,
             include_chats: false,
             prompt: String::new(),
             active_template: default_template_id(),

@@ -116,6 +116,8 @@ export type AgentConfig = {
   workdirBase: string;
   shell: AgentShell;
   summaries: AgentSummaries;
+  /// Vorbelegung: Transkript in die Kontextdatei aufnehmen.
+  includeTranscript: boolean;
   includeChats: boolean;
   prompt: string;
   activeTemplate: string;
@@ -135,6 +137,45 @@ export type AgentHandoff = {
   command: string;
   workdir: string;
   contextFile: string;
+  /// Unicode-Skalare der geschriebenen Kontextdatei.
+  contextChars: number;
+  /// Wirksame Auswahl dieser Übergabe.
+  selection: AgentHandoffSelection;
+  /// Was der Dialog auswählen kann.
+  available: AgentAvailable;
+};
+
+/// Auswahl des Kontexts für eine Übergabe (Revision 3).
+export type AgentHandoffSelection = {
+  transcript: boolean;
+  /// `null` = neueste Zusammenfassung, `[]` = keine.
+  summaryIds: number[] | null;
+  chatIds: number[];
+};
+
+export type AgentSummaryOption = {
+  id: number;
+  createdAt: string;
+  provider?: string | null;
+  model?: string | null;
+  options?: string | null;
+};
+
+export type AgentChatOption = {
+  id: number;
+  title: string;
+  createdAt: string;
+  messageCount: number;
+  firstQuestion?: string | null;
+};
+
+export type AgentAvailable = {
+  hasTranscript: boolean;
+  hasLatestSummary: boolean;
+  /// Neueste zuerst.
+  summaries: AgentSummaryOption[];
+  /// Neueste zuerst.
+  chats: AgentChatOption[];
 };
 
 export type SummarySettings = {

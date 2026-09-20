@@ -15,6 +15,7 @@ import {
 } from "./chat-state";
 import { seekVideo } from "./detail";
 import { $, confirmDialog, errorMessage } from "./dom-utils";
+import { formatShortDateTime } from "./utils";
 import { getActiveVideo, setStatus, state, type ChatRun } from "./state";
 import { applyStreamEvent, applyToolEvent, createChatRun } from "./chat-live";
 import {
@@ -88,20 +89,6 @@ function parseModelValue(value: string): [string | null, string | null] {
   }
 }
 
-function formatChatDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date
-    .toLocaleString("de-DE", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    })
-    .replace(",", "");
-}
-
 export function hasChatTranscript(video: Video | null): boolean {
   return !!video && video.has_transcript && !!video.transcript?.trim();
 }
@@ -147,7 +134,7 @@ function fillChatSelect() {
   for (const chat of chatList()) {
     const option = document.createElement("option");
     option.value = String(chat.id);
-    option.textContent = `${chat.title} – ${formatChatDate(chat.updatedAt)}`;
+    option.textContent = `${chat.title} – ${formatShortDateTime(chat.updatedAt)}`;
     select.append(option);
   }
   select.value = state.activeChatId === null ? "" : String(state.activeChatId);

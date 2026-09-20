@@ -1402,7 +1402,8 @@ test("U35: Standardanzeige und Popover-Inhalt mit drei Versionen", async () => {
       assert.strictEqual(choices[0], "Neueste (automatisch)");
       assert.strictEqual(choices[1], "Keine");
       assert.strictEqual(choices.length, 5, "drei Versionen plus Neueste/Keine");
-      assert.ok(choices[2].includes("2026-03-01") && choices[2].includes("gpt-4o"));
+      // Kurzes Datumsformat mit Uhrzeit (seit 2026-09-20, wie in der Chat-Liste).
+      assert.ok(choices[2].includes("01.03.2026") && choices[2].includes("gpt-4o"));
       assert.ok(choices[2].includes("standard"), `Preset-Name fehlt: ${choices[2]}`);
       assert.ok(choices[3].includes("gpt-4o-mini"));
       assert.strictEqual(

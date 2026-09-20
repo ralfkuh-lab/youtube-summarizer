@@ -9,6 +9,7 @@ mod config;
 mod context;
 mod quote;
 mod resolve;
+mod selection;
 
 #[cfg(test)]
 mod tests;
@@ -25,6 +26,7 @@ use crate::storage::{self, AppPaths, AppResult};
 use config::{AgentConfig, AgentTemplate};
 use quote::Shell;
 use resolve::Values;
+pub use selection::{Available, HandoffSelection};
 
 /// Alle Chats eines Videos mit ihren Nachrichten.
 type ChatHistory = (Vec<Chat>, BTreeMap<i64, Vec<ChatMessageRecord>>);
@@ -51,6 +53,12 @@ pub struct AgentHandoff {
     pub command: String,
     pub workdir: String,
     pub context_file: String,
+    /// Unicode-Skalare der geschriebenen Kontextdatei.
+    pub context_chars: usize,
+    /// Die wirksame (bereinigte) Auswahl.
+    pub selection: HandoffSelection,
+    /// Was der Dialog auswaehlen kann.
+    pub available: Available,
 }
 
 // --------------------------------------------------------------- Commands --
@@ -74,8 +82,9 @@ pub fn agent_prepare(
     paths: State<'_, AppPaths>,
     video_id: i64,
     template_id: Option<String>,
+    selection: Option<HandoffSelection>,
 ) -> AppResult<AgentHandoff> {
-    prepare(&paths, video_id, template_id)
+    prepare(&paths, video_id, template_id, selection)
 }
 
 #[tauri::command]
@@ -102,13 +111,15 @@ fn config_view(paths: &AppPaths) -> AgentConfigView {
     }
 }
 
-/// Schreibt die Kontextdatei und loest die Vorlage auf.
+/// Schreibt die Kontextdatei und loest die Vorlage auf. Ohne `selection` gilt
+/// die Vorbelegung aus `agent.json`.
 pub fn prepare(
     paths: &AppPaths,
     video_id: i64,
     template_id: Option<String>,
+    selection: Option<HandoffSelection>,
 ) -> AppResult<AgentHandoff> {
-    prepare_with_home(paths, video_id, template_id, &home_dir())
+    prepare_with_home(paths, video_id, template_id, selection, &home_dir())
 }
 
 /// Wie `prepare`, aber mit vorgegebenem Home-Verzeichnis (Tests).
@@ -116,6 +127,7 @@ pub(crate) fn prepare_with_home(
     paths: &AppPaths,
     video_id: i64,
     template_id: Option<String>,
+    selection: Option<HandoffSelection>,
     home: &std::path::Path,
 ) -> AppResult<AgentHandoff> {
     let config = config::load(paths);
@@ -148,25 +160,23 @@ pub(crate) fn prepare_with_home(
     // Vor dem Schreiben pruefen, damit ungueltige Werte nichts anlegen.
     values.validate()?;
 
-    let summaries = if config.summaries == "all" {
-        storage::get_summaries(paths, video_id)?
-    } else {
-        Vec::new()
-    };
-    let (chats, messages) = if config.include_chats {
-        load_chat_history(paths, video_id)?
-    } else {
-        (Vec::new(), BTreeMap::new())
-    };
+    // Leere Versionen und Chats ohne exportierbare Nachricht sind nicht
+    // waehlbar (Revision 3, K3): sie erscheinen nicht in der Datei.
+    let summaries = selection::exportable_summaries(storage::get_summaries(paths, video_id)?);
+    let (chats, messages) = load_chat_history(paths, video_id)?;
+    let chats = selection::exportable_chats(chats, &messages);
+
+    let requested = selection.unwrap_or_else(|| selection::preset(&config, &summaries, &chats));
+    let resolved = selection::resolve(&requested, &summaries, &chats);
+    let available = selection::available(&video, &summaries, &chats, &messages);
 
     let exported_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let contents = context::render(&context::ContextSources {
         video: &video,
-        summaries: &summaries,
-        chats: &chats,
+        summaries: &resolved.summaries,
+        chats: &resolved.chats,
         messages: &messages,
-        summary_mode: &config.summaries,
-        include_chats: config.include_chats,
+        selection: &resolved.selection,
         exported_at: &exported_at,
     });
     context::write_atomic(&context_path, &contents)?;
@@ -175,6 +185,9 @@ pub(crate) fn prepare_with_home(
     Ok(AgentHandoff {
         workdir: values.workdir,
         context_file: values.context_file,
+        context_chars: contents.chars().count(),
+        selection: resolved.selection,
+        available,
         command,
     })
 }

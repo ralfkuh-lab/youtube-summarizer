@@ -1,6 +1,6 @@
 # Spec: Video an einen lokalen Agenten übergeben
 
-Stand: 2026-09-19, Revision 2 (Spec-Review durch Grok eingearbeitet).
+Stand: 2026-09-20, Revision 3 (Kontextauswahl pro Übergabe, siehe Ende der Datei); Revision 2 vom 2026-09-19 (Spec-Review durch Grok eingearbeitet).
 
 ## Ziel
 
@@ -324,3 +324,209 @@ Nativer Durchlauf (Linux): Export für ein echtes Video, Zwischenablage in der
 gebauten App prüfen (WebKitGTK), kopiertes Kommando in einem Terminal
 ausführen, Agent liest `context.md`. Review und Kreuzreview; Schwerpunkte
 Auflösung/Maskierung, Pfadbildung, Struktur der Kontextdatei.
+
+---
+
+# Revision 3 (2026-09-20): Kontextauswahl pro Übergabe und Eigennamen-Hinweis
+
+Auslöser: erster Praxistest des Maintainers (2026-09-19). Die Abschnitte oben
+gelten weiter; diese Revision ergänzt und ersetzt nur das hier Genannte.
+
+## Eigennamen-Hinweis (umgesetzt vom Orchestrator)
+
+Auto-Transkripte schreiben Eigennamen oft falsch („CodeEx“, „Grock“).
+
+- `summarize::PROPER_NAMES_NOTE` ist ein fester Zusatz des Systemprompts von
+  Zusammenfassung (`with_untrusted_data_note`) **und** Chat
+  (`chat_system_prompt`), jeweils unmittelbar vor `UNTRUSTED_DATA_NOTE`. Er
+  steht bewusst **nicht** im Preset-Text, damit ihn auch eigene Presets erben.
+- Im Kopf der Kontextdatei steht `PROPER_NAMES_HINT` (siehe H9).
+
+## Ziel der Kontextauswahl
+
+Wie beim Chat wählt der Benutzer **pro Übergabe**, was in `context.md` landet:
+Transkript an/aus, welche Zusammenfassungs-Versionen, welche Chats. Die
+Einstellungen im Tab „Agent“ sind nur noch die **Vorbelegung**.
+
+Nicht-Ziele: Recherche-Ergebnisse (Tool-Nachrichten) der Chats exportieren —
+die Antworten enthalten die Quellen bereits als Links, der Agent kann selbst
+recherchieren, und eine ausgereizte Recherche-Runde umfasst ~240 000 Zeichen.
+Keine Persistenz der Auswahl über den Neustart der App hinaus. Keine
+Obergrenze für die Zahl gewählter Versionen (es ist eine Datei, kein Prompt).
+
+## Datenmodell
+
+```
+HandoffSelection (Serde camelCase)
+{ "transcript": true, "summaryIds": null | [i64…], "chatIds": [i64…] }
+```
+
+- `summaryIds`: `null` = neueste (`videos.summary`, Kopfzeile wie bisher
+  `Anbieter · Modell`), `[]` = keine, sonst die gewählten Versionen aus
+  `summaries` (Kopfzeile `Version vom <Datum> · <Modell>`).
+- `chatIds`: `[]` = keine.
+- Fehlende Felder beim Deserialisieren: `transcript` → `true`, `summaryIds` →
+  `null`, `chatIds` → `[]`.
+
+`agent.json` erhält `includeTranscript` (bool, Default `true`; fehlt das Feld
+in einer vorhandenen Datei → `true`).
+
+**Vorbelegung** (wenn `agent_prepare` ohne `selection` aufgerufen wird):
+`transcript = includeTranscript`; `summaries` `latest` → `null`, `none` → `[]`,
+`all` → alle IDs des Videos; `includeChats` → alle Chat-IDs des Videos, sonst
+`[]`.
+
+**Auflösung** einer Auswahl (reine Funktion, getrennt testbar):
+- IDs, die nicht zu **diesem** Video gehören oder nicht existieren, entfallen
+  stillschweigend; Duplikate entfallen.
+- Reihenfolge in der Datei unabhängig von der Reihenfolge der Eingabe:
+  Zusammenfassungen und Chats je **älteste zuerst** (`created_at`, dann `id`).
+- Die **wirksame Auswahl** (bereinigt, IDs aufsteigend nach derselben Ordnung)
+  geht an den Aufrufer zurück.
+- Eine leere Auswahl (kein Transkript, keine Zusammenfassung, kein Chat) ist
+  erlaubt: Die Datei enthält dann Kopf und Metadaten-Blöcke.
+- **Leeres ist nicht wählbar** (Nachtrag aus dem Review): Versionen, deren
+  Text nach `trim` leer ist, und Chats ohne exportierbare Nachricht erscheinen
+  nicht in `available`, entfallen bei der Auflösung wie unbekannte IDs und
+  gehören nicht zur Vorbelegung. Die Datei enthält nie einen inhaltslosen
+  SUMMARY- oder CHAT-Block (Fälle H13–H15).
+
+## Backend
+
+`agent_prepare(video_id: i64, template_id: Option<String>, selection:
+Option<HandoffSelection>) -> AgentHandoff`
+
+```
+AgentHandoff {
+  command, workdir, contextFile,           // wie bisher
+  contextChars: usize,                     // Unicode-Skalare der geschriebenen Datei
+  selection: HandoffSelection,             // wirksame Auswahl
+  available: {
+    hasTranscript: bool,                   // nichtleeres Transkript vorhanden
+    hasLatestSummary: bool,                // videos.summary nichtleer
+    summaries: [{ id, createdAt, provider, model, options }],   // neueste zuerst
+    chats: [{ id, title, createdAt, messageCount, firstQuestion }]  // neueste zuerst (created_at)
+  }
+}
+```
+
+`messageCount` zählt genau die Nachrichten, die exportiert würden (Rollen
+`user`/`assistant`, nach `trim` nichtleer). Die Automation
+`POST /api/agent-handoff/<id>` nimmt zusätzlich `selection` (optional) im Body.
+
+`ContextSources` verliert `summary_mode`/`include_chats` zugunsten der
+aufgelösten Auswahl. Module bleiben unter 600 Zeilen (Auswahl-Logik ggf. in
+`agent_handoff/selection.rs`).
+
+### Kopfzeilen der Kontextdatei
+
+Nach `Exportiert: …`, je eine Zeile, in dieser Reihenfolge, nur wenn zutreffend:
+
+1. `Hinweis: Für dieses Video liegt kein Transkript vor.` — Video hat kein
+   (nichtleeres) Transkript; unabhängig von `selection.transcript`.
+2. `Hinweis: Das Transkript wurde für diese Übergabe abgewählt; in der App ist
+   es vorhanden.` — Transkript vorhanden, aber `transcript: false`.
+3. `PROPER_NAMES_HINT` (vorhandener Text) — wenn die Datei mindestens einen
+   `TRANSCRIPT`-, `SUMMARY`- oder `CHAT`-Block enthält.
+
+## Referenzfälle (Rust)
+
+Fixture „V“: Video mit Transkript, `videos.summary` gesetzt, drei Versionen
+S1 < S2 < S3 (nach `created_at`), zwei Chats C1 < C2; C1 enthält zusätzlich eine
+Tool-Nachricht und einen leeren Assistant-Turn. Fixture „W“: zweites Video mit
+einer Version SW und einem Chat CW.
+
+| # | Eingabe | Erwartung |
+|---|---|---|
+| H1 | V, `selection` fehlt, Default-Konfiguration | Datei wie vor dieser Revision bis auf die Kopfzeilen (TRANSCRIPT, ein SUMMARY-Block mit Kopfzeile `Anbieter · Modell`, kein CHAT); wirksame Auswahl `{true, null, []}` |
+| H2 | V, `{transcript:false, summaryIds:null, chatIds:[]}` | kein `=== TRANSCRIPT`-Block; Kopf enthält Zeile 2, nicht Zeile 1; PROPER_NAMES_HINT vorhanden (SUMMARY-Block) |
+| H3 | V, `summaryIds:[S3,S1]` | genau zwei SUMMARY-Blöcke, S1 **vor** S3, beide mit `Version vom`-Kopfzeile; wirksame Auswahl `[S1,S3]` |
+| H4 | V, `summaryIds:[S2,SW,999999,S2]`, `chatIds:[CW,C2,424242]` | ein SUMMARY-Block (S2), ein CHAT-Block (C2); wirksame Auswahl `[S2]` / `[C2]`; kein Inhalt aus W in der Datei |
+| H5 | V, `chatIds:[C2,C1]` | zwei CHAT-Blöcke, C1 vor C2; keine Tool-Nachricht, kein leerer Turn |
+| H6 | V, Konfiguration `includeTranscript:false`, `summaries:"all"`, `includeChats:true`, `selection` fehlt | wirksame Auswahl `{false,[S1,S2,S3],[C1,C2]}`; Datei entsprechend |
+| H7 | V, beliebige Auswahl | `available`: `hasTranscript:true`, `hasLatestSummary:true`, `summaries` = S3,S2,S1, `chats` = C2,C1; `messageCount` von C1 zählt Tool-Nachricht und leeren Turn nicht mit |
+| H8 | V, `{false,[],[]}` | kein Fehler; Datei enthält Kopf + TITLE/PUBLISHED/DESCRIPTION/CHAPTERS, keinen SUMMARY/CHAT/TRANSCRIPT-Block; Kopf enthält Zeile 2, **nicht** PROPER_NAMES_HINT |
+| H9 | Video ohne Transkript, ohne Zusammenfassung, ohne Chat | Kopf enthält Zeile 1, weder Zeile 2 noch PROPER_NAMES_HINT. Gleiches Video mit `summaryIds:null` und gesetzter `videos.summary` → Zeile 1 **und** PROPER_NAMES_HINT |
+| H10 | `agent.json` ohne `includeTranscript` | geladen als `true`; nach `save` steht das Feld in der Datei |
+| H11 | V, beliebige Auswahl | `contextChars` == `chars().count()` der geschriebenen Datei |
+| H12 | Body der Automation ohne `selection` / mit `selection` ohne `chatIds` | Vorbelegung bzw. `chatIds: []` |
+
+Bestehende Tests (C1–C5, A*, S*, Q*) bleiben grün; wo sie
+`summary_mode`/`include_chats` benutzen, werden sie auf die Auswahl
+umgestellt, ohne ihre Erwartung zu ändern. `c6_…` (Eigennamen) wird an H9
+angepasst.
+
+## Frontend
+
+Dialog `#agentModal`, neuer Bereich **„Kontext“** (`#agentContext`) zwischen
+Vorlage und Kommando, gefüllt aus `available` und `selection` der Antwort:
+
+- Checkbox `#agentCtxTranscript` „Transkript“; ohne Transkript deaktiviert,
+  nicht angehakt, Beschriftung „Transkript (nicht vorhanden)“.
+- Zusammenfassungen (`#agentCtxSummaries`): je Version eine Checkbox, **keine
+  Radios** (Rückmeldung des Maintainers nach dem ersten nativen Test). `null`
+  („neueste“) erscheint als angehakte neueste Version; der erste Klick macht
+  daraus eine ausdrückliche Liste (angezeigter Stand ± diese Version), eine
+  leere Liste heißt „keine“. Beschriftung über `labelFor` aus
+  `src/chat-context.ts`. Gibt es `hasLatestSummary`, aber keine Versionsliste
+  (Altbestand), steht dort eine Checkbox „Aktuelle Zusammenfassung“
+  (`#agentCtxSummaryLatest`: an = `null`, aus = `[]`). Ohne beides: Text „Keine
+  Zusammenfassung vorhanden“.
+- Aufbau: „Kontext“ ist die Feldbeschriftung über dem gerahmten Bereich (wie
+  „Vorlage“ und „Kommando“); darin die Zeile „Transkript“ und die Gruppen
+  „Zusammenfassungen“ und „Chats“. Haken und Beschriftung stehen in **einer**
+  Zeile (G34); der Shell-Hinweis steht an der Beschriftung „Kommando“.
+- Chats (`#agentCtxChats`): je Chat eine Checkbox „<Titel> · <Datum> ·
+  <n> Nachricht(en)“ in **einer** Zeile: der Titel wird mit Auslassung gekürzt,
+  Datum und Zahl bleiben sichtbar; der Tooltip der Zeile zeigt die vollständige
+  erste Frage (`available.chats[].firstQuestion`, höchstens 1000 Zeichen, sonst
+  den Titel). Datumsangaben im Dialog im kurzen Format mit Uhrzeit
+  (`19.09.2026 19:44`, `utils.formatShortDateTime`, wie in der Chat-Liste).
+  Ohne Chats Text „Keine Chats vorhanden“ (G35).
+- Jede Änderung ruft `agent_prepare` mit der vollständigen Auswahl und der
+  gewählten Vorlage; die Generationsprüfung (`prepareGeneration`) gilt
+  unverändert. Bei einer **Auswahländerung** wird **nicht** erneut kopiert (das
+  Kommando ändert sich nicht); Status `Kontextdatei aktualisiert – <n> Zeichen`.
+  Beim Vorlagenwechsel wie bisher neu kopieren, die aktuelle Auswahl mitsenden.
+- Zeile „Kontextdatei: <Pfad>“ wird um „ · ≈ <n> Zeichen“ ergänzt (`contextChars`,
+  mit `toLocaleString("de-DE")`).
+- Die zuletzt wirksame Auswahl je Video wird im Speicher gemerkt (`Map` wie
+  `lastUsed` im Chat) und beim nächsten Öffnen für dieses Video mitgesendet;
+  sonst `selection` weglassen (Vorbelegung des Backends).
+- Alle Texte per `textContent`.
+
+Einstellungs-Tab „Agent“: neue Checkbox `#agentIncludeTranscript` „Transkript
+aufnehmen“; die Gruppe aus Transkript, Zusammenfassungen und Chat-Verläufen
+erhält die Überschrift „Vorbelegung des Kontexts (im Übergabe-Dialog änderbar)“.
+
+UI-Fälle (`tests/ui/agent-handoff.test.mjs`, Mock um `selection`/`available`/
+`contextChars` erweitern; der Mock löst die Auswahl wie das Backend auf):
+
+| # | Ablauf | Erwartung |
+|---|---|---|
+| G12 | Dialog öffnen | erster `agent_prepare`-Aufruf ohne `selection`; Bereich „Kontext“ zeigt Transkript und die neueste Version angehakt, Chats nicht; keine Radios; Zeichenzahl sichtbar |
+| G13 | Transkript abwählen | zweiter Aufruf mit `selection.transcript === false`; `navigator.clipboard.writeText` **nicht** erneut aufgerufen; Status beginnt mit `Kontextdatei aktualisiert` |
+| G14 | zweite Version anhaken, dann beide abwählen | Aufrufe mit `[neu,alt]`, `[neu]`, `[]`; am Ende nichts angehakt |
+| G15 | einen Chat anhaken | Aufruf mit `chatIds` = genau diese ID |
+| G16 | Auswahl ändern, dann Vorlage wechseln | Aufruf enthält neue `templateId` **und** die geänderte Auswahl; es wird neu kopiert |
+| G17 | Dialog schließen, für dasselbe Video erneut öffnen | erster Aufruf enthält die gemerkte Auswahl; nach Videowechsel für das andere Video ohne `selection` |
+| G18 | Video ohne Transkript und ohne Zusammenfassung | Checkbox deaktiviert mit „(nicht vorhanden)“; Text „Keine Zusammenfassung vorhanden“ |
+| G19 | zwei schnelle Auswahländerungen, erste Antwort verzögert (kommt zuletzt) | Anzeige (Zeichenzahl, Häkchen) folgt der **zweiten** Anfrage |
+| G20 | Einstellungs-Tab: „Transkript aufnehmen“ abwählen, speichern | `agent_config_set` mit `includeTranscript: false` |
+
+Nachtrag aus dem Review: Der Dialog führt die **gewünschte** Auswahl synchron;
+schnelle Klickfolgen überschreiben sich nicht (G28–G30, nach dem Wegfall der
+Radios auf Checkbox-Folgen umgestellt), Altbestand (G33), Zeilenlayout (G34), der Mock bildet die
+Vorbelegung aus der Konfiguration (G31). Die früheren UI-Fälle G12–G17 heißen
+seit dieser Revision G21–G26; G27 prüft den Fehlerpfad bei Auswahländerung.
+
+## Gates und Mutationsnachweise
+
+Gates wie oben (`cargo fmt --check`, `cargo test`, `npm run build`,
+`npm run test:ui`), danach `npm run tauri -- build` durch den Orchestrator.
+
+Mutationsnachweise (Kopie außerhalb des Repos, beide Läufe wörtlich): H3 rot,
+wenn die Reihenfolge der Eingabe übernommen wird; H4 rot ohne Filter auf das
+Video; H8 rot, wenn PROPER_NAMES_HINT am Transkript des Videos statt an den
+Blöcken hängt; G13 rot, wenn bei Auswahländerung kopiert wird; G19 rot ohne
+Generationsprüfung.

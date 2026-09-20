@@ -340,7 +340,462 @@ test("G11: nur die juengste Vorlagen-Antwort aktualisiert Feld und Zwischenablag
   });
 });
 
-test("G12: Standard-Prompt ist als Platzhalter sichtbar und uebernehmbar", async () => {
+// ---------------------------------------- Revision 3: Kontextauswahl (G12-G20) --
+// Die bereits vorhandenen Faelle G12-G17 (Standard-Prompt, Vorlagenformular,
+// Fehlerstatus, Einstellungen, Dialog beim Videowechsel) heissen seit Revision 3
+// G21-G26; ihre Erwartungen sind unveraendert.
+
+function lastPrepare(calls) {
+  const prepare = callsOf(calls, "agent_prepare");
+  return prepare[prepare.length - 1];
+}
+
+function charsText(chars) {
+  return ` · ≈ ${chars.toLocaleString("de-DE")} Zeichen`;
+}
+
+test("G12: Dialog öffnen zeigt die Vorbelegung im Kontextbereich", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    const prepare = callsOf(await mock.getCalls(), "agent_prepare");
+    assert.strictEqual(prepare.length, 1);
+    assert.strictEqual(prepare[0].args.selection, undefined, "erster Aufruf ohne selection");
+
+    assert.strictEqual(await page.locator("#agentCtxTranscript").isChecked(), true);
+    assert.strictEqual(await page.locator("#agentCtxTranscript").isDisabled(), false);
+    assert.strictEqual(await page.locator("#agentCtxTranscriptLabel").textContent(), "Transkript");
+    // „Neueste“ erscheint als angehakte neueste Version; Radios gibt es nicht.
+    assert.strictEqual(prepare[0].result.selection.summaryIds, null);
+    assert.strictEqual(await page.locator("#agentCtxSummary-302").isChecked(), true);
+    assert.strictEqual(await page.locator("#agentCtxSummary-301").isChecked(), false);
+    assert.strictEqual(await page.locator('#agentContext input[type="radio"]').count(), 0);
+    assert.strictEqual(await page.locator("#agentCtxChat-401").isChecked(), false);
+    assert.strictEqual(await page.locator("#agentCtxChat-402").isChecked(), false);
+    // Beschriftung: 1 Nachricht im Singular, sonst Plural.
+    const label401 = await page.locator("#agentCtxChat-401 + span").textContent();
+    assert.ok(label401.endsWith("· 1 Nachricht"), `Label war: "${label401}"`);
+    const label402 = await page.locator("#agentCtxChat-402 + span").textContent();
+    assert.ok(label402.endsWith("· 4 Nachrichten"), `Label war: "${label402}"`);
+    assert.strictEqual(
+      await page.locator("#agentContextChars").textContent(),
+      charsText(prepare[0].result.contextChars),
+      "die Zeichenzahl der Antwort ist sichtbar",
+    );
+  });
+});
+
+test("G13: Transkript abwählen schreibt neu, kopiert aber nicht erneut", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+    assert.strictEqual((await page.evaluate(() => window.__copied)).length, 1);
+
+    await page.locator("#agentCtxTranscript").uncheck();
+    await mock.waitForPending();
+
+    const last = lastPrepare(await mock.getCalls());
+    assert.deepEqual(last.args.selection, { transcript: false, summaryIds: null, chatIds: [] });
+    assert.strictEqual(
+      (await page.evaluate(() => window.__copied)).length,
+      1,
+      "eine Auswahländerung kopiert nicht erneut",
+    );
+    const status = await page.locator("#statusText").textContent();
+    assert.ok(status.startsWith("Kontextdatei aktualisiert"), `Status war: "${status}"`);
+    assert.ok(status.includes("Zeichen"), `Status war: "${status}"`);
+    assert.strictEqual(await page.locator("#agentCtxTranscript").isChecked(), false);
+    assert.strictEqual(
+      await page.locator("#agentContextChars").textContent(),
+      charsText(last.result.contextChars),
+    );
+  });
+});
+
+test("G14: Zweite Version anhaken, dann beide abwählen", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentCtxSummary-301").check();
+    await mock.waitForPending();
+    await page.locator("#agentCtxSummary-301").uncheck();
+    await mock.waitForPending();
+    await page.locator("#agentCtxSummary-302").uncheck();
+    await mock.waitForPending();
+
+    const prepare = callsOf(await mock.getCalls(), "agent_prepare");
+    const requested = prepare.slice(1).map((call) => call.args.selection.summaryIds);
+    assert.deepEqual(requested, [[302, 301], [302], []], "angeforderte Auswahl");
+    const last = prepare[prepare.length - 1];
+    assert.deepEqual(last.result.selection.summaryIds, [], "wirksame Auswahl: keine");
+    assert.strictEqual(await page.locator("#agentCtxSummary-301").isChecked(), false);
+    assert.strictEqual(await page.locator("#agentCtxSummary-302").isChecked(), false);
+  });
+});
+
+test("G15: Einen Chat anhaken sendet genau diese ID", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentCtxChat-401").check();
+    await mock.waitForPending();
+
+    const last = lastPrepare(await mock.getCalls());
+    assert.deepEqual(last.args.selection.chatIds, [401]);
+    assert.strictEqual(await page.locator("#agentCtxChat-401").isChecked(), true);
+    assert.strictEqual(await page.locator("#agentCtxChat-402").isChecked(), false);
+  });
+});
+
+test("G16: Auswahl ändern, dann Vorlage wechseln kopiert mit der neuen Auswahl", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentCtxTranscript").uncheck();
+    await mock.waitForPending();
+    const copiedBefore = (await page.evaluate(() => window.__copied)).length;
+
+    await page.locator("#agentTemplate").selectOption("codex");
+    await mock.waitForPending();
+
+    const last = lastPrepare(await mock.getCalls());
+    assert.strictEqual(last.args.templateId, "codex");
+    assert.strictEqual(last.args.selection.transcript, false, "die geänderte Auswahl geht mit");
+    assert.strictEqual(
+      await page.locator("#agentCommand").inputValue(),
+      AGENT.prepareByTemplate.codex.command,
+    );
+    const copied = await page.evaluate(() => window.__copied);
+    assert.strictEqual(copied.length, copiedBefore + 1, "der Vorlagenwechsel kopiert erneut");
+    assert.strictEqual(copied[copied.length - 1], AGENT.prepareByTemplate.codex.command);
+  });
+});
+
+test("G17: Die Auswahl wird je Video gemerkt", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock, 2);
+    await page.locator("#agentCtxTranscript").uncheck();
+    await mock.waitForPending();
+    await page.locator("#agentModalClose").click();
+
+    await page.locator("#agentHandoffBtn").click();
+    await mock.waitForPending();
+    const reopened = lastPrepare(await mock.getCalls());
+    assert.strictEqual(reopened.args.videoId, 2);
+    assert.deepEqual(reopened.args.selection, { transcript: false, summaryIds: null, chatIds: [] });
+    assert.strictEqual(await page.locator("#agentCtxTranscript").isChecked(), false);
+
+    // Für ein anderes Video gibt es keine gemerkte Auswahl.
+    await page.evaluate(() => document.querySelector('.video-item[data-id="3"]').click());
+    await mock.waitForPending();
+    await page.locator("#agentHandoffBtn").click();
+    await mock.waitForPending();
+    const other = lastPrepare(await mock.getCalls());
+    assert.strictEqual(other.args.videoId, 3);
+    assert.strictEqual(other.args.selection, undefined, "Vorbelegung des Backends");
+  });
+});
+
+test("G18: Video ohne Transkript und ohne Zusammenfassung", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock, 1);
+
+    const transcript = page.locator("#agentCtxTranscript");
+    assert.strictEqual(await transcript.isDisabled(), true);
+    assert.strictEqual(await transcript.isChecked(), false);
+    assert.strictEqual(
+      await page.locator("#agentCtxTranscriptLabel").textContent(),
+      "Transkript (nicht vorhanden)",
+    );
+    assert.strictEqual(await page.locator("#agentCtxSummaries input").count(), 0);
+    assert.ok(
+      (await page.locator("#agentCtxSummaries").textContent()).includes(
+        "Keine Zusammenfassung vorhanden",
+      ),
+    );
+    assert.strictEqual(await page.locator("#agentCtxChats input").count(), 0);
+    assert.ok((await page.locator("#agentCtxChats").textContent()).includes("Keine Chats vorhanden"));
+  });
+});
+
+test("G19: Die Anzeige folgt der zweiten Auswahlanfrage", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    // Aufruf 1 (Dialog öffnen) ohne Verzögerung, Aufruf 2 (Transkript abwählen)
+    // verzögert, Aufruf 3 (Chat anhaken) sofort.
+    await mock.setDelays({ agent_prepare: [0, 300, 0] });
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentCtxTranscript").uncheck();
+    await page.locator("#agentCtxChat-401").check();
+    await mock.waitForPending();
+
+    const last = lastPrepare(await mock.getCalls());
+    assert.deepEqual(last.args.selection, { transcript: false, summaryIds: null, chatIds: [401] });
+    assert.strictEqual(
+      await page.locator("#agentContextChars").textContent(),
+      charsText(last.result.contextChars),
+      "die veraltete Antwort darf die Zeichenzahl nicht setzen",
+    );
+    assert.strictEqual(
+      await page.locator("#agentCtxChat-401").isChecked(),
+      true,
+      "die veraltete Antwort darf die Häkchen nicht zurücksetzen",
+    );
+    assert.strictEqual(await page.locator("#agentCtxTranscript").isChecked(), false);
+  });
+});
+
+test("G20: Einstellungen speichern includeTranscript", async () => {
+  await withApp(async (page, mock) => {
+    await openAgentSettings(page, mock);
+    const checkbox = page.locator("#agentIncludeTranscript");
+    assert.strictEqual(await checkbox.isChecked(), true, "Vorbelegung aus der Konfiguration");
+
+    await checkbox.uncheck();
+    await mock.waitForPending();
+
+    const set = callsOf(await mock.getCalls(), "agent_config_set");
+    assert.strictEqual(set[set.length - 1].args.config.includeTranscript, false);
+  });
+});
+
+test("G27: Ein Fehler bei der Auswahländerung lässt die letzte gültige Auswahl stehen", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+    // Der erste Aufruf gelingt; danach scheitert das Backend.
+    await mock.setFixtures({
+      agent: {
+        ...AGENT,
+        prepareErrorFrom: 1,
+        prepareError: "Kontextdatei konnte nicht geschrieben werden",
+      },
+    });
+
+    // `click` statt `uncheck`: die Anzeige wird gleich darauf zurückgesetzt.
+    await page.locator("#agentCtxTranscript").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#statusText").textContent ===
+        "Kontextdatei konnte nicht geschrieben werden",
+    );
+    await mock.waitForPending();
+    assert.strictEqual(
+      await page.locator("#agentCtxTranscript").isChecked(),
+      true,
+      "die Häkchen fallen auf die letzte wirksame Auswahl zurück",
+    );
+    assert.strictEqual(await page.locator("#agentContextChars").textContent(), charsText(400));
+    assert.strictEqual(
+      (await page.evaluate(() => window.__copied)).length,
+      1,
+      "es wird nichts kopiert",
+    );
+  });
+});
+
+test("G28: Zwei schnelle Klicks auf Versionen gehen beide ein", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    // Aufruf 1 (Dialog öffnen) sofort, Aufruf 2 (301 an) verzögert, Aufruf 3 (302 ab) sofort.
+    await mock.setDelays({ agent_prepare: [0, 300, 0] });
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentCtxSummary-301").check();
+    await page.locator("#agentCtxSummary-302").uncheck();
+    await mock.waitForPending();
+
+    const last = lastPrepare(await mock.getCalls());
+    assert.deepEqual(last.args.selection.summaryIds, [301], "der zweite Klick baut auf dem ersten auf");
+    assert.deepEqual(last.result.selection.summaryIds, [301], "wirksame Auswahl");
+    assert.strictEqual(await page.locator("#agentCtxSummary-301").isChecked(), true);
+    assert.strictEqual(await page.locator("#agentCtxSummary-302").isChecked(), false);
+  });
+});
+
+test("G29: Letzte Version abwählen und sofort Transkript abwählen", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    // Aufruf 1 (öffnen) sofort, 2 (302 ab) verzögert, 3 (Transkript) sofort.
+    await mock.setDelays({ agent_prepare: [0, 300, 0] });
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentCtxSummary-302").uncheck();
+    await page.locator("#agentCtxTranscript").uncheck();
+    await mock.waitForPending();
+
+    const last = lastPrepare(await mock.getCalls());
+    assert.deepEqual(last.args.selection, { transcript: false, summaryIds: [], chatIds: [] });
+    assert.strictEqual(await page.locator("#agentCtxSummary-302").isChecked(), false);
+    assert.strictEqual(await page.locator("#agentCtxTranscript").isChecked(), false);
+  });
+});
+
+test("G30: Version anhaken und sofort wieder abwählen", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await mock.setDelays({ agent_prepare: [0, 300, 0] });
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentCtxSummary-301").check();
+    await page.locator("#agentCtxSummary-301").uncheck();
+    await mock.waitForPending();
+
+    const last = lastPrepare(await mock.getCalls());
+    assert.deepEqual(last.args.selection.summaryIds, [302], "zurück beim angezeigten Ausgangsstand");
+    assert.strictEqual(await page.locator("#agentCtxSummary-301").isChecked(), false);
+    assert.strictEqual(await page.locator("#agentCtxSummary-302").isChecked(), true);
+  });
+});
+
+test("G31: Die Vorbelegung folgt der Konfiguration", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await mock.setFixtures({
+      agent: {
+        ...AGENT,
+        view: {
+          ...AGENT.view,
+          config: {
+            ...AGENT.view.config,
+            includeTranscript: false,
+            summaries: "all",
+            includeChats: true,
+          },
+        },
+      },
+    });
+    await openAgentDialog(page, mock);
+
+    const prepare = callsOf(await mock.getCalls(), "agent_prepare");
+    assert.strictEqual(prepare[0].args.selection, undefined, "Vorbelegung kommt vom Backend");
+    assert.strictEqual(await page.locator("#agentCtxTranscript").isChecked(), false);
+    assert.strictEqual(await page.locator("#agentCtxSummary-301").isChecked(), true);
+    assert.strictEqual(await page.locator("#agentCtxSummary-302").isChecked(), true);
+    assert.strictEqual(await page.locator("#agentCtxChat-401").isChecked(), true);
+    assert.strictEqual(await page.locator("#agentCtxChat-402").isChecked(), true);
+  });
+});
+
+test("G32: Der Tastaturfokus bleibt im Kontextwähler", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentCtxSummary-301").focus();
+    await page.keyboard.press("Space");
+    await mock.waitForPending();
+    assert.strictEqual(
+      await page.evaluate(() => document.activeElement?.id ?? null),
+      "agentCtxSummary-301",
+      "der Fokus bleibt nach Klick und Antwort beim Regler",
+    );
+    assert.strictEqual(await page.locator("#agentCtxSummary-301").isChecked(), true);
+
+    await page.keyboard.press("Space");
+    await mock.waitForPending();
+    assert.strictEqual(
+      await page.evaluate(() => document.activeElement?.id ?? null),
+      "agentCtxSummary-301",
+      "auch nach dem Abwählen",
+    );
+    assert.strictEqual(await page.locator("#agentCtxSummary-301").isChecked(), false);
+  });
+});
+
+test("G33: Altbestand ohne Versionsliste zeigt nur „Aktuelle Zusammenfassung“", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    const entry = AGENT.context[2];
+    await mock.setFixtures({
+      agent: {
+        ...AGENT,
+        context: {
+          ...AGENT.context,
+          2: { ...entry, available: { ...entry.available, summaries: [] } },
+        },
+      },
+    });
+    await openAgentDialog(page, mock);
+
+    const latest = page.locator("#agentCtxSummaryLatest");
+    assert.strictEqual(await latest.isChecked(), true);
+    await latest.uncheck();
+    await mock.waitForPending();
+    assert.deepEqual(lastPrepare(await mock.getCalls()).args.selection.summaryIds, []);
+    await latest.check();
+    await mock.waitForPending();
+    assert.strictEqual(lastPrepare(await mock.getCalls()).args.selection.summaryIds, null);
+  });
+});
+
+test("G34: Haken und Beschriftung stehen in einer Zeile", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    for (const id of ["agentCtxTranscript", "agentCtxSummary-302", "agentCtxChat-401"]) {
+      const input = await page.locator(`#${id}`).boundingBox();
+      const text = await page.locator(`#${id} + span`).boundingBox();
+      const inputMiddle = input.y + input.height / 2;
+      assert.ok(
+        inputMiddle > text.y && inputMiddle < text.y + text.height,
+        `${id}: Haken (${JSON.stringify(input)}) und Text (${JSON.stringify(text)}) auf einer Höhe`,
+      );
+      assert.ok(input.x + input.width <= text.x, `${id}: Haken steht links vom Text`);
+    }
+    if (process.env.AGENT_DIALOG_SCREENSHOT) {
+      await page.locator("#agentModal .modal-content").screenshot({
+        path: process.env.AGENT_DIALOG_SCREENSHOT,
+      });
+    }
+  });
+});
+
+test("G35: Lange Chat-Titel bleiben einzeilig, die ganze Frage steht im Tooltip", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    const long = await page.locator("label:has(#agentCtxChat-402)").boundingBox();
+    const short = await page.locator("label:has(#agentCtxChat-401)").boundingBox();
+    assert.ok(
+      Math.abs(long.height - short.height) < 1,
+      `kein Zeilenumbruch: ${long.height} gegen ${short.height}`,
+    );
+    const context = await page.locator("#agentContext").boundingBox();
+    assert.ok(long.x + long.width <= context.x + context.width, "die Zeile ragt nicht hinaus");
+
+    assert.strictEqual(
+      await page.locator("label:has(#agentCtxChat-402)").getAttribute("title"),
+      "Überprüfe mal kurz im Internet, ob diese Harness tatsächlich so gut ist, wie im Video behauptet wird, und nenne Quellen.",
+    );
+    // Ohne `firstQuestion` trägt der Tooltip den Titel.
+    assert.strictEqual(
+      await page.locator("label:has(#agentCtxChat-401)").getAttribute("title"),
+      "Chat Eins",
+    );
+    // Kurzes Datum mit Uhrzeit; Datum und Zahl bleiben trotz Kürzung sichtbar.
+    const meta = page.locator("#agentCtxChat-402 + span .agent-context-meta");
+    assert.match(await meta.textContent(), /· 02\.05\.2026 \d{2}:\d{2} · 4 Nachrichten$/);
+    const metaBox = await meta.boundingBox();
+    assert.ok(metaBox.x + metaBox.width <= context.x + context.width, "Metadaten sichtbar");
+    // Versionen zeigen dasselbe kurze Format.
+    assert.match(
+      await page.locator("#agentCtxSummary-302 + span").textContent(),
+      /^01\.03\.2026 \d{2}:\d{2} – /,
+    );
+  });
+});
+
+test("G21: Standard-Prompt ist als Platzhalter sichtbar und uebernehmbar", async () => {
   await withApp(async (page, mock) => {
     await openAgentSettings(page, mock);
     const prompt = page.locator("#agentPrompt");
@@ -360,7 +815,7 @@ test("G12: Standard-Prompt ist als Platzhalter sichtbar und uebernehmbar", async
   });
 });
 
-test("G13: Das Vorlagenformular erscheint nur nach Anlegen oder Bearbeiten", async () => {
+test("G22: Das Vorlagenformular erscheint nur nach Anlegen oder Bearbeiten", async () => {
   await withApp(async (page, mock) => {
     await openAgentSettings(page, mock);
     assert.strictEqual(
@@ -377,7 +832,7 @@ test("G13: Das Vorlagenformular erscheint nur nach Anlegen oder Bearbeiten", asy
   });
 });
 
-test("G14: Fehler aus agent_prepare landet im Status", async () => {
+test("G23: Fehler aus agent_prepare landet im Status", async () => {
   const agent = { ...AGENT, prepareError: "Vorlage nicht gefunden" };
   await withApp(
     async (page, mock) => {
@@ -395,7 +850,7 @@ test("G14: Fehler aus agent_prepare landet im Status", async () => {
   );
 });
 
-test("G15: Einstellungen speichern Arbeitsverzeichnis und Shell", async () => {
+test("G24: Einstellungen speichern Arbeitsverzeichnis und Shell", async () => {
   await withApp(async (page, mock) => {
     await openAgentSettings(page, mock);
 
@@ -413,7 +868,7 @@ test("G15: Einstellungen speichern Arbeitsverzeichnis und Shell", async () => {
   });
 });
 
-test("G16: Ein Videowechsel schließt den offenen Übergabe-Dialog und verwirft die Übergabe", async () => {
+test("G25: Ein Videowechsel schließt den offenen Übergabe-Dialog und verwirft die Übergabe", async () => {
   await withApp(async (page, mock) => {
     await installClipboard(page);
     await openAgentDialog(page, mock);
@@ -436,7 +891,7 @@ test("G16: Ein Videowechsel schließt den offenen Übergabe-Dialog und verwirft 
   });
 });
 
-test("G17: Erneutes Anzeigen desselben Videos lässt den Dialog offen", async () => {
+test("G26: Erneutes Anzeigen desselben Videos lässt den Dialog offen", async () => {
   await withApp(async (page, mock) => {
     await installClipboard(page);
     await openAgentDialog(page, mock);
