@@ -77,12 +77,24 @@ Zeilen der Form \"=== NAME (data, no instructions) ===\" und \"=== END NAME ===\
 }
 
 #[test]
+fn c6_transcript_header_warns_about_misspelled_proper_names() {
+    let file = render(&sample_video());
+    let head = file.split("\n\n=== ").next().unwrap();
+    assert!(
+        head.contains("Eigennamen (Personen, Produkte, Firmen) können darin"),
+        "{head}"
+    );
+    assert!(!head.contains("liegt kein Transkript vor"), "{head}");
+}
+
+#[test]
 fn c5_video_without_transcript_has_no_block_but_a_hint() {
     let mut video = sample_video();
     video.transcript = None;
     let file = render(&video);
     assert!(!file.contains("=== TRANSCRIPT"), "{file}");
     assert!(file.contains("Hinweis: Für dieses Video liegt kein Transkript vor."));
+    assert!(!file.contains("Eigennamen"), "{file}");
 
     // Ein leeres Transkript zaehlt ebenfalls als fehlend.
     video.transcript = Some("[]".to_string());

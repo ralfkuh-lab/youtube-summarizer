@@ -4,7 +4,7 @@
 use crate::ai::client::ChatMessage;
 use crate::models::{ChatContextOptions, NewChatMessage, Summary, Video};
 use crate::storage::AppResult;
-use crate::summarize::{self, UNTRUSTED_DATA_NOTE};
+use crate::summarize::{self, PROPER_NAMES_NOTE, UNTRUSTED_DATA_NOTE};
 use crate::youtube;
 
 /// Zusatz, wenn kein Transkript im Kontext liegt (nur Zusammenfassungen).
@@ -47,7 +47,8 @@ pub const FINAL_ROUND_REQUEST: &str = "Das Recherche-Limit ist erreicht. Antwort
 abschließend auf meine Frage mit den vorhandenen Informationen – ohne weitere Tool-Aufrufe.";
 
 /// System-Nachricht des Chats: Basis-Prompt, optional der Websuche-Zusatz und
-/// der Zusatz ohne Transkript, und immer die Untrusted-Data-Notiz als Abschluss.
+/// der Zusatz ohne Transkript, dann der Eigennamen-Hinweis und immer die
+/// Untrusted-Data-Notiz als Abschluss.
 pub fn chat_system_prompt(web_search: bool, no_transcript: bool) -> String {
     let mut prompt = CHAT_SYSTEM_PROMPT.to_string();
     if web_search {
@@ -58,6 +59,8 @@ pub fn chat_system_prompt(web_search: bool, no_transcript: bool) -> String {
         prompt.push_str("\n\n");
         prompt.push_str(NO_TRANSCRIPT_ADDENDUM);
     }
+    prompt.push_str("\n\n");
+    prompt.push_str(PROPER_NAMES_NOTE);
     prompt.push_str("\n\n");
     prompt.push_str(UNTRUSTED_DATA_NOTE);
     prompt

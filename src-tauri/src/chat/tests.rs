@@ -358,6 +358,7 @@ fn p6_system_message_ends_with_untrusted_data_note() {
     assert!(without.starts_with(CHAT_SYSTEM_PROMPT));
     assert!(without.ends_with(UNTRUSTED_DATA_NOTE));
     assert!(!without.contains(WEB_SEARCH_PROMPT_ADDENDUM));
+    assert!(without.contains(crate::summarize::PROPER_NAMES_NOTE));
 
     let with = chat_system_prompt(true, false);
     assert!(with.ends_with(UNTRUSTED_DATA_NOTE));
