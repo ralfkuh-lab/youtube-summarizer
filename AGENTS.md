@@ -19,13 +19,14 @@ This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri a
 - `src/styles.css`: frontend styling.
 - `src-tauri/src/commands.rs`: Tauri command layer delegating to domain modules.
 - `src-tauri/src/summarize.rs`: AI summary target resolution, prompt building, untrusted content delimiters, and streaming summary orchestration.
-- `src-tauri/src/agent_handoff.rs` (with `agent_handoff/{config,quote,resolve,context}.rs`, tests in `agent_handoff/tests.rs` and `agent_handoff/tests/context_tests.rs`): local-agent handoff — `agent.json` config and validation, shell quoting, one-pass command resolution, slug/path building, context file rendering and atomic writing, and the `agent_config_get` / `agent_config_set` / `agent_prepare` / `agent_preview` commands. See `docs/spec-agent-handoff.md`.
+- `src-tauri/src/agent_handoff.rs` (with `agent_handoff/{config,quote,resolve,context,selection}.rs`, tests in `agent_handoff/tests.rs`, `agent_handoff/tests/context_tests.rs`, `agent_handoff/tests/selection_tests.rs` and `agent_handoff/tests/fixtures.rs`): local-agent handoff — `agent.json` config and validation, shell quoting, one-pass command resolution, slug/path building, per-handoff context selection (transcript, summary versions, chats), context file rendering and atomic writing, and the `agent_config_get` / `agent_config_set` / `agent_prepare` / `agent_preview` commands. See `docs/spec-agent-handoff.md`.
 - `src-tauri/src/ai/migration.rs`: legacy AI config migration.
 - `src-tauri/src/ai/`: AI provider/model config (models.dev catalog, ai.json, auth.json) and the OpenAI-compatible chat client; ported from folio, see `docs/spec-ai-port.md`.
 - `src-tauri/src/youtube.rs`: YouTube metadata, transcript and chapter fetching.
 - `src-tauri/src/storage.rs`: config and SQLite persistence.
 - `src-tauri/src/automation.rs`: debug-only local automation API for functional tests.
-- `TODO.md`: current collaboration state, open tasks and session handoff notes.
+- `TODO.md`: current collaboration state, open tasks and session handoff notes (kept lean).
+- `docs/verification-log.md`: history of verified states and test results; not needed for normal work.
 
 ## Commands
 
@@ -78,6 +79,6 @@ The frontend invokes Tauri commands for all application actions. The backend sto
 
 Before ending a substantial coding session:
 
-- Update `TODO.md` with completed work, open issues and useful test results.
+- Update `TODO.md` with completed work and open issues. Keep it lean (every agent reads it at start): collapse finished items to one line, keep only the latest entry under "Last Verified State" and prepend the detailed test results to `docs/verification-log.md`.
 - Mention whether a dev server or Tauri process is still running.
 - Keep final user summaries short and concrete.
