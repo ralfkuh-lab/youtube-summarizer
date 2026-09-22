@@ -11,6 +11,21 @@ use thiserror::Error;
 pub(crate) const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_PROVIDER_ERROR_CHARS: usize = 300;
+const AI_USER_AGENT: &str = concat!("youtube-summarizer/", env!("CARGO_PKG_VERSION"));
+
+/// Stabile Session-ID pro Konversation fuer `x-opencode-session`: Hash der
+/// ersten Nachricht (System-Prompt + Transkript), damit alle Runden eines
+/// Chats und alle Zusammenfassungen desselben Videos gleich geroutet werden
+/// (Prompt-Caching beim Provider).
+fn conversation_session_id(messages: &[ChatMessage]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Some(first) = messages.first() {
+        first.role.hash(&mut hasher);
+        first.content.hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ChatMessage {
@@ -297,13 +312,20 @@ pub(crate) async fn send_chat_request_with_choice(
     // Ohne Werkzeuge kein `tools`-Feld: manche Provider antworten auf
     // `"tools": []` mit HTTP 400.
     let tools = tools.filter(|tools| !tools.is_empty());
-    let mut request = http.post(endpoint).json(&ChatRequest {
-        model,
-        messages,
-        stream: true,
-        tools,
-        tool_choice,
-    });
+    // OpenCode Go/Zen lehnt Anfragen ohne `x-opencode-session` mit HTTP 400
+    // ab und verlangt einen eigenen User-Agent statt eines generischen. Beide
+    // Header sind fuer andere OpenAI-kompatible Provider harmlos.
+    let mut request = http
+        .post(endpoint)
+        .header(reqwest::header::USER_AGENT, AI_USER_AGENT)
+        .header("x-opencode-session", conversation_session_id(messages))
+        .json(&ChatRequest {
+            model,
+            messages,
+            stream: true,
+            tools,
+            tool_choice,
+        });
     if let Some(key) = api_key {
         request = request.bearer_auth(key);
     }
