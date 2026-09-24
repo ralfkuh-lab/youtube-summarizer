@@ -1,0 +1,5 @@
+*
+!sync-proto/
+!sync-server/
+sync-proto/target/
+sync-server/target/

@@ -1,0 +1,11 @@
+[package]
+name = "sync-proto"
+version = "0.1.0"
+edition = "2021"
+description = "Gemeinsame Protokolltypen für den Sync zwischen App und Sync-Server (docs/spec-sync.md)."
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

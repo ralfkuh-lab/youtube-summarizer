@@ -24,3 +24,5 @@ Thumbs.db
 
 # Tauri regenerates these on every build, one platform-specific file per OS
 /src-tauri/gen/schemas/
+/sync-proto/target/
+/sync-server/target/

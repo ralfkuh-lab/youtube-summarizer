@@ -1,0 +1,24 @@
+# Liegt auf dem VPS unter /docker/youtube-sync/docker-compose.yml,
+# Quellen unter ./src (sync-proto/, sync-server/), Daten unter ./data.
+services:
+  youtube-sync:
+    build:
+      context: ./src
+      dockerfile: sync-server/Dockerfile
+    image: youtube-sync:latest
+    container_name: youtube-sync
+    restart: always
+    volumes:
+      - ./data:/data
+    networks:
+      - n8n_default
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.youtube-sync.rule=Host(`yt-sync.srv1280390.hstgr.cloud`)
+      - traefik.http.routers.youtube-sync.entrypoints=websecure
+      - traefik.http.routers.youtube-sync.tls.certresolver=mytlschallenge
+      - traefik.http.services.youtube-sync.loadbalancer.server.port=8080
+
+networks:
+  n8n_default:
+    external: true
