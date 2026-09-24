@@ -20,6 +20,7 @@ export const defaultFixtures = {
       transcript_error: null,
       has_transcript: false,
       has_summary: false,
+      local_only: false,
     },
     {
       id: 2,
@@ -41,6 +42,7 @@ export const defaultFixtures = {
       transcript_error: null,
       has_transcript: true,
       has_summary: true,
+      local_only: false,
     },
     {
       id: 3,
@@ -62,6 +64,7 @@ export const defaultFixtures = {
       transcript_error: null,
       has_transcript: true,
       has_summary: false,
+      local_only: false,
     },
   ],
   collections: [],
@@ -109,6 +112,28 @@ export const defaultFixtures = {
     count: 3,
     error: null,
   },
+  syncConfig: {
+    enabled: false,
+    serverUrl: "",
+    hasToken: false,
+    newVideosLocal: false,
+  },
+  syncStatus: {
+    enabled: false,
+    running: false,
+    lastSuccessAt: null,
+    lastError: null,
+    pending: 0,
+    unsendable: [],
+    stopped: null,
+  },
+  syncTest: {
+    datasetId: "dataset-1",
+    sameDataset: true,
+    error: null,
+  },
+  syncNow: {},
+  syncRebaseline: {},
   agent: {
     view: {
       config: {
@@ -564,6 +589,85 @@ export function createMockScript(fixtures = {}, delays = {}) {
             throw new Error(fixture.error);
           }
           return fixture.count !== undefined ? fixture.count : 3;
+        }
+        if (cmd === 'sync_config_get') {
+          const config =
+            this.fixtures.syncConfig || { enabled: false, serverUrl: '', hasToken: false, newVideosLocal: false };
+          callRecord.result = config;
+          return JSON.parse(JSON.stringify(config));
+        }
+        if (cmd === 'sync_config_set') {
+          const input = args?.config || {};
+          const previous = this.fixtures.syncConfig || {};
+          const next = {
+            enabled: !!input.enabled,
+            serverUrl: input.serverUrl || '',
+            // Leeres Token = unveraendert (wie das Backend).
+            hasToken: input.token ? true : !!previous.hasToken,
+            newVideosLocal: !!input.newVideosLocal,
+          };
+          this.fixtures.syncConfig = next;
+          callRecord.result = next;
+          return JSON.parse(JSON.stringify(next));
+        }
+        if (cmd === 'sync_test') {
+          const fixture = this.fixtures.syncTest || {};
+          if (fixture.error) {
+            throw new Error(fixture.error);
+          }
+          const result = {
+            datasetId: fixture.datasetId !== undefined ? fixture.datasetId : 'dataset-1',
+            sameDataset: fixture.sameDataset !== undefined ? fixture.sameDataset : true,
+          };
+          callRecord.result = result;
+          return JSON.parse(JSON.stringify(result));
+        }
+        if (cmd === 'sync_now') {
+          const fixture = this.fixtures.syncNow || {};
+          if (fixture.error) {
+            throw new Error(fixture.error);
+          }
+          const next = { ...(this.fixtures.syncStatus || {}), ...(fixture.status || {}) };
+          this.fixtures.syncStatus = next;
+          callRecord.result = next;
+          return JSON.parse(JSON.stringify(next));
+        }
+        if (cmd === 'sync_status') {
+          const status = this.fixtures.syncStatus || {};
+          callRecord.result = status;
+          return JSON.parse(JSON.stringify(status));
+        }
+        if (cmd === 'sync_rebaseline') {
+          const fixture = this.fixtures.syncRebaseline || {};
+          if (fixture.error) {
+            throw new Error(fixture.error);
+          }
+          const next = {
+            ...(this.fixtures.syncStatus || {}),
+            ...(fixture.status || {}),
+            stopped: null,
+          };
+          this.fixtures.syncStatus = next;
+          callRecord.result = next;
+          return JSON.parse(JSON.stringify(next));
+        }
+        if (cmd === 'video_set_local_only') {
+          const id = args?.videoId;
+          const localOnly = !!args?.localOnly;
+          const update = (video) =>
+            video && video.id === id ? { ...video, local_only: localOnly } : video;
+          this.fixtures.videos = (this.fixtures.videos || []).map(update);
+          if (this.fixtures.videoDetails) {
+            this.fixtures.videoDetails = Object.fromEntries(
+              Object.entries(this.fixtures.videoDetails).map(([key, value]) => [key, update(value)]),
+            );
+          }
+          const video = (this.fixtures.videos || []).find((item) => item.id === id);
+          if (!video) {
+            throw new Error('Video not found for id ' + id);
+          }
+          callRecord.result = video;
+          return JSON.parse(JSON.stringify(video));
         }
         if (cmd === 'agent_config_get') {
           const agent = this.fixtures.agent || {};

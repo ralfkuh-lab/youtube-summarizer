@@ -35,7 +35,8 @@ export function isVideoStatusFilter(value: string | undefined): value is VideoSt
     value === "transcript" ||
     value === "missing-transcript" ||
     value === "summary" ||
-    value === "missing-summary"
+    value === "missing-summary" ||
+    value === "local"
   );
 }
 

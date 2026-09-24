@@ -35,6 +35,8 @@ function matchesVideoStatusFilter(video: Video): boolean {
       return video.has_summary;
     case "missing-summary":
       return !video.has_summary;
+    case "local":
+      return video.local_only;
     case "all":
       return true;
   }
@@ -93,6 +95,7 @@ export function renderVideoList() {
             <span class="meta">
               ${renderVideoStatusChip("T", video.has_transcript, "Transkript", video.transcript_error)}
               ${renderVideoStatusChip("Z", video.has_summary, "Zusammenfassung")}
+              ${video.local_only ? '<span class="status-chip local-chip" role="img" aria-label="Nur lokal" title="Nur lokal">🔒</span>' : ""}
             </span>
           </span>
         </button>
@@ -324,6 +327,12 @@ export async function deleteCollection(collection: Collection) {
 export async function loadCollections() {
   state.collections = await invoke<Collection[]>("get_collections");
   renderCollectionList();
+}
+
+/// Laedt die Listenform aller Videos neu (nach `sync://applied`).
+export async function loadVideos() {
+  state.videos = await invoke<Video[]>("get_videos");
+  renderVideoList();
 }
 
 export function bindLibraryEvents() {

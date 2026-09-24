@@ -19,6 +19,7 @@ import {
 import { initState, setBusy, setStatus, state } from "./state";
 import { bindSummaryDialogEvents } from "./summary-dialog";
 import { bindSummaryViewEvents } from "./summary-view";
+import { bindSyncSettingsEvents } from "./sync-settings";
 import { bindWebSearchSettingsEvents } from "./websearch-settings";
 import { appTemplate } from "./template";
 import type { Collection, Video } from "./types";
@@ -75,6 +76,7 @@ function bindEvents() {
   bindWebSearchSettingsEvents();
   bindAgentHandoffEvents();
   bindAgentSettingsEvents();
+  bindSyncSettingsEvents();
 
   bindEscapeToCloseModals();
 

@@ -34,6 +34,11 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 ## Next TODOs
 
+- Sync zwischen mehreren Rechnern ([Spec](docs/spec-sync.md), Revision 4.1) — umgesetzt, reviewt und am 2026-09-24 ausgerollt (Server `https://yt-sync.srv1280390.hstgr.cloud`, Doku im WebServer-Repo `apps/youtube-sync.md`). Offen:
+  - [ ] Maintainer: `sudo dpkg -i youtube-summarizer.deb`, Tokens aus `~/youtube-sync-tokens.txt` in Bitwarden übernehmen und die Datei löschen, im Tab „Sync“ URL und Token für `privat-pc` eintragen und aktivieren.
+  - [ ] Nativ prüfen (WebKitGTK): Tab „Sync“, Schalter „Nur lokal“ mit Bestätigung, Schloss-Symbol und Filter, Sync-Knopf in der Kopfleiste (derzeit „✓“ im Ruhezustand; ggf. durchgehendes Sync-Symbol).
+  - [ ] Windows-Firmenrechner: App bauen/installieren, Gerät `firma` eintragen, ersten Abgleich prüfen (plattformneutral implementiert, auf Windows noch nicht gelaufen).
+
 - Video-Chat ([Spec](docs/spec-video-chat.md)) — Etappen 1–3, Websuche und Live-Anzeige sind umgesetzt und reviewt. Offen:
   - [ ] Manuell in der installierten App prüfen: Live-Streaming, Tool-Aktivität während der Anfrage, „Stopp“, Video-/Chatwechsel während einer Anfrage (bisher nur per UI-Tests mit Mock und per Automation-API belegt).
   - [ ] Später erwägen: Obergrenze für gespeicherte Tool-Ergebnisse (eine voll ausgereizte Recherche-Runde speichert ~240 000 Zeichen, die jede Folgefrage mitsendet); Checkbox „unterstützt Tool-Calling“ für Custom-Modelle (ohne Katalog-Flag bleibt die Websuche ausgegraut).
@@ -68,9 +73,4 @@ tab, and detail tooltip on the 'T' status chip) — spec:
 
 Nur der letzte Stand; ältere Einträge stehen in [docs/verification-log.md](docs/verification-log.md).
 
-- 2026-09-20: Kontextauswahl (Spec Revision 3) und Eigennamen-Hinweis vom Orchestrator abgenommen:
-  `cargo fmt --check`, `cargo test` (299 bestanden, 4 ignoriert), `npm run build`, `npm run test:ui`
-  (103 bestanden), `npm run tauri -- build` grün. Nach dem ersten nativen Test des Maintainers wurde der
-  Bereich „Kontext“ neu aufgebaut (keine Radios, Haken und Text in einer Zeile; per Screenshot geprüft). Nativer Backend-Durchlauf über die
-  Automation-API mit einer Datenkopie; der Dialog selbst ist nur per UI-Test mit Mock belegt.
-  Installation per `sudo dpkg -i youtube-summarizer.deb` steht aus. Kein Dev-Server aktiv.
+- 2026-09-24: Sync (Spec Revision 4.1) abgenommen: `src-tauri` `cargo test` (381 bestanden, 4 ignoriert), `sync-server` `cargo test` (35 + 4), `sync-proto` (9), `npm run test:ui` (115), `npm run tauri -- build` grün. Live-Test mit zwei Datenverzeichnissen gegen den VPS (Kopie der echten DB: 147 Videos identisch übertragen); danach Server-Daten zurückgesetzt. Installation per `sudo dpkg -i youtube-summarizer.deb` steht aus. Kein Dev-Server aktiv.

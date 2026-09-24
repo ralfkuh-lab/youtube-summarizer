@@ -105,6 +105,33 @@ h1 {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  gap: 6px;
+}
+
+/* Sync-Knopf: Symbol UND Farbe unterscheiden die Zustaende (aus, ok, laeuft,
+   Fehler, angehalten); der Tooltip traegt denselben Text wie aria-label. */
+.sync-btn--off,
+.sync-btn--stopped {
+  color: var(--muted);
+}
+
+.sync-btn--ok,
+.sync-btn--running {
+  color: var(--accent);
+}
+
+.sync-btn--error {
+  color: var(--danger);
+}
+
+.sync-btn--running {
+  animation: sync-spin 1.2s linear infinite;
+}
+
+@keyframes sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 #urlInput {
@@ -475,6 +502,7 @@ main {
   flex-shrink: 0;
   min-height: 42px;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 10px;
   padding: 8px 16px;
@@ -520,6 +548,14 @@ main {
   height: 13px;
   margin: 0;
   accent-color: var(--accent);
+}
+
+.local-only-toggle {
+  border-radius: var(--radius);
+}
+
+.local-chip {
+  font-size: 11px;
 }
 
 .inline-action {
@@ -1986,4 +2022,26 @@ select option:hover {
 
 .chat-context-choice input {
   accent-color: var(--accent);
+}
+
+/* --- Sync-Tab der Einstellungen --- */
+
+.sync-status-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.sync-stopped {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+/* Author-Display darf das hidden-Attribut nicht aushebeln. */
+.sync-stopped[hidden] {
+  display: none;
 }

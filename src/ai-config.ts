@@ -71,19 +71,21 @@ export function bindAiConfigEvents() {
   const closeBtn = document.getElementById("configClose");
   if (closeBtn) closeBtn.addEventListener("click", () => hideModal("#settingsModal"));
 
-  // Tab navigation for visibility (activate); load listeners attached inside initSettingsAi
-  const tabs = [
-    document.getElementById("settings-tab-ki-anbieter") as HTMLButtonElement,
-    document.getElementById("settings-tab-ki-modelle") as HTMLButtonElement,
-  ].filter(Boolean);
+  // Tab navigation for visibility (activate); load listeners attached inside initSettingsAi.
+  // Alle Tab-Buttons aus dem DOM, damit auch Websuche, Agent und Sync mitlaufen.
+  const tabs = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('[id^="settings-tab-"]'),
+  );
   tabs.forEach((tab, index) => {
     tab.addEventListener("click", () => {
       activateSettingsTab(tab.id.replace("settings-tab-", ""));
     });
     tab.addEventListener("keydown", (e) => {
-      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      const forward = e.key === "ArrowDown" || e.key === "ArrowRight";
+      const backward = e.key === "ArrowUp" || e.key === "ArrowLeft";
+      if (!forward && !backward) return;
       e.preventDefault();
-      const offset = e.key === "ArrowDown" ? 1 : -1;
+      const offset = forward ? 1 : -1;
       const next = tabs[(index + offset + tabs.length) % tabs.length];
       next.click();
       next.focus();

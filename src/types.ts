@@ -30,6 +30,8 @@ export type Video = {
   transcript_error?: string | null;
   has_transcript: boolean;
   has_summary: boolean;
+  /// Vom Sync entkoppelte private Kopie.
+  local_only: boolean;
 };
 
 export type Collection = {
@@ -100,7 +102,13 @@ export type SummaryModules = {
   links: boolean;
 };
 
-export type VideoStatusFilter = "all" | "transcript" | "missing-transcript" | "summary" | "missing-summary";
+export type VideoStatusFilter =
+  | "all"
+  | "transcript"
+  | "missing-transcript"
+  | "summary"
+  | "missing-summary"
+  | "local";
 
 export type AgentShell = "auto" | "posix" | "fish" | "powershell";
 
@@ -176,6 +184,44 @@ export type AgentAvailable = {
   summaries: AgentSummaryOption[];
   /// Neueste zuerst.
   chats: AgentChatOption[];
+};
+
+export type SyncConfigView = {
+  enabled: boolean;
+  serverUrl: string;
+  /// Der Token selbst verlaesst das Backend nie.
+  hasToken: boolean;
+  newVideosLocal: boolean;
+};
+
+export type SyncUnsendable = {
+  entity: string;
+  reason: string;
+};
+
+export type SyncStopReason = "auth" | "dataset" | "version";
+
+export type SyncStatus = {
+  enabled: boolean;
+  running: boolean;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  pending: number;
+  unsendable: SyncUnsendable[];
+  stopped: SyncStopReason | null;
+};
+
+export type SyncTestResult = {
+  datasetId: string;
+  /// `null`: noch nie gebunden; sonst ob die ID zur gespeicherten passt.
+  sameDataset: boolean | null;
+};
+
+/// Nutzlast von `sync://applied`.
+export type SyncApplied = {
+  /// Lokale ids der betroffenen Videos (auch geloeschte).
+  videoIds: number[];
+  collections: boolean;
 };
 
 export type SummarySettings = {

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { $, errorMessage, escapeHtml } from "./dom-utils";
+import { $, confirmDialog, errorMessage, escapeHtml } from "./dom-utils";
 import { renderChatTab, resetChat } from "./chat";
 import { resetAgentHandoff, syncAgentHandoffVideo } from "./agent-handoff";
 import { loadCollections, openCollectionDialog, renderVideoList } from "./library";
@@ -226,35 +226,93 @@ export function seekVideo(seconds: number) {
 
 export function renderVideoCollections(video: Video) {
   const container = $("#collectionAssignment");
+  // Privatschalter liegt bei den Sammlungen, weil beide dasselbe Video
+  // betreffen; die Klasse `collection-checkbox` haelt ihn in derselben Zeile.
+  const localOnlyToggle = `
+    <label class="collection-checkbox local-only-toggle">
+      <input type="checkbox" id="detailLocalOnly" ${video.local_only ? "checked" : ""} />
+      <span>Nur lokal (nicht synchronisieren)</span>
+    </label>
+  `;
   if (!state.collections.length) {
     container.innerHTML = `
       <span class="collection-assignment-label">Sammlungen</span>
       <button class="inline-action" id="detailCreateCollection">Erste Sammlung erstellen</button>
+      ${localOnlyToggle}
     `;
     $("#detailCreateCollection").addEventListener("click", () => openCollectionDialog());
-    return;
+  } else {
+    const selected = new Set(video.collection_ids);
+    container.innerHTML = `
+      <span class="collection-assignment-label">Sammlungen</span>
+      <div class="collection-checkboxes">
+        ${state.collections
+          .map(
+            (collection) => `
+              <label class="collection-checkbox">
+                <input type="checkbox" value="${collection.id}" ${selected.has(collection.id) ? "checked" : ""} />
+                <span>${escapeHtml(collection.name)}</span>
+              </label>
+            `,
+          )
+          .join("")}
+      </div>
+      ${localOnlyToggle}
+    `;
+
+    container
+      .querySelectorAll<HTMLInputElement>('.collection-checkboxes input[type="checkbox"]')
+      .forEach((input) => {
+        input.addEventListener("change", () => void updateActiveVideoCollections());
+      });
   }
 
-  const selected = new Set(video.collection_ids);
-  container.innerHTML = `
-    <span class="collection-assignment-label">Sammlungen</span>
-    <div class="collection-checkboxes">
-      ${state.collections
-        .map(
-          (collection) => `
-            <label class="collection-checkbox">
-              <input type="checkbox" value="${collection.id}" ${selected.has(collection.id) ? "checked" : ""} />
-              <span>${escapeHtml(collection.name)}</span>
-            </label>
-          `,
-        )
-        .join("")}
-    </div>
-  `;
-
-  container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((input) => {
-    input.addEventListener("change", () => void updateActiveVideoCollections());
+  $<HTMLInputElement>("#detailLocalOnly").addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    void setActiveVideoLocalOnly(target.checked);
   });
+}
+
+/// Schaltet die private Kopie um. Beim Einschalten eines geteilten Videos
+/// bestaetigt der Benutzer zuerst, weil der Server die Inhalte dann entfernt.
+async function setActiveVideoLocalOnly(localOnly: boolean) {
+  const video = getActiveVideo();
+  if (!video || state.busy) return;
+  if (localOnly && !video.local_only) {
+    const confirmed = await confirmDialog(
+      "Das Video wird vom Server entfernt. Andere Geräte behalten ihre Kopie als lokales Video.",
+      { title: "Nur lokal speichern", okLabel: "Nur lokal speichern" },
+    );
+    if (!confirmed) {
+      renderVideoCollections(video);
+      return;
+    }
+  }
+
+  setBusy(
+    true,
+    localOnly ? "Video wird nur lokal gespeichert..." : "Video wird wieder synchronisiert...",
+  );
+  try {
+    const updated = await invoke<Video>("video_set_local_only", {
+      videoId: video.id,
+      localOnly,
+    });
+    state.videos = state.videos.map((item) => (item.id === updated.id ? updated : item));
+    renderVideoList();
+    if (state.activeVideoId === video.id) {
+      renderVideoCollections(updated);
+      setStatus(localOnly ? "Video ist nur lokal gespeichert" : "Video wird wieder synchronisiert");
+    }
+  } catch (error) {
+    if (state.activeVideoId === video.id) {
+      setStatus(errorMessage(error));
+      renderVideoCollections(video);
+    }
+  } finally {
+    setBusy(false);
+  }
 }
 
 export async function updateActiveVideoCollections() {

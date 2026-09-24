@@ -20,6 +20,9 @@ This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri a
 - `src-tauri/src/commands.rs`: Tauri command layer delegating to domain modules.
 - `src-tauri/src/summarize.rs`: AI summary target resolution, prompt building, untrusted content delimiters, and streaming summary orchestration.
 - `src-tauri/src/agent_handoff.rs` (with `agent_handoff/{config,quote,resolve,context,selection}.rs`, tests in `agent_handoff/tests.rs`, `agent_handoff/tests/context_tests.rs`, `agent_handoff/tests/selection_tests.rs` and `agent_handoff/tests/fixtures.rs`): local-agent handoff — `agent.json` config and validation, shell quoting, one-pass command resolution, slug/path building, per-handoff context selection (transcript, summary versions, chats), context file rendering and atomic writing, and the `agent_config_get` / `agent_config_set` / `agent_prepare` / `agent_preview` commands. See `docs/spec-agent-handoff.md`.
+- `src/sync-settings.ts`: settings UI for the "Sync" tab, sync button in the top bar, `sync://status`/`sync://applied` handling.
+- `src-tauri/src/sync/` (schema/outbox/privatize/snapshot/pull/apply/engine/client/config/commands, tests incl. end-to-end against the in-process server): multi-device sync client — local-first, triggers fill `sync_outbox`, two-phase push, staged pull and apply. See `docs/spec-sync.md`.
+- `sync-proto/`: protocol types shared by app and server. `sync-server/`: the sync server (own Cargo project, Docker deployment via `sync-server/deploy/deploy.sh`, runs at `https://yt-sync.srv1280390.hstgr.cloud`; operations in `sync-server/README.md`).
 - `src-tauri/src/ai/migration.rs`: legacy AI config migration.
 - `src-tauri/src/ai/`: AI provider/model config (models.dev catalog, ai.json, auth.json) and the OpenAI-compatible chat client; ported from folio, see `docs/spec-ai-port.md`.
 - `src-tauri/src/youtube.rs`: YouTube metadata, transcript and chapter fetching.
@@ -39,6 +42,13 @@ npm run tauri dev
 ```
 
 UI-Tests mit `npm run test:ui` suchen einen installierten Chromium-basierten Browser (Linux: Chromium/Chrome, Windows und macOS: Chrome, Edge, Chromium), überschreibbar per `CHROMIUM_PATH`. Jede Testdatei startet einen eigenen Vite-Server ab Port 5199 und weicht bei belegtem Port aus; `UI_TEST_PORT` erzwingt einen festen Port.
+
+Sync server and protocol (own Cargo projects, no root workspace):
+
+```bash
+cd sync-server && cargo test
+cd sync-proto && cargo test
+```
 
 Use these from `src-tauri/`:
 

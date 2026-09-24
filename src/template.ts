@@ -8,6 +8,7 @@ export const appTemplate = `
       <button id="addBtn">Hinzufügen</button>
     </div>
     <div class="toolbar-actions">
+      <button id="syncBtn" class="icon-btn sync-btn" title="Synchronisation aus" aria-label="Synchronisation aus">⇅</button>
       <button id="settingsBtn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">⚙</button>
     </div>
   </header>
@@ -31,6 +32,7 @@ export const appTemplate = `
           <button class="filter-chip" data-video-filter="missing-transcript">Ohne T</button>
           <button class="filter-chip" data-video-filter="summary">Zusammenfassung</button>
           <button class="filter-chip" data-video-filter="missing-summary">Ohne Z</button>
+          <button class="filter-chip" data-video-filter="local">Nur lokale</button>
         </div>
       </div>
       <div id="videoList"></div>
@@ -144,6 +146,7 @@ export const appTemplate = `
           <button id="settings-tab-ki-modelle" role="tab" aria-selected="false" aria-controls="settings-panel-ki-modelle" tabindex="-1" class="settings-dialog__tab">KI-Modelle</button>
           <button id="settings-tab-websuche" role="tab" aria-selected="false" aria-controls="settings-panel-websuche" tabindex="-1" class="settings-dialog__tab">Websuche</button>
           <button id="settings-tab-agent" role="tab" aria-selected="false" aria-controls="settings-panel-agent" tabindex="-1" class="settings-dialog__tab">Agent</button>
+          <button id="settings-tab-sync" role="tab" aria-selected="false" aria-controls="settings-panel-sync" tabindex="-1" class="settings-dialog__tab">Sync</button>
         </div>
         <div class="settings-dialog__tabpanel settings-ai-panel" id="settings-panel-ki-anbieter" role="tabpanel" aria-labelledby="settings-tab-ki-anbieter" data-settings-tab="ki-anbieter" hidden>
           <section class="settings-section">
@@ -292,6 +295,42 @@ export const appTemplate = `
             </div>
             <p id="agentSettingsError" class="settings-ai-error" hidden></p>
             <p class="settings-hint">Platzhalter: <code>{workdir}</code>, <code>{context_file}</code>, <code>{prompt}</code>, <code>{video_id}</code>, <code>{video_url}</code>, <code>{db_path}</code>. Eigene Vorlagen sind wie ein eigener Shell-Alias zu behandeln: sie laufen mit deinen Rechten. Die App startet den Agenten nicht selbst — sie legt den Kontext ab und liefert das Kommando.</p>
+          </section>
+        </div>
+        <div class="settings-dialog__tabpanel settings-ai-panel" id="settings-panel-sync" role="tabpanel" aria-labelledby="settings-tab-sync" data-settings-tab="sync" hidden>
+          <section class="settings-section">
+            <h3 class="settings-section__title">Synchronisation</h3>
+            <label class="summary-module">
+              <input type="checkbox" id="syncEnabled" />
+              <span>Synchronisation aktiv</span>
+            </label>
+            <div class="settings-row">
+              <label for="syncServerUrl">Server-URL</label>
+              <input type="url" id="syncServerUrl" class="settings-input" placeholder="https://yt-sync.example.org" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="settings-row">
+              <label for="syncToken">Token</label>
+              <input type="password" id="syncToken" class="settings-input" autocomplete="new-password" />
+            </div>
+            <p class="settings-hint">Das Token erzeugst du auf dem Server mit <code>sync-server device add &lt;Name&gt;</code>. Leer lassen = unverändert; es wird nie angezeigt.</p>
+            <label class="summary-module">
+              <input type="checkbox" id="syncNewVideosLocal" />
+              <span>Neue Videos auf diesem Gerät nur lokal speichern</span>
+            </label>
+            <div class="settings-ai-toolbar">
+              <button type="button" id="syncTest" class="settings-ai-button">Verbindung testen</button>
+              <button type="button" id="syncNow" class="settings-ai-button">Jetzt synchronisieren</button>
+              <span id="syncTestResult" class="settings-hint"></span>
+            </div>
+            <p id="syncStatusLine" class="settings-hint"></p>
+            <ul id="syncUnsendableList" class="settings-hint sync-status-list" hidden></ul>
+            <div id="syncStoppedBlock" class="sync-stopped" hidden>
+              <p class="settings-hint">Der Server gehört zu einem anderen Datensatz als die hier gespeicherten Daten (z. B. nach einem Server-Restore). Bis zum Neuabgleich wird nicht synchronisiert. „Neu abgleichen“ verwirft die Warteschlange, liest ab Position 0 und lädt den vorhandenen Bestand erneut hoch.</p>
+              <div class="settings-ai-toolbar">
+                <button type="button" id="syncRebaseline" class="settings-ai-button">Neu abgleichen</button>
+              </div>
+            </div>
+            <p id="syncError" class="settings-ai-error" hidden></p>
           </section>
         </div>
       </div>

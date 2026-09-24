@@ -3,6 +3,20 @@
 Ausgelagert aus `TODO.md` (2026-09-20), damit der Startkontext der Agenten klein bleibt.
 Neue Einträge oben anfügen; `TODO.md` führt nur den jeweils letzten Stand.
 
+- 2026-09-24: Sync zwischen mehreren Rechnern (`docs/spec-sync.md`). Plan in vier Runden von GPT-6
+  Astra geprüft (Revisionen 1–4.1; Kernänderungen: uid je Existenz, endgültige Grabsteine, Privatisieren
+  als Grabstein plus neu identifizierte private Kopie, Zwei-Phasen-Push, Zurückstellen). Implementierung:
+  `sync-proto` Orchestrator (Opus 5.5), Client und Server je eine Opus-5.5-Session, UI DeepSeek V4.1 Flash.
+  Reviews: GPT-6 Sol (Server 5 Befunde, Client 3 + 1 aus der Nachprüfung, alle behoben und nachgeprüft),
+  Kreuzreview GPT-6 Astra (2 neue Befunde beim Alias-Merge, behoben, nachgeprüft: abnahmefähig).
+  Gates: `src-tauri` `cargo test` 381 bestanden/4 ignoriert (C1–C23, E1–E24 gegen den in-process-Server
+  per HTTP, Mutationsnachweise), `sync-server` 35 + 4, `sync-proto` 9, `cargo fmt --check`, clippy
+  (Server), `npm run build`, `npm run test:ui` 115, `npm run tauri -- build`. Migration einer Kopie der
+  echten DB verlustfrei (Zeilen, ids, Inhalte, neueste Summaries gleich). Deployment auf den VPS
+  (`/docker/youtube-sync/`, LE-Zertifikat, UID 10001, Backup), andere Dienste weiter 200. Live-Test mit zwei
+  Datenverzeichnissen gegen den VPS: B übernahm den kompletten Bestand von A identisch; danach Server-Daten
+  zurückgesetzt und Geräte `privat-pc`/`firma` neu angelegt. UI per Screenshot geprüft (nur Mock).
+
 - 2026-09-20 (Nachtrag 2): Zweite Rückmeldung des Maintainers: kurzes Datumsformat mit Uhrzeit
   (`utils.formatShortDateTime`, gemeinsam für Chat-Liste, Chat-Kontextwähler und Übergabe-Dialog),
   Chat-Zeilen einzeilig mit Auslassung, Tooltip mit der vollständigen ersten Frage (neues Feld
