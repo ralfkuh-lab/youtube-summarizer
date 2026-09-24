@@ -206,6 +206,8 @@ export function renderCollectionItem(collection: Collection): string {
 }
 
 export function renderCollectionList() {
+  // Neu rendern darf die Scrollposition der Sammlungen nicht zurücksetzen.
+  const scrollTop = collectionList.querySelector(".collection-scroll")?.scrollTop ?? 0;
   collectionList.innerHTML = `
     <button class="collection-item${state.activeCollectionId === null ? " active" : ""}" data-collection-id="all">
       <span class="collection-name">Alle Videos</span>
@@ -213,10 +215,12 @@ export function renderCollectionList() {
     </button>
     ${
       state.collections.length
-        ? state.collections.map(renderCollectionItem).join("")
+        ? `<div class="collection-scroll">${state.collections.map(renderCollectionItem).join("")}</div>`
         : '<p class="empty-list compact">Noch keine Sammlungen</p>'
     }
   `;
+  const scroll = collectionList.querySelector(".collection-scroll");
+  if (scroll) scroll.scrollTop = scrollTop;
 
   collectionList.querySelectorAll<HTMLButtonElement>(".collection-item").forEach((button) => {
     button.addEventListener("click", () => {
