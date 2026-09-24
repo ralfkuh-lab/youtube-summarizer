@@ -36,6 +36,8 @@ pub struct Video {
     pub transcript_error: Option<String>,
     pub has_transcript: bool,
     pub has_summary: bool,
+    /// Privat: vom Sync entkoppelt.
+    pub local_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

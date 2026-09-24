@@ -131,7 +131,8 @@ fn c5_video_without_transcript_has_no_block_but_a_hint() {
 fn c4_all_summaries_and_chats() {
     let (_temp, paths) = temp_paths();
     let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000004", "Titel")).unwrap();
+        crate::storage::insert_video(&paths, integration_video("vid00000004", "Titel"), false)
+            .unwrap();
 
     crate::storage::update_summary(
         &paths,
@@ -238,7 +239,8 @@ fn c4_all_summaries_and_chats() {
 fn h9_chats_are_ordered_by_created_at() {
     let (temp, paths) = temp_paths();
     let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000007", "Titel")).unwrap();
+        crate::storage::insert_video(&paths, integration_video("vid00000007", "Titel"), false)
+            .unwrap();
 
     // Chat "Alt" wurde frueher angelegt, aber spaeter aktualisiert; Chat "Neu"
     // ist umgekehrt. `list_chats` liefert deshalb "Alt" zuerst.
@@ -304,7 +306,8 @@ fn h9_chats_are_ordered_by_created_at() {
 fn c4b_latest_summary_uses_the_video_row() {
     let (_temp, paths) = temp_paths();
     let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000005", "Titel")).unwrap();
+        crate::storage::insert_video(&paths, integration_video("vid00000005", "Titel"), false)
+            .unwrap();
     crate::storage::update_summary(
         &paths,
         video.id,

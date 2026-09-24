@@ -117,6 +117,7 @@ pub(crate) fn read_context(paths: &crate::storage::AppPaths, video_id: i64) -> S
 
 pub(crate) fn sample_video() -> Video {
     Video {
+        local_only: false,
         id: 1,
         video_id: "dQw4w9WgXcQ".to_string(),
         url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),

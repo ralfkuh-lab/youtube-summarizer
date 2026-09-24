@@ -10,7 +10,8 @@ use super::{integration_video, render, sample_values, sample_video, store_config
 fn a4_invalid_video_id_writes_nothing() {
     let (temp, paths) = temp_paths();
     let video =
-        crate::storage::insert_video(&paths, integration_video("../../etc", "Titel")).unwrap();
+        crate::storage::insert_video(&paths, integration_video("../../etc", "Titel"), false)
+            .unwrap();
     let base = temp.path().join("agent");
     store_config(&paths, &base, "cd {workdir} && claude {prompt}");
 
@@ -24,7 +25,8 @@ fn a4_invalid_video_id_writes_nothing() {
 fn a7_context_file_replaces_a_symlink_and_leaves_siblings() {
     let (temp, paths) = temp_paths();
     let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000001", "Titel")).unwrap();
+        crate::storage::insert_video(&paths, integration_video("vid00000001", "Titel"), false)
+            .unwrap();
     let base = temp.path().join("agent");
     store_config(&paths, &base, "cd {workdir} && claude {prompt}");
 
@@ -58,6 +60,7 @@ fn a8_title_never_reaches_the_command() {
     let video = crate::storage::insert_video(
         &paths,
         integration_video("vid00000002", "\"; touch /tmp/PWNED"),
+        false,
     )
     .unwrap();
     let base = temp.path().join("agent");
@@ -84,6 +87,7 @@ fn a9a_workdir_base_with_spaces_and_apostrophe_string_oracle() {
     let video = crate::storage::insert_video(
         &paths,
         integration_video("abc_-123", "Jev explained in 7min.."),
+        false,
     )
     .unwrap();
     let base = temp.path().join("agent it's");
@@ -134,8 +138,9 @@ fn s4_control_characters_in_workdir_base_write_nothing() {
     // (H1) duerfen kein Kommando mit Zeilenumbruch erzeugen.
     for forbidden in ["\n", "\r", "\t", "\u{7f}", "\u{2028}", "\u{2029}"] {
         let (temp, paths) = temp_paths();
-        let video = crate::storage::insert_video(&paths, integration_video("vid00000003", "Titel"))
-            .unwrap();
+        let video =
+            crate::storage::insert_video(&paths, integration_video("vid00000003", "Titel"), false)
+                .unwrap();
         let base = temp.path().join(format!("agent{forbidden}neu"));
         store_config(&paths, &base, "cd {workdir} && claude {prompt}");
 
@@ -178,7 +183,8 @@ fn h1_unicode_line_separators_are_rejected_in_values() {
 fn h2_relative_workdir_base_is_resolved_against_home() {
     let (temp, paths) = temp_paths();
     let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000008", "Titel")).unwrap();
+        crate::storage::insert_video(&paths, integration_video("vid00000008", "Titel"), false)
+            .unwrap();
     let home = temp.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let config = AgentConfig {
@@ -207,7 +213,8 @@ fn missing_video_and_template_errors() {
     assert_eq!(error, "Video nicht gefunden");
 
     let video =
-        crate::storage::insert_video(&paths, integration_video("vid00000006", "Titel")).unwrap();
+        crate::storage::insert_video(&paths, integration_video("vid00000006", "Titel"), false)
+            .unwrap();
     let config = AgentConfig {
         workdir_base: temp.path().to_string_lossy().into_owned(),
         active_template: "weg".to_string(),

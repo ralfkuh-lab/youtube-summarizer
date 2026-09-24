@@ -1,24 +1,29 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use sync_proto::now_canonical;
 
 use crate::models::{
     Chapter, Chat, ChatContextOptions, ChatMessageRecord, Collection, NewChatMessage, NewVideo,
     Summary, Video,
 };
+use crate::sync::{self, Checkpoints};
 
 pub type AppResult<T> = Result<T, String>;
+
+pub const VIDEO_EXISTS_ERROR: &str = "Video bereits in der Liste vorhanden";
 
 const VIDEO_COLUMNS: &str = r#"
     id, video_id, url, title, thumbnail_url, thumbnail_data,
     transcript, chapters, summary, summary_provider, summary_model,
     published_at, description, created_at, updated_at, transcript_error,
     (transcript IS NOT NULL AND transcript != '') AS has_transcript,
-    (summary IS NOT NULL AND summary != '') AS has_summary
+    (summary IS NOT NULL AND summary != '') AS has_summary,
+    local_only
 "#;
 
 const VIDEO_LIST_COLUMNS: &str = r#"
@@ -26,7 +31,8 @@ const VIDEO_LIST_COLUMNS: &str = r#"
     NULL AS transcript, NULL AS chapters, NULL AS summary, summary_provider, summary_model,
     published_at, NULL AS description, created_at, updated_at, transcript_error,
     (transcript IS NOT NULL AND transcript != '') AS has_transcript,
-    (summary IS NOT NULL AND summary != '') AS has_summary
+    (summary IS NOT NULL AND summary != '') AS has_summary,
+    local_only
 "#;
 
 #[derive(Debug, Clone)]
@@ -35,106 +41,379 @@ pub struct AppPaths {
     pub config_path: PathBuf,
 }
 
-fn open_db(paths: &AppPaths) -> AppResult<Connection> {
+pub(crate) fn open_db(paths: &AppPaths) -> AppResult<Connection> {
     let conn = Connection::open(&paths.db_path)
         .map_err(|err| format!("Datenbank konnte nicht geöffnet werden: {err}"))?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .and_then(|_| conn.busy_timeout(Duration::from_millis(5000)))
         .map_err(|err| format!("Datenbank konnte nicht konfiguriert werden: {err}"))?;
     Ok(conn)
 }
 
+/// Spalten von `videos` (ohne die Sync-Spalten am Ende); der Tabellenumbau
+/// kopiert davon, was die alte Tabelle hat.
+const VIDEOS_TABLE: &str = r#"
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    thumbnail_url TEXT NOT NULL,
+    thumbnail_data BLOB,
+    transcript TEXT,
+    chapters TEXT,
+    summary TEXT,
+    summary_provider TEXT,
+    summary_model TEXT,
+    published_at TEXT,
+    description TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    transcript_error TEXT,
+    uid TEXT,
+    local_only INTEGER NOT NULL DEFAULT 0,
+    published INTEGER NOT NULL DEFAULT 0
+"#;
+
+const BASE_SCHEMA: &str = r#"
+    CREATE TABLE IF NOT EXISTS collections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        uid TEXT
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name_nocase
+        ON collections(name COLLATE NOCASE);
+
+    CREATE TABLE IF NOT EXISTS video_collections (
+        video_id INTEGER NOT NULL,
+        collection_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (video_id, collection_id),
+        FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+        FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_collections_video_id
+        ON video_collections(video_id);
+    CREATE INDEX IF NOT EXISTS idx_video_collections_collection_id
+        ON video_collections(collection_id);
+
+    CREATE TABLE IF NOT EXISTS summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        video_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        options TEXT,
+        uid TEXT,
+        FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_summaries_video_id ON summaries(video_id);
+
+    CREATE TABLE IF NOT EXISTS chats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        video_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        context_options TEXT,
+        uid TEXT,
+        FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        tool_calls TEXT,
+        tool_call_id TEXT,
+        provider TEXT,
+        model TEXT,
+        created_at TEXT NOT NULL,
+        round_uid TEXT,
+        position INTEGER,
+        FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id, id);
+    CREATE INDEX IF NOT EXISTS idx_chats_video ON chats(video_id, updated_at);
+"#;
+
+/// Erst nach dem Umbau von `videos` anlegbar (Altbestand hat keine uid).
+const SYNC_INDEXES: &str = r#"
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_uid ON videos(uid);
+    CREATE INDEX IF NOT EXISTS idx_videos_video_id ON videos(video_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_summaries_uid ON summaries(uid);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_uid ON chats(uid);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_uid ON collections(uid);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_round ON chat_messages(round_uid, id);
+"#;
+
+/// Zeitstempelspalten, die lokal kanonisch sind. `videos.published_at` kommt
+/// frei formatiert von YouTube und bleibt, wie es ist.
+const TIMESTAMP_COLUMNS: [(&str, &str); 9] = [
+    ("videos", "created_at"),
+    ("videos", "updated_at"),
+    ("summaries", "created_at"),
+    ("chats", "created_at"),
+    ("chats", "updated_at"),
+    ("chat_messages", "created_at"),
+    ("collections", "created_at"),
+    ("collections", "updated_at"),
+    ("video_collections", "created_at"),
+];
+
 pub fn init_db(paths: &AppPaths) -> AppResult<()> {
-    let conn = open_db(paths)?;
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS videos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_id TEXT NOT NULL UNIQUE,
-            url TEXT NOT NULL,
-            title TEXT NOT NULL,
-            thumbnail_url TEXT NOT NULL,
-            thumbnail_data BLOB,
-            transcript TEXT,
-            chapters TEXT,
-            summary TEXT,
-            summary_provider TEXT,
-            summary_model TEXT,
-            published_at TEXT,
-            description TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            transcript_error TEXT
-        );
+    let mut conn = open_db(paths)?;
+    migrate(&mut conn, None)
+}
 
-        CREATE TABLE IF NOT EXISTS collections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
+/// Migration nach docs/spec-sync.md („Migration“), idempotent in einer
+/// `IMMEDIATE`-Transaktion. `abort_after` bricht in Tests nach dem n-ten
+/// Zwischenstand ab (Referenzfälle C19, C21).
+pub(crate) fn migrate(conn: &mut Connection, abort_after: Option<usize>) -> AppResult<()> {
+    let migration_error =
+        |err: rusqlite::Error| format!("Datenbank konnte nicht migriert werden: {err}");
+    conn.query_row("PRAGMA journal_mode = WAL", [], |row| {
+        row.get::<_, String>(0)
+    })
+    .map_err(migration_error)?;
+    // SQLite-Verfahren für den Tabellenumbau: Fremdschlüssel vor BEGIN aus,
+    // nach dem Commit wieder an.
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")
+        .map_err(migration_error)?;
+    let result = migrate_in_transaction(conn, &mut Checkpoints::new(abort_after));
+    let restored = conn
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(migration_error);
+    result.and(restored)
+}
 
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_name_nocase
-            ON collections(name COLLATE NOCASE);
-
-        CREATE TABLE IF NOT EXISTS video_collections (
-            video_id INTEGER NOT NULL,
-            collection_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY (video_id, collection_id),
-            FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
-            FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_video_collections_video_id
-            ON video_collections(video_id);
-        CREATE INDEX IF NOT EXISTS idx_video_collections_collection_id
-            ON video_collections(collection_id);
-
-        CREATE TABLE IF NOT EXISTS summaries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            provider TEXT,
-            model TEXT,
-            options TEXT,
-            FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS idx_summaries_video_id ON summaries(video_id);
-
-        CREATE TABLE IF NOT EXISTS chats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_id INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            context_options TEXT,
-            FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS chat_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            tool_calls TEXT,
-            tool_call_id TEXT,
-            provider TEXT,
-            model TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id, id);
-        CREATE INDEX IF NOT EXISTS idx_chats_video ON chats(video_id, updated_at);
-        "#,
-    )
+fn migrate_in_transaction(conn: &mut Connection, steps: &mut Checkpoints) -> AppResult<()> {
+    let migration_error =
+        |err: rusqlite::Error| format!("Datenbank konnte nicht migriert werden: {err}");
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(migration_error)?;
+    tx.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS videos ({VIDEOS_TABLE});\n{BASE_SCHEMA}"
+    ))
     .map_err(|err| format!("Datenbank konnte nicht initialisiert werden: {err}"))?;
-    ensure_video_column(&conn, "description", "TEXT")?;
-    ensure_video_column(&conn, "transcript_error", "TEXT")?;
+    steps.pass()?;
+    ensure_video_column(&tx, "description", "TEXT")?;
+    ensure_video_column(&tx, "transcript_error", "TEXT")?;
     // Etappe 3: Kontext-Wahl je Chat (NULL = Standard).
-    ensure_table_column(&conn, "chats", "context_options", "TEXT")?;
-    backfill_legacy_summaries(&conn)?;
+    ensure_table_column(&tx, "chats", "context_options", "TEXT")?;
+    ensure_table_column(&tx, "summaries", "uid", "TEXT")?;
+    ensure_table_column(&tx, "chats", "uid", "TEXT")?;
+    ensure_table_column(&tx, "collections", "uid", "TEXT")?;
+    ensure_table_column(&tx, "chat_messages", "round_uid", "TEXT")?;
+    ensure_table_column(&tx, "chat_messages", "position", "INTEGER")?;
+    steps.pass()?;
+    // Altlasten blockieren den Start nicht: nur neue Verletzungen brechen ab.
+    let orphans = foreign_key_violations(&tx)?;
+    if !orphans.is_empty() {
+        eprintln!(
+            "Migration: {} verwaiste Zeilen (Fremdschlüssel) bleiben unverändert und werden nicht synchronisiert",
+            orphans.len()
+        );
+    }
+    rebuild_videos(&tx, steps)?;
+    steps.pass()?;
+    tx.execute_batch(SYNC_INDEXES).map_err(migration_error)?;
+    steps.pass()?;
+    assign_uids(&tx)?;
+    steps.pass()?;
+    group_rounds(&tx)?;
+    steps.pass()?;
+    canonicalize_timestamps(&tx)?;
+    steps.pass()?;
+    sync::schema::install(&tx)?;
+    steps.pass()?;
+    backfill_legacy_summaries(&tx)?;
+    steps.pass()?;
+    sync::outbox::seed_once(&tx)?;
+    steps.pass()?;
+    let introduced = foreign_key_violations(&tx)?.difference(&orphans).count();
+    if introduced > 0 {
+        return Err(format!(
+            "Datenbank konnte nicht migriert werden: {introduced} neue Fremdschlüssel-Verletzungen"
+        ));
+    }
+    tx.commit().map_err(migration_error)
+}
+
+/// `(Tabelle, rowid, Elterntabelle, Schlüsselnummer)` je Verletzung.
+fn foreign_key_violations(conn: &Connection) -> AppResult<BTreeSet<(String, i64, String, i64)>> {
+    let check_error =
+        |err: rusqlite::Error| format!("Fremdschlüssel konnten nicht geprüft werden: {err}");
+    let mut stmt = conn
+        .prepare(r#"SELECT "table", rowid, parent, fkid FROM pragma_foreign_key_check"#)
+        .map_err(check_error)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(check_error)?;
+    rows.collect::<Result<_, _>>().map_err(check_error)
+}
+
+fn table_columns(conn: &Connection, table: &str) -> AppResult<Vec<String>> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+        .map_err(|err| format!("Tabelle {table} konnte nicht geprüft werden: {err}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|err| format!("Tabelle {table} konnte nicht geprüft werden: {err}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("Tabelle {table} konnte nicht geprüft werden: {err}"))
+}
+
+/// Baut eine Alt-`videos` (mit `UNIQUE(video_id)`, ohne Sync-Spalten) nach dem
+/// SQLite-Verfahren um: neue Tabelle, Daten mit Integer-ids kopieren, alte
+/// löschen, neue umbenennen, Autoincrement-Stand übernehmen. Nie die alte
+/// Tabelle zuerst umbenennen (die Fremdschlüssel der Kinder zögen mit).
+fn rebuild_videos(conn: &Connection, steps: &mut Checkpoints) -> AppResult<()> {
+    let rebuild_error =
+        |err: rusqlite::Error| format!("Tabelle videos konnte nicht umgebaut werden: {err}");
+    let old_columns = table_columns(conn, "videos")?;
+    if old_columns.iter().any(|name| name == "uid") {
+        return Ok(());
+    }
+    let sequence: Option<i64> = conn
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'videos'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(rebuild_error)?;
+    conn.execute_batch(&format!("CREATE TABLE videos_new ({VIDEOS_TABLE});"))
+        .map_err(rebuild_error)?;
+    let new_columns = table_columns(conn, "videos_new")?;
+    let copied = old_columns
+        .iter()
+        .filter(|name| new_columns.contains(name))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    conn.execute(
+        &format!("INSERT INTO videos_new ({copied}) SELECT {copied} FROM videos"),
+        [],
+    )
+    .map_err(rebuild_error)?;
+    steps.pass()?;
+    conn.execute_batch("DROP TABLE videos;")
+        .map_err(rebuild_error)?;
+    steps.pass()?;
+    conn.execute_batch("ALTER TABLE videos_new RENAME TO videos;")
+        .map_err(rebuild_error)?;
+    steps.pass()?;
+    if let Some(sequence) = sequence {
+        conn.execute("DELETE FROM sqlite_sequence WHERE name = 'videos'", [])
+            .and_then(|_| {
+                conn.execute(
+                    "INSERT INTO sqlite_sequence (name, seq) VALUES ('videos', ?1)",
+                    params![sequence],
+                )
+            })
+            .map_err(rebuild_error)?;
+    }
+    Ok(())
+}
+
+/// Vergibt fehlende uids. Summaries bekommen sie aufsteigend in id-Reihenfolge,
+/// damit `created_at DESC, uid DESC` bei gleichen Zeitstempeln wie bisher
+/// (`id DESC`) sortiert.
+fn assign_uids(conn: &Connection) -> AppResult<()> {
+    let uid_error = |err: rusqlite::Error| format!("uids konnten nicht vergeben werden: {err}");
+    for table in ["videos", "chats", "collections"] {
+        conn.execute(
+            &format!("UPDATE {table} SET uid = lower(hex(randomblob(16))) WHERE uid IS NULL"),
+            [],
+        )
+        .map_err(uid_error)?;
+    }
+    let ids = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM summaries WHERE uid IS NULL ORDER BY id")
+            .map_err(uid_error)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(uid_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(uid_error)?
+    };
+    let uids = sync::new_uids(conn, ids.len())?;
+    for (id, uid) in ids.into_iter().zip(uids) {
+        conn.execute(
+            "UPDATE summaries SET uid = ?1 WHERE id = ?2",
+            params![uid, id],
+        )
+        .map_err(uid_error)?;
+    }
+    Ok(())
+}
+
+/// Eine Runde je `(chat_id, created_at)` mit den ursprünglichen Zeitstempeln
+/// (vor dem Kanonisieren), `position` nach `id`. Die uids steigen in
+/// id-Reihenfolge, damit `created_at, round_uid, position` die bisherige
+/// Reihenfolge nach `id` erhält.
+fn group_rounds(conn: &Connection) -> AppResult<()> {
+    let round_error =
+        |err: rusqlite::Error| format!("Chat-Runden konnten nicht gebildet werden: {err}");
+    let groups = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT chat_id, created_at FROM chat_messages WHERE round_uid IS NULL \
+                 GROUP BY chat_id, created_at ORDER BY MIN(id)",
+            )
+            .map_err(round_error)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(round_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(round_error)?
+    };
+    let uids = sync::new_uids(conn, groups.len())?;
+    for ((chat_id, created_at), uid) in groups.into_iter().zip(uids) {
+        conn.execute(
+            "UPDATE chat_messages SET round_uid = ?1 \
+             WHERE chat_id = ?2 AND created_at = ?3 AND round_uid IS NULL",
+            params![uid, chat_id, created_at],
+        )
+        .map_err(round_error)?;
+    }
+    conn.execute(
+        "UPDATE chat_messages SET position = ( \
+             SELECT COUNT(*) FROM chat_messages m \
+             WHERE m.round_uid = chat_messages.round_uid AND m.id < chat_messages.id) \
+         WHERE position IS NULL",
+        [],
+    )
+    .map_err(round_error)?;
+    Ok(())
+}
+
+/// Kanonisiert alle lokalen Zeitstempel. Nicht lesbare Werte bleiben stehen,
+/// statt zu NULL zu werden.
+fn canonicalize_timestamps(conn: &Connection) -> AppResult<()> {
+    let format = sync::CANONICAL_TIME_FORMAT;
+    for (table, column) in TIMESTAMP_COLUMNS {
+        let canonical = format!("strftime('{format}', {column})");
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET {column} = {canonical} \
+                 WHERE {canonical} IS NOT NULL AND {canonical} != {column}"
+            ),
+            [],
+        )
+        .map_err(|err| format!("Zeitstempel konnten nicht vereinheitlicht werden: {err}"))?;
+    }
     Ok(())
 }
 
@@ -170,8 +449,9 @@ fn ensure_table_column(
 fn backfill_legacy_summaries(conn: &Connection) -> AppResult<()> {
     conn.execute(
         r#"
-        INSERT INTO summaries (video_id, created_at, summary, provider, model, options)
+        INSERT INTO summaries (uid, video_id, created_at, summary, provider, model, options)
         SELECT
+            lower(hex(randomblob(16))),
             v.id,
             COALESCE(NULLIF(v.updated_at, ''), v.created_at),
             v.summary,
@@ -201,38 +481,47 @@ pub fn video_exists(paths: &AppPaths, video_id: &str) -> AppResult<bool> {
     Ok(exists == 1)
 }
 
-pub fn insert_video(paths: &AppPaths, video: NewVideo) -> AppResult<Video> {
+/// Legt ein Video an. Die Dublettenprüfung läuft im selben Statement wie das
+/// Einfügen, damit zwei gleichzeitige Aufrufe nicht beide einfügen.
+/// `local_only` entspricht der Einstellung `newVideosLocal`.
+pub fn insert_video(paths: &AppPaths, video: NewVideo, local_only: bool) -> AppResult<Video> {
     let conn = open_db(paths)?;
-    let now = Utc::now().to_rfc3339();
+    let now = now_canonical();
     let transcript_error = if video.transcript.is_some() {
         None
     } else {
         video.transcript_error
     };
-    conn.execute(
-        r#"
+    let inserted = conn
+        .execute(
+            r#"
         INSERT INTO videos (
-            video_id, url, title, thumbnail_url, thumbnail_data,
+            uid, video_id, url, title, thumbnail_url, thumbnail_data,
             transcript, chapters, summary, created_at, updated_at, published_at, description,
-            transcript_error
+            transcript_error, local_only
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9, ?10, ?11)
+        SELECT lower(hex(randomblob(16))), ?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9, ?10, ?11, ?12
+        WHERE NOT EXISTS (SELECT 1 FROM videos WHERE video_id = ?1)
         "#,
-        params![
-            video.video_id,
-            video.url,
-            video.title,
-            video.thumbnail_url,
-            video.thumbnail_data,
-            video.transcript,
-            video.chapters,
-            now,
-            video.published_at,
-            video.description,
-            transcript_error,
-        ],
-    )
-    .map_err(|err| format!("Video konnte nicht gespeichert werden: {err}"))?;
+            params![
+                video.video_id,
+                video.url,
+                video.title,
+                video.thumbnail_url,
+                video.thumbnail_data,
+                video.transcript,
+                video.chapters,
+                now,
+                video.published_at,
+                video.description,
+                transcript_error,
+                local_only,
+            ],
+        )
+        .map_err(|err| format!("Video konnte nicht gespeichert werden: {err}"))?;
+    if inserted == 0 {
+        return Err(VIDEO_EXISTS_ERROR.to_string());
+    }
 
     get_video(paths, conn.last_insert_rowid())?
         .ok_or_else(|| "Gespeichertes Video wurde nicht gefunden".to_string())
@@ -293,27 +582,65 @@ pub fn update_summary(
     options: Option<&str>,
 ) -> AppResult<Video> {
     let mut conn = open_db(paths)?;
-    let now = Utc::now().to_rfc3339();
+    let now = now_canonical();
     let tx = conn
-        .transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| format!("Zusammenfassung konnte nicht gespeichert werden: {err}"))?;
-    let changed = tx
-        .execute(
-            "UPDATE videos SET summary = ?1, summary_provider = ?2, summary_model = ?3, updated_at = ?4 WHERE id = ?5",
-            params![summary, provider, model, now, id],
+    let exists = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM videos WHERE id = ?1)",
+            params![id],
+            |row| row.get::<_, bool>(0),
         )
         .map_err(|err| format!("Zusammenfassung konnte nicht gespeichert werden: {err}"))?;
-    if changed == 0 {
+    if !exists {
         return Err("Video nicht gefunden".to_string());
     }
     tx.execute(
-        "INSERT INTO summaries (video_id, created_at, summary, provider, model, options) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO summaries (uid, video_id, created_at, summary, provider, model, options) \
+         VALUES (lower(hex(randomblob(16))), ?1, ?2, ?3, ?4, ?5, ?6)",
         params![id, now, summary, provider, model, options],
     )
     .map_err(|err| format!("Zusammenfassungshistorie konnte nicht gespeichert werden: {err}"))?;
+    refresh_latest_summary(&tx, id, &now)?;
     tx.commit()
         .map_err(|err| format!("Zusammenfassung konnte nicht gespeichert werden: {err}"))?;
     get_video(paths, id)?.ok_or_else(|| "Video nicht gefunden".to_string())
+}
+
+/// Setzt `videos.summary*` auf die neueste Zusammenfassung (`created_at DESC,
+/// uid DESC`, global stabil) oder leert sie.
+pub(crate) fn refresh_latest_summary(conn: &Connection, video_id: i64, now: &str) -> AppResult<()> {
+    let newest = conn
+        .query_row(
+            r#"
+            SELECT summary, provider, model
+            FROM summaries
+            WHERE video_id = ?1
+            ORDER BY created_at DESC, uid DESC
+            LIMIT 1
+            "#,
+            params![video_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|err| format!("Zusammenfassung konnte nicht aktualisiert werden: {err}"))?;
+    let (summary, provider, model) = match newest {
+        Some((summary, provider, model)) => (Some(summary), provider, model),
+        None => (None, None, None),
+    };
+    conn.execute(
+        "UPDATE videos SET summary = ?1, summary_provider = ?2, summary_model = ?3, updated_at = ?4 WHERE id = ?5",
+        params![summary, provider, model, now, video_id],
+    )
+    .map_err(|err| format!("Zusammenfassung konnte nicht aktualisiert werden: {err}"))?;
+    Ok(())
 }
 
 pub fn get_summaries(paths: &AppPaths, video_id: i64) -> AppResult<Vec<Summary>> {
@@ -324,7 +651,7 @@ pub fn get_summaries(paths: &AppPaths, video_id: i64) -> AppResult<Vec<Summary>>
             SELECT id, video_id, created_at, summary, provider, model, options
             FROM summaries
             WHERE video_id = ?1
-            ORDER BY created_at DESC, id DESC
+            ORDER BY created_at DESC, uid DESC
             "#,
         )
         .map_err(|err| format!("Zusammenfassungen konnten nicht geladen werden: {err}"))?;
@@ -338,7 +665,7 @@ pub fn get_summaries(paths: &AppPaths, video_id: i64) -> AppResult<Vec<Summary>>
 pub fn delete_summary(paths: &AppPaths, id: i64) -> AppResult<()> {
     let mut conn = open_db(paths)?;
     let tx = conn
-        .transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| format!("Zusammenfassung konnte nicht gelöscht werden: {err}"))?;
     let video_id: i64 = tx
         .query_row(
@@ -351,42 +678,7 @@ pub fn delete_summary(paths: &AppPaths, id: i64) -> AppResult<()> {
         .ok_or_else(|| "Zusammenfassung nicht gefunden".to_string())?;
     tx.execute("DELETE FROM summaries WHERE id = ?1", params![id])
         .map_err(|err| format!("Zusammenfassung konnte nicht gelöscht werden: {err}"))?;
-
-    let newest = tx
-        .query_row(
-            r#"
-            SELECT summary, provider, model
-            FROM summaries
-            WHERE video_id = ?1
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            "#,
-            params![video_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|err| format!("Zusammenfassung konnte nicht gelöscht werden: {err}"))?;
-
-    let now = Utc::now().to_rfc3339();
-    match newest {
-        Some((summary, provider, model)) => {
-            tx.execute(
-                "UPDATE videos SET summary = ?1, summary_provider = ?2, summary_model = ?3, updated_at = ?4 WHERE id = ?5",
-                params![summary, provider, model, now, video_id],
-            )
-        }
-        None => tx.execute(
-            "UPDATE videos SET summary = NULL, summary_provider = NULL, summary_model = NULL, updated_at = ?1 WHERE id = ?2",
-            params![now, video_id],
-        ),
-    }
-    .map_err(|err| format!("Zusammenfassung konnte nicht aktualisiert werden: {err}"))?;
+    refresh_latest_summary(&tx, video_id, &now_canonical())?;
     tx.commit()
         .map_err(|err| format!("Zusammenfassung konnte nicht gelöscht werden: {err}"))?;
     Ok(())
@@ -400,7 +692,7 @@ pub fn update_transcript(
     description: Option<&str>,
 ) -> AppResult<Video> {
     let conn = open_db(paths)?;
-    let now = Utc::now().to_rfc3339();
+    let now = now_canonical();
     conn.execute(
         "UPDATE videos SET transcript = ?1, chapters = ?2, description = ?3, transcript_error = NULL, updated_at = ?4 WHERE id = ?5",
         params![transcript, chapters, description, now, id],
@@ -411,7 +703,7 @@ pub fn update_transcript(
 
 pub fn set_transcript_error(paths: &AppPaths, id: i64, error: &str) -> AppResult<Video> {
     let conn = open_db(paths)?;
-    let now = Utc::now().to_rfc3339();
+    let now = now_canonical();
     conn.execute(
         "UPDATE videos SET transcript_error = ?1, updated_at = ?2 WHERE id = ?3 AND transcript IS NULL",
         params![error, now, id],
@@ -454,7 +746,8 @@ pub fn get_chat_messages(paths: &AppPaths, chat_id: i64) -> AppResult<Vec<ChatMe
     let conn = open_db(paths)?;
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT {CHAT_MESSAGE_COLUMNS} FROM chat_messages WHERE chat_id = ?1 ORDER BY id"
+            "SELECT {CHAT_MESSAGE_COLUMNS} FROM chat_messages WHERE chat_id = ?1 \
+             ORDER BY created_at, round_uid, position"
         ))
         .map_err(|err| format!("Chat-Nachrichten konnten nicht geladen werden: {err}"))?;
     let rows = stmt
@@ -476,9 +769,9 @@ pub fn append_chat_turn(
     context_options: Option<&ChatContextOptions>,
 ) -> AppResult<(Chat, Vec<ChatMessageRecord>)> {
     let mut conn = open_db(paths)?;
-    let now = Utc::now().to_rfc3339();
+    let now = now_canonical();
     let tx = conn
-        .transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| format!("Chat konnte nicht gespeichert werden: {err}"))?;
 
     let video_exists = tx
@@ -514,8 +807,8 @@ pub fn append_chat_turn(
         None => {
             let options = context_options.cloned().unwrap_or_default();
             tx.execute(
-                "INSERT INTO chats (video_id, title, created_at, updated_at, context_options) \
-                 VALUES (?1, ?2, ?3, ?3, ?4)",
+                "INSERT INTO chats (uid, video_id, title, created_at, updated_at, context_options) \
+                 VALUES (lower(hex(randomblob(16))), ?1, ?2, ?3, ?3, ?4)",
                 params![video_id, title, now, serde_json::to_string(&options).ok()],
             )
             .map_err(|err| format!("Chat konnte nicht angelegt werden: {err}"))?;
@@ -533,17 +826,22 @@ pub fn append_chat_turn(
         .map_err(|err| format!("Kontext-Auswahl konnte nicht gespeichert werden: {err}"))?;
     }
 
+    // Ein Aufruf = eine Runde (Übertragungseinheit des Syncs).
+    let round_uid = sync::new_uid(&tx)?;
     let mut records = Vec::with_capacity(messages.len());
-    for message in messages {
+    for (position, message) in messages.into_iter().enumerate() {
         let tool_calls = message.tool_calls.as_ref().map(|value| value.to_string());
         tx.execute(
             r#"
             INSERT INTO chat_messages
-                (chat_id, role, content, tool_calls, tool_call_id, provider, model, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                (chat_id, round_uid, position, role, content, tool_calls, tool_call_id,
+                 provider, model, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             "#,
             params![
                 chat_id,
+                round_uid,
+                position as i64,
                 message.role,
                 message.content,
                 tool_calls,
@@ -673,9 +971,10 @@ pub fn get_collections(paths: &AppPaths) -> AppResult<Vec<Collection>> {
 pub fn create_collection(paths: &AppPaths, name: &str) -> AppResult<Collection> {
     let name = normalize_collection_name(name)?;
     let conn = open_db(paths)?;
-    let now = Utc::now().to_rfc3339();
+    let now = now_canonical();
     conn.execute(
-        "INSERT INTO collections (name, created_at, updated_at) VALUES (?1, ?2, ?2)",
+        "INSERT INTO collections (uid, name, created_at, updated_at) \
+         VALUES (lower(hex(randomblob(16))), ?1, ?2, ?2)",
         params![name, now],
     )
     .map_err(|err| collection_write_error(err, "Sammlung konnte nicht angelegt werden"))?;
@@ -686,7 +985,7 @@ pub fn create_collection(paths: &AppPaths, name: &str) -> AppResult<Collection> 
 pub fn update_collection(paths: &AppPaths, id: i64, name: &str) -> AppResult<Collection> {
     let name = normalize_collection_name(name)?;
     let conn = open_db(paths)?;
-    let now = Utc::now().to_rfc3339();
+    let now = now_canonical();
     let changed = conn
         .execute(
             "UPDATE collections SET name = ?1, updated_at = ?2 WHERE id = ?3",
@@ -710,33 +1009,44 @@ pub fn delete_collection(paths: &AppPaths, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+/// Setzt die Sammlungen eines Videos und schreibt nur echte Differenzen
+/// (jede Zeilenänderung ist ein Outbox-Eintrag).
 pub fn set_video_collections(
     paths: &AppPaths,
     video_id: i64,
     collection_ids: Vec<i64>,
 ) -> AppResult<Video> {
     let mut conn = open_db(paths)?;
-    if get_video(paths, video_id)?.is_none() {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| format!("Sammlungen konnten nicht gespeichert werden: {err}"))?;
+    let exists = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM videos WHERE id = ?1)",
+            params![video_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|err| format!("Video konnte nicht geprüft werden: {err}"))?;
+    if !exists {
         return Err("Video nicht gefunden".to_string());
     }
 
-    let tx = conn
-        .transaction()
-        .map_err(|err| format!("Sammlungen konnten nicht gespeichert werden: {err}"))?;
-    tx.execute(
-        "DELETE FROM video_collections WHERE video_id = ?1",
-        params![video_id],
-    )
-    .map_err(|err| format!("Sammlungen konnten nicht aktualisiert werden: {err}"))?;
-
-    let now = Utc::now().to_rfc3339();
-    let mut unique_ids = collection_ids;
-    unique_ids.sort_unstable();
-    unique_ids.dedup();
-    for collection_id in unique_ids {
+    let current: BTreeSet<i64> = get_video_collection_ids(&tx, video_id)?
+        .into_iter()
+        .collect();
+    let wanted: BTreeSet<i64> = collection_ids.into_iter().collect();
+    for removed in current.difference(&wanted) {
+        tx.execute(
+            "DELETE FROM video_collections WHERE video_id = ?1 AND collection_id = ?2",
+            params![video_id, removed],
+        )
+        .map_err(|err| format!("Sammlungen konnten nicht aktualisiert werden: {err}"))?;
+    }
+    let now = now_canonical();
+    for added in wanted.difference(&current) {
         tx.execute(
             "INSERT INTO video_collections (video_id, collection_id, created_at) VALUES (?1, ?2, ?3)",
-            params![video_id, collection_id, now],
+            params![video_id, added, now],
         )
         .map_err(|err| collection_write_error(err, "Sammlung konnte nicht zugewiesen werden"))?;
     }
@@ -744,6 +1054,38 @@ pub fn set_video_collections(
         .map_err(|err| format!("Sammlungen konnten nicht gespeichert werden: {err}"))?;
 
     get_video(paths, video_id)?.ok_or_else(|| "Video nicht gefunden".to_string())
+}
+
+/// Schaltet ein Video privat oder geteilt (docs/spec-sync.md, „Privat
+/// schalten und freigeben“).
+pub fn video_set_local_only(paths: &AppPaths, id: i64, local_only: bool) -> AppResult<()> {
+    let mut conn = open_db(paths)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| format!("Video konnte nicht umgeschaltet werden: {err}"))?;
+    let current: bool = tx
+        .query_row(
+            "SELECT local_only FROM videos WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("Video konnte nicht umgeschaltet werden: {err}"))?
+        .ok_or_else(|| "Video nicht gefunden".to_string())?;
+    if current != local_only {
+        if local_only {
+            sync::privatize::make_private(&tx, id, true)?;
+        } else {
+            tx.execute(
+                "UPDATE videos SET local_only = 0 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|err| format!("Video konnte nicht umgeschaltet werden: {err}"))?;
+            sync::outbox::seed(&tx, Some(id))?;
+        }
+    }
+    tx.commit()
+        .map_err(|err| format!("Video konnte nicht umgeschaltet werden: {err}"))
 }
 
 fn get_collection(conn: &Connection, id: i64) -> AppResult<Option<Collection>> {
@@ -852,6 +1194,7 @@ fn row_to_video(row: &Row<'_>) -> rusqlite::Result<Video> {
         transcript_error: row.get("transcript_error")?,
         has_transcript: row.get("has_transcript")?,
         has_summary: row.get("has_summary")?,
+        local_only: row.get("local_only")?,
     })
 }
 
@@ -936,7 +1279,7 @@ mod tests {
     #[test]
     fn summary_history_inserts_lists_and_deletes() {
         let (_temp, paths) = temp_paths();
-        let video = insert_video(&paths, sample_video("abcdefghijk")).unwrap();
+        let video = insert_video(&paths, sample_video("abcdefghijk"), false).unwrap();
 
         let first = update_summary(
             &paths,
@@ -989,7 +1332,7 @@ mod tests {
     #[test]
     fn init_db_backfills_legacy_summaries_once() {
         let (_temp, paths) = temp_paths();
-        let video = insert_video(&paths, sample_video("cdefghijklm")).unwrap();
+        let video = insert_video(&paths, sample_video("cdefghijklm"), false).unwrap();
         let conn = Connection::open(&paths.db_path).unwrap();
         conn.execute(
             "UPDATE videos SET summary = ?1, summary_provider = ?2, summary_model = ?3, updated_at = ?4 WHERE id = ?5",
@@ -1011,7 +1354,8 @@ mod tests {
         assert_eq!(history[0].summary, "Altbestand");
         assert_eq!(history[0].provider.as_deref(), Some("OpenRouter"));
         assert_eq!(history[0].model.as_deref(), Some("glm"));
-        assert_eq!(history[0].created_at, "2026-01-02T03:04:05Z");
+        // Die Migration kanonisiert Zeitstempel vor dem Nachziehen.
+        assert_eq!(history[0].created_at, "2026-01-02T03:04:05.000Z");
 
         init_db(&paths).unwrap();
         assert_eq!(get_summaries(&paths, video.id).unwrap().len(), 1);
@@ -1020,7 +1364,7 @@ mod tests {
     #[test]
     fn delete_video_removes_summary_history() {
         let (_temp, paths) = temp_paths();
-        let video = insert_video(&paths, sample_video("bcdefghijkl")).unwrap();
+        let video = insert_video(&paths, sample_video("bcdefghijkl"), false).unwrap();
         update_summary(&paths, video.id, "Text", None, None, None).unwrap();
         assert_eq!(get_summaries(&paths, video.id).unwrap().len(), 1);
 
@@ -1044,7 +1388,7 @@ mod tests {
         sample.transcript_error =
             Some("LOGIN_REQUIRED: Sign in to confirm you're not a bot".into());
 
-        let video = insert_video(&paths, sample).unwrap();
+        let video = insert_video(&paths, sample, false).unwrap();
         assert!(video.transcript.is_none());
         assert_eq!(
             video.transcript_error.as_deref(),
@@ -1065,7 +1409,7 @@ mod tests {
         let mut sample = sample_video("refreshvid1");
         sample.transcript = None;
         sample.transcript_error = None;
-        let video = insert_video(&paths, sample).unwrap();
+        let video = insert_video(&paths, sample, false).unwrap();
         assert_eq!(video.transcript_error, None);
 
         let updated = set_transcript_error(&paths, video.id, "Netzwerkfehler").unwrap();
@@ -1152,7 +1496,7 @@ mod tests {
         let mut sample = sample_video("racevid1");
         sample.transcript = None;
         sample.transcript_error = None;
-        let video = insert_video(&paths, sample).unwrap();
+        let video = insert_video(&paths, sample, false).unwrap();
 
         let with_transcript = update_transcript(
             &paths,
@@ -1190,7 +1534,7 @@ mod tests {
         sample.transcript = Some(r#"[{"text":"vorhanden","start":0.0,"time":"0:00"}]"#.into());
         sample.transcript_error = Some("Widersprüchlicher Fehler".into());
 
-        let video = insert_video(&paths, sample).unwrap();
+        let video = insert_video(&paths, sample, false).unwrap();
         assert!(video.transcript.is_some());
         assert_eq!(video.transcript_error, None);
 
@@ -1202,9 +1546,9 @@ mod tests {
     #[test]
     fn hydrate_video_collections_preserves_order_and_handles_multiple_videos() {
         let (_temp, paths) = temp_paths();
-        let v1 = insert_video(&paths, sample_video("vid11111111")).unwrap();
-        let v2 = insert_video(&paths, sample_video("vid22222222")).unwrap();
-        let v3 = insert_video(&paths, sample_video("vid33333333")).unwrap();
+        let v1 = insert_video(&paths, sample_video("vid11111111"), false).unwrap();
+        let v2 = insert_video(&paths, sample_video("vid22222222"), false).unwrap();
+        let v3 = insert_video(&paths, sample_video("vid33333333"), false).unwrap();
 
         let c1 = create_collection(&paths, "Sammlung A").unwrap();
         let c2 = create_collection(&paths, "Sammlung B").unwrap();
@@ -1230,7 +1574,7 @@ mod tests {
         sample1.transcript = Some("Full transcript text".into());
         sample1.chapters = Some(r#"[{"time":"0:00","start":0.0,"title":"Intro"}]"#.into());
         sample1.description = Some("Full description".into());
-        let v1 = insert_video(&paths, sample1).unwrap();
+        let v1 = insert_video(&paths, sample1, false).unwrap();
         update_summary(
             &paths,
             v1.id,
@@ -1245,7 +1589,7 @@ mod tests {
         sample2.transcript = None;
         sample2.chapters = None;
         sample2.description = None;
-        let v2 = insert_video(&paths, sample2).unwrap();
+        let v2 = insert_video(&paths, sample2, false).unwrap();
 
         // get_videos returns compact objects
         let list = get_videos(&paths).unwrap();
@@ -1284,7 +1628,7 @@ mod tests {
         let (_temp, paths) = temp_paths();
         let mut sample = sample_video("empty_str_vid");
         sample.transcript = Some("".into());
-        let video = insert_video(&paths, sample).unwrap();
+        let video = insert_video(&paths, sample, false).unwrap();
         update_summary(&paths, video.id, "", None, None, None).unwrap();
 
         let list = get_videos(&paths).unwrap();

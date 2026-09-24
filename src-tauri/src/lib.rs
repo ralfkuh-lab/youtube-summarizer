@@ -11,14 +11,17 @@ mod models;
 mod storage;
 mod summarize;
 mod summary_presets;
+mod sync;
 mod websearch;
 mod youtube;
 
 use std::fs;
 use std::io;
 
+use std::sync::Arc;
+
 use storage::AppPaths;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const LOCALHOST_PORT: u16 = 14220;
 
@@ -56,6 +59,31 @@ pub fn run() {
             app.manage(ai_http);
             app.manage(ai_config);
             app.manage(ai_auth);
+
+            // Sync: ohne aktive Einstellungen kein Netzwerkzugriff (siehe
+            // `SyncEngine::tick`).
+            let handle = app.handle().clone();
+            let sync_engine = Arc::new(
+                sync::engine::SyncEngine::new(
+                    paths.clone(),
+                    Box::new(move |event| {
+                        let result = match event {
+                            sync::engine::SyncEvent::Status(status) => {
+                                handle.emit("sync://status", status)
+                            }
+                            sync::engine::SyncEvent::Applied(applied) => {
+                                handle.emit("sync://applied", applied)
+                            }
+                        };
+                        if let Err(error) = result {
+                            eprintln!("Sync-Event konnte nicht gesendet werden: {error}");
+                        }
+                    }),
+                )
+                .map_err(setup_error)?,
+            );
+            app.manage(sync_engine.clone());
+            tauri::async_runtime::spawn(sync::engine::SyncEngine::background_loop(sync_engine));
 
             app.manage(paths);
             app.manage(chat::ChatRuns::default());
@@ -113,7 +141,14 @@ pub fn run() {
             agent_handoff::agent_config_get,
             agent_handoff::agent_config_set,
             agent_handoff::agent_prepare,
-            agent_handoff::agent_preview
+            agent_handoff::agent_preview,
+            sync::commands::sync_config_get,
+            sync::commands::sync_config_set,
+            sync::commands::sync_test,
+            sync::commands::sync_now,
+            sync::commands::sync_status,
+            sync::commands::sync_rebaseline,
+            sync::commands::video_set_local_only
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

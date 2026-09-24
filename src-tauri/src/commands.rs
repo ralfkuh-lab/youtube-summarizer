@@ -404,7 +404,7 @@ pub async fn add_video_impl(paths: &AppPaths, url: String) -> AppResult<Video> {
     let video_id = youtube::extract_video_id(&url)
         .ok_or_else(|| "Ungültige YouTube-URL oder Video-ID".to_string())?;
     if storage::video_exists(paths, &video_id)? {
-        return Err("Video bereits in der Liste vorhanden".to_string());
+        return Err(storage::VIDEO_EXISTS_ERROR.to_string());
     }
 
     let client = http_client()?;
@@ -442,6 +442,7 @@ pub async fn add_video_impl(paths: &AppPaths, url: String) -> AppResult<Video> {
             description,
             transcript_error,
         },
+        crate::sync::config::load(paths).new_videos_local,
     )
 }
 

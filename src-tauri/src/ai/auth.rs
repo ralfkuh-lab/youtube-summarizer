@@ -107,7 +107,10 @@ fn load_auth_json(path: &PathBuf) -> BTreeMap<String, AuthEntry> {
         .unwrap_or_default()
 }
 
-fn save_secure_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), AuthError> {
+pub(crate) fn save_secure_json_atomic<T: Serialize>(
+    path: &Path,
+    value: &T,
+) -> Result<(), AuthError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

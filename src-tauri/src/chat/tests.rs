@@ -102,6 +102,7 @@ fn insert_video(paths: &AppPaths, fixture: Fixture) -> Video {
             description: fixture.description,
             transcript_error: None,
         },
+        false,
     )
     .unwrap();
     if let Some(summary) = fixture.summary {

@@ -39,7 +39,7 @@ pub(crate) fn revision3_fixture() -> (TempDir, AppPaths, Revision3) {
     metadata.description = Some("Beschreibung V".to_string());
     metadata.chapters =
         Some(serde_json::json!([{"time": "0:00", "start": 0.0, "title": "Start"}]).to_string());
-    let video = crate::storage::insert_video(&paths, metadata).unwrap();
+    let video = crate::storage::insert_video(&paths, metadata, false).unwrap();
 
     let s1 = add_summary(&paths, video.id, "Version eins", "2026-01-01T10:00:00Z");
     let s2 = add_summary(&paths, video.id, "Version zwei", "2026-02-01T10:00:00Z");
@@ -67,7 +67,8 @@ pub(crate) fn revision3_fixture() -> (TempDir, AppPaths, Revision3) {
     );
 
     let other =
-        crate::storage::insert_video(&paths, integration_video("vidW00000002", "Video W")).unwrap();
+        crate::storage::insert_video(&paths, integration_video("vidW00000002", "Video W"), false)
+            .unwrap();
     let other_summary = add_summary(&paths, other.id, "Version W", "2026-04-01T10:00:00Z");
     let other_chat = add_chat(
         &paths,
@@ -79,7 +80,9 @@ pub(crate) fn revision3_fixture() -> (TempDir, AppPaths, Revision3) {
 
     let mut bare = integration_video("vidX00000003", "Video X");
     bare.transcript = None;
-    let bare_video = crate::storage::insert_video(&paths, bare).unwrap().id;
+    let bare_video = crate::storage::insert_video(&paths, bare, false)
+        .unwrap()
+        .id;
 
     (
         temp,
