@@ -103,6 +103,13 @@ export const defaultFixtures = {
     answer: "Antwort vom Mock-Modell",
     error: null,
   },
+  // Auth-Status der KI-Anbieter (ProviderId -> true). Schluessel selbst werden
+  // nie ausgeliefert, deshalb steht hier nur der Status.
+  aiAuthStatus: {},
+  // Fehler je Command (Commandname -> Fehlertext), additiv fuer neue Tests.
+  commandErrors: {},
+  // Antwort von ai_catalog_refresh; null = Katalog unveraendert zurueckgeben.
+  catalogRefresh: null,
   summaries: [],
   webSearchConfig: {
     enabled: false,
@@ -235,6 +242,8 @@ export function createMockScript(fixtures = {}, delays = {}) {
   let nextCallbackId = 1;
   const chatStore = { chats: [], messages: {}, nextChatId: 1 };
   const cancelledRequests = new Set();
+  // Wie auth.json: Status je Provider; die Schluessel selbst bleiben hier.
+  const aiAuth = { ...(initialFixtures.aiAuthStatus || {}) };
 
   function seedChatStore(seed) {
     for (const [videoId, entries] of Object.entries(seed || {})) {
@@ -445,6 +454,122 @@ export function createMockScript(fixtures = {}, delays = {}) {
         if (cmd === 'ai_catalog_get') {
           return JSON.parse(JSON.stringify(this.fixtures.catalog || { catalog: {}, source: 'cache', updatedAt: '' }));
         }
+        if (cmd === 'ai_catalog_refresh') {
+          const aiError = (this.fixtures.commandErrors || {})[cmd];
+          if (aiError) throw new Error(aiError);
+          if (this.fixtures.catalogRefresh) {
+            this.fixtures.catalog = this.fixtures.catalogRefresh;
+          }
+          const catalog =
+            this.fixtures.catalog || { catalog: {}, source: 'snapshot', updatedAt: '' };
+          callRecord.result = catalog;
+          return JSON.parse(JSON.stringify(catalog));
+        }
+        if (cmd === 'ai_provider_enable') {
+          const aiError = (this.fixtures.commandErrors || {})[cmd];
+          if (aiError) throw new Error(aiError);
+          const config = this.fixtures.aiConfig || (this.fixtures.aiConfig = { provider: {} });
+          if (!config.provider) config.provider = {};
+          const providerId = args?.providerId;
+          const provider = config.provider[providerId] ||
+            (config.provider[providerId] = { enabled: false, whitelist: [] });
+          // Wie das Backend: nur der Schalter, Rest bleibt.
+          provider.enabled = !!args?.enabled;
+          callRecord.result = config;
+          return JSON.parse(JSON.stringify(config));
+        }
+        if (cmd === 'ai_model_toggle') {
+          const aiError = (this.fixtures.commandErrors || {})[cmd];
+          if (aiError) throw new Error(aiError);
+          const config = this.fixtures.aiConfig || (this.fixtures.aiConfig = { provider: {} });
+          if (!config.provider) config.provider = {};
+          const providerId = args?.providerId;
+          const modelId = args?.modelId;
+          const provider = config.provider[providerId] ||
+            (config.provider[providerId] = { enabled: false, whitelist: [] });
+          if (!Array.isArray(provider.whitelist)) provider.whitelist = [];
+          provider.whitelist = args?.on
+            ? [...new Set([...provider.whitelist, modelId])]
+            : provider.whitelist.filter((id) => id !== modelId);
+          callRecord.result = config;
+          return JSON.parse(JSON.stringify(config));
+        }
+        if (cmd === 'ai_custom_upsert') {
+          const aiError = (this.fixtures.commandErrors || {})[cmd];
+          if (aiError) throw new Error(aiError);
+          const definition = args?.definition || {};
+          const id = String(definition.id ?? '');
+          const name = String(definition.name ?? '').trim();
+          const baseURL = String(definition.baseURL ?? '').trim();
+          // Wie AiConfigService::custom_upsert
+          if (!/^[a-z0-9_-]+$/.test(id)) {
+            throw new Error(
+              "Ungültige Provider-ID '" + id + "': erlaubt sind nur Kleinbuchstaben, Zahlen, '-' und '_'",
+            );
+          }
+          if (!name) throw new Error('Anzeigename des Custom-Providers darf nicht leer sein');
+          if (!baseURL) throw new Error('Basis-URL des Custom-Providers darf nicht leer sein');
+          const config = this.fixtures.aiConfig || (this.fixtures.aiConfig = { provider: {} });
+          if (!config.provider) config.provider = {};
+          const previous = config.provider[id] || {};
+          config.provider[id] = {
+            ...previous,
+            enabled: previous.enabled === undefined ? true : previous.enabled,
+            custom: true,
+            name,
+            options: { baseURL },
+            models: previous.models || {},
+            whitelist: previous.whitelist || [],
+          };
+          callRecord.result = config;
+          return JSON.parse(JSON.stringify(config));
+        }
+        if (cmd === 'ai_custom_delete') {
+          const aiError = (this.fixtures.commandErrors || {})[cmd];
+          if (aiError) throw new Error(aiError);
+          const id = args?.id;
+          const config = this.fixtures.aiConfig || (this.fixtures.aiConfig = { provider: {} });
+          if (!config.provider) config.provider = {};
+          const provider = config.provider[id];
+          if (provider && !provider.custom) {
+            throw new Error("Provider '" + id + "' ist kein Custom-Provider");
+          }
+          delete config.provider[id];
+          if (config.defaultModel && config.defaultModel.provider === id) {
+            config.defaultModel = null;
+          }
+          callRecord.result = config;
+          return JSON.parse(JSON.stringify(config));
+        }
+        if (cmd === 'ai_default_model_set') {
+          const aiError = (this.fixtures.commandErrors || {})[cmd];
+          if (aiError) throw new Error(aiError);
+          const providerId = args?.providerId;
+          const modelId = args?.modelId;
+          if (!!providerId !== !!modelId) {
+            throw new Error('Provider und Modell müssen entweder beide gesetzt oder beide leer sein');
+          }
+          const config = this.fixtures.aiConfig || (this.fixtures.aiConfig = { provider: {} });
+          config.defaultModel =
+            providerId && modelId ? { provider: providerId, model: modelId } : null;
+          callRecord.result = config;
+          return JSON.parse(JSON.stringify(config));
+        }
+        if (cmd === 'ai_auth_set') {
+          const aiError = (this.fixtures.commandErrors || {})[cmd];
+          if (aiError) throw new Error(aiError);
+          const providerId = args?.providerId;
+          aiAuth[providerId] = true;
+          callRecord.result = { ...aiAuth };
+          return { ...aiAuth };
+        }
+        if (cmd === 'ai_auth_remove') {
+          const aiError = (this.fixtures.commandErrors || {})[cmd];
+          if (aiError) throw new Error(aiError);
+          delete aiAuth[args?.providerId];
+          callRecord.result = { ...aiAuth };
+          return { ...aiAuth };
+        }
         if (cmd === 'get_video_detail') {
           const id = args?.id;
           const v = (this.fixtures.videoDetails && this.fixtures.videoDetails[id]) ||
@@ -494,7 +619,8 @@ export function createMockScript(fixtures = {}, delays = {}) {
           return JSON.parse(JSON.stringify(this.fixtures.summaryPresets || []));
         }
         if (cmd === 'ai_auth_status') {
-          return {};
+          callRecord.result = { ...aiAuth };
+          return { ...aiAuth };
         }
         if (cmd === 'chat_list') {
           const chats = chatsOfVideo(args?.videoId);
@@ -578,7 +704,26 @@ export function createMockScript(fixtures = {}, delays = {}) {
           return JSON.parse(JSON.stringify(config));
         }
         if (cmd === 'web_search_config_set') {
-          const config = args?.config || { enabled: false, searxngUrl: '' };
+          const commandError = (this.fixtures.commandErrors || {})[cmd];
+          if (commandError) throw new Error(commandError);
+          // Wie config::save: URL trimmen und auf HTTP(S) mit Host pruefen.
+          const input = args?.config || { enabled: false, searxngUrl: '' };
+          const searxngUrl = String(input.searxngUrl ?? '').trim();
+          if (searxngUrl) {
+            let host = '';
+            let protocol = '';
+            try {
+              const parsed = new URL(searxngUrl);
+              host = parsed.hostname;
+              protocol = parsed.protocol;
+            } catch {
+              host = '';
+            }
+            if (!host || (protocol !== 'http:' && protocol !== 'https:')) {
+              throw new Error('Ungültige SearXNG-URL');
+            }
+          }
+          const config = { enabled: !!input.enabled, searxngUrl };
           this.fixtures.webSearchConfig = config;
           callRecord.result = config;
           return JSON.parse(JSON.stringify(config));
