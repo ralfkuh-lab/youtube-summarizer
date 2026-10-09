@@ -880,6 +880,36 @@ const TOOL_CATALOG = {
   updatedAt: "2026-09-01T00:00:00Z",
 };
 
+const NO_TOOL_CATALOG = {
+  catalog: {
+    openai: {
+      id: "openai",
+      name: "OpenAI",
+      models: {
+        "gpt-4o": { id: "gpt-4o", name: "GPT-4o", tool_call: false },
+      },
+    },
+  },
+  source: "cache",
+  updatedAt: "2026-09-01T00:00:00Z",
+};
+
+const CUSTOM_MODEL_CONFIG = {
+  aiConfig: {
+    provider: {
+      openai: {
+        enabled: true,
+        name: "OpenAI",
+        custom: true,
+        options: { baseURL: "https://example.test/v1" },
+        models: { "custom-x": { name: "Custom X" } },
+        whitelist: ["custom-x"],
+      },
+    },
+    defaultModel: { provider: "openai", model: "custom-x" },
+  },
+};
+
 const CONFIGURED = { webSearchConfig: { enabled: true, searxngUrl: "http://127.0.0.1:8080" } };
 
 async function waitForChatReady(page, mock) {
@@ -891,7 +921,7 @@ async function waitForChatReady(page, mock) {
   await mock.waitForPending();
 }
 
-test("U25: Ohne Tool-Calling ist der Websuche-Schalter aus", async () => {
+test("U25: Bei tool_call: false ist der Websuche-Schalter aus", async () => {
   await withApp(
     async (page, mock) => {
       await openChat(page, 2);
@@ -903,7 +933,45 @@ test("U25: Ohne Tool-Calling ist der Websuche-Schalter aus", async () => {
         "Modell unterstützt kein Tool-Calling",
       );
     },
+    { fixtures: { catalog: NO_TOOL_CATALOG, ...CONFIGURED } },
+  );
+});
+
+test("U66: Modell ohne tool_call-Flag lässt den Websuche-Schalter zu", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+
+      // Standardkatalog: gpt-4o ohne tool_call-Flag.
+      assert.strictEqual(await page.locator("#chatWebSearch").isDisabled(), false);
+      assert.strictEqual(
+        await page.locator("#chatWebSearchLabel").getAttribute("title"),
+        "Websuche fuer diese Frage nutzen",
+      );
+    },
     { fixtures: CONFIGURED },
+  );
+});
+
+test("U67: Custom-Modell ohne Katalogeintrag lässt den Websuche-Schalter zu", async () => {
+  await withApp(
+    async (page, mock) => {
+      await openChat(page, 2);
+      await waitForChatReady(page, mock);
+
+      const selected = await page.locator("#chatModel").inputValue();
+      assert.ok(
+        selected.includes("custom-x"),
+        `Custom-Modell muss gewaehlt sein, war: ${selected}`,
+      );
+      assert.strictEqual(await page.locator("#chatWebSearch").isDisabled(), false);
+      assert.strictEqual(
+        await page.locator("#chatWebSearchLabel").getAttribute("title"),
+        "Websuche fuer diese Frage nutzen",
+      );
+    },
+    { fixtures: { ...CONFIGURED, ...CUSTOM_MODEL_CONFIG } },
   );
 });
 

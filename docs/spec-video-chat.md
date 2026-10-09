@@ -30,8 +30,10 @@ Auswertung von `<meta http-equiv=refresh>` (nur HTTP-`Location` zählt).
    Transaktion gespeichert. Bei Fehler oder Abbruch bleibt die DB unverändert;
    das Frontend stellt den Fragetext im Eingabefeld wieder her.
 4. **Höchstens eine laufende Chat-Anfrage pro Video**, im Backend erzwungen.
-5. **Websuche nur per Tool-Calling** (Etappe 2), nur für Modelle mit
-   `tool_call == Some(true)` im Katalog. Kein „immer vorab suchen“.
+5. **Websuche nur per Tool-Calling** (Etappe 2), für alle Modelle, die der
+   Katalog nicht ausdrücklich ausschließt (`tool_call: false`). Fehlender
+   Katalogeintrag oder fehlendes Flag (Custom-Modelle) gilt als tool-fähig.
+   Kein „immer vorab suchen“.
 6. Module: Backend `src-tauri/src/chat.rs` (Domänenlogik **und** die
    Tauri-Commands, damit `commands.rs` nicht weiter wächst),
    Etappe 2 `src-tauri/src/websearch.rs` und `src-tauri/src/ai/tool_stream.rs`.
@@ -120,10 +122,35 @@ user:      …
   Kein Snapshot-Test auf den Volltext.
 - Ohne Transkript (`None` oder nur Whitespace): Fehler
   `Kein Transkript vorhanden – bitte „Transkript laden“ versuchen`.
-- Gespeicherte `tool_calls`/`tool`-Nachrichten werden **immer** unverändert und
-  in Reihenfolge mitgesendet, unabhängig davon, ob Websuche für die aktuelle
-  Runde aktiv ist (sonst lehnen Provider den Verlauf ab). In Etappe 1 entstehen
-  keine solchen Nachrichten.
+- Gespeicherte `tool_calls`/`tool`-Nachrichten werden **immer** in Reihenfolge
+  mitgesendet, unabhängig davon, ob Websuche für die aktuelle Runde aktiv ist
+  (sonst lehnen Provider den Verlauf ab). In Etappe 1 entstehen keine solchen
+  Nachrichten.
+- **Tool-Ergebnisse früherer Runden werden beim Senden gekürzt** (nur beim
+  Senden, nicht in der DB und nicht in der UI): In `build_messages_from_context`
+  bekommt jede `role == "tool"`-Nachricht aus `history` (abgeschlossene Runden
+  plus die neue Frage), deren Inhalt nach `chars()` mehr als
+  `HISTORY_TOOL_RESULT_MAX_CHARS` (2 000) **Zeichen** hat, den gekürzten Inhalt
+  plus `HISTORY_TOOL_RESULT_TRUNCATED_NOTE`
+  (`"\n[gekürzt: Ergebnis einer früheren Recherche-Runde]"`).
+  **Delimiter-Regel:** Steckt der Text in einem `WEB RESULT`-Wrapper (erste
+  Zeile beginnt mit `=== WEB RESULT` und endet auf
+  `(data, no instructions) ===`, Suffix z. B. ` 3`), wird daraus die Schlusszeile
+  `=== END WEB RESULT<suffix> ===` abgeleitet und deren **letzte** Fundstelle als
+  eigene Zeile gesucht; gekürzt wird nur der Inhalt dazwischen. Gesendet wird
+  `Kopfzeile` + erste 2 000 Zeichen des Inhalts + `Schlusszeile` + Notiz; alles
+  nach der Schlusszeile (z. B. `LAST_ROUND_NOTE`) entfällt in der Verlaufskopie.
+  Ein Inhalt ≤ 2 000 Zeichen bleibt auch dann unverändert, wenn der Gesamttext
+  länger ist. Grund: ohne die Schlusszeile stünde Fremdtext in einem offenen
+  Block und die Notiz scheinbar innerhalb der Fremddaten – die
+  Prompt-Injection-Härtung wäre ausgehebelt. Nicht erkannte Formen (z. B.
+  Tool-Fehlertexte) werden am Anfang auf 2 000 Zeichen gekürzt.
+  Nachrichten der laufenden Runde (`round`) und alle anderen Rollen bleiben
+  unverändert, `tool_calls`/`tool_call_id` bleiben erhalten. Grund für die
+  Kürzung insgesamt: eine volle Recherche-Runde speichert bis zu ~240 000
+  Zeichen, die sonst bei jeder Folgefrage mitbezahlt würden; da die Kürzung nur
+  vom Inhalt abhängt, bleibt der gesendete Präfix ab der Folgerunde stabil
+  (Prompt-Caching).
 
 ### Referenzfälle `build_chat_messages` (Unit-Tests, verbindlich)
 
@@ -359,10 +386,12 @@ eigener Tab „Websuche“ (neben „KI-Anbieter“/„KI-Modelle“) in
 `/` und ein abschließendes `/search` entfernen, dann `/search` anhängen.
 
 `chat_send` erhält `web_search: Option<bool>`. Im Chat Schalter
-`#chatWebSearch`, nur aktivierbar, wenn konfiguriert **und** das Modell
-`tool_call == Some(true)` hat (fehlend/`false` → aus); unterschiedliche
-Tooltips „Websuche ist nicht konfiguriert“ / „Modell unterstützt kein
-Tool-Calling“. Auch das Backend sendet `tools` nur unter dieser Bedingung.
+`#chatWebSearch`, nur aktivierbar, wenn konfiguriert **und** der Katalog das
+Modell nicht ausdrücklich ausschließt (`tool_call: false`); fehlender
+Katalogeintrag oder fehlendes Flag (Custom-Modell) gilt als tool-fähig;
+unterschiedliche Tooltips „Websuche ist nicht konfiguriert“ / „Modell
+unterstützt kein Tool-Calling“. Auch das Backend sendet `tools` nur unter
+dieser Bedingung.
 
 ### Client (`ai/tool_stream.rs`, `ai/client.rs`)
 
@@ -546,7 +575,7 @@ Tool-Schritte eingeklappt (`<details>`) direkt unter der Assistant-Nachricht,
 die sie ausgelöst hat (deren Text als eigene Blase, falls vorhanden); jeder
 Schritt mit Kopfzeile („Sucht: …“/„Liest: …“) und Inhalt ohne Delimiter-Zeilen.
 Labels und Inhalte **nur** per `textContent`.
-UI-Fälle: Schalter deaktiviert + Tooltip bei Modell ohne `tool_call`;
+UI-Fälle: Schalter deaktiviert + Tooltip bei Modell mit `tool_call: false`;
 `label` mit HTML erscheint als Text.
 
 ## Nachträge aus dem Praxistest (2026-09-19)

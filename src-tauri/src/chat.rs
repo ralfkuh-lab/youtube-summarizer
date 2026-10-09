@@ -47,8 +47,10 @@ pub use crate::chat_prompt::{build_chat_messages, chat_system_prompt};
 pub use crate::chat_prompt::{CHAT_SYSTEM_PROMPT, WEB_SEARCH_PROMPT_ADDENDUM};
 
 /// Websuche ist nur aktiv, wenn sie gewuenscht ist, die Konfiguration passt
-/// (aktiv + URL) und das gewaehlte Modell Tool-Calling unterstuetzt. Sonst
-/// laeuft die Runde stillschweigend ohne `tools`.
+/// (aktiv + URL) und das gewaehlte Modell Tool-Calling nicht ausdruecklich
+/// ausschliesst (Katalog `tool_call: false`). Fehlt der Katalogeintrag (eigenes
+/// Modell) oder das Flag, gilt das Modell als tool-faehig. Sonst laeuft die
+/// Runde stillschweigend ohne `tools`.
 pub fn web_search_runtime(
     paths: &AppPaths,
     catalog: &crate::ai::types::Catalog,
@@ -67,7 +69,7 @@ pub fn web_search_runtime(
         .get(provider_id)
         .and_then(|provider| provider.models.get(model_id))
         .and_then(|model| model.tool_call)
-        == Some(true);
+        != Some(false);
     if !supports_tools {
         return None;
     }

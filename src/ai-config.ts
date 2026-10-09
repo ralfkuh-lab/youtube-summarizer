@@ -965,15 +965,21 @@ export function fillModelPicker(
     if (match) selectElement.value = preferred;
 }
 
-/// Ob das im Auswahlfeld gewaehlte Modell Tool-Calling unterstuetzt (Katalog).
+/// Ob das im Auswahlfeld gewaehlte Modell Tool-Calling unterstuetzt. Nur
+/// `tool_call: false` im Katalog heisst ausdruecklich Nein; ein fehlendes Flag,
+/// ein fehlender Katalogeintrag (Custom-Modell) oder ein noch nicht geladener
+/// Katalog gelten als Ja. Leerer oder unparsebarer Wert = kein Modell gewaehlt.
 export function modelSupportsToolCall(modelValue: string): boolean {
-    if (!modelValue || !catalogResult) return false;
+    if (!modelValue) return false;
+    let providerId: string | undefined;
+    let modelId: string | undefined;
     try {
-        const [providerId, modelId] = JSON.parse(modelValue) as [string, string];
-        return catalogResult.catalog[providerId]?.models?.[modelId]?.tool_call === true;
+        [providerId, modelId] = JSON.parse(modelValue) as [string, string];
     } catch {
         return false;
     }
+    if (!providerId || !modelId) return false;
+    return catalogResult?.catalog[providerId]?.models?.[modelId]?.tool_call !== false;
 }
 
 // --- Glue for youtube-summarizer: open, apply, chat test (kept as extension) ---
