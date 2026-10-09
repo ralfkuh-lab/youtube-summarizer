@@ -61,4 +61,4 @@ multi-device sync (`docs/spec-sync.md`, server
 
 Nur der letzte Stand; ältere Einträge stehen in [docs/verification-log.md](docs/verification-log.md).
 
-- 2026-10-09: Chat-Kürzung + Tool-Calling-Regel, SVG-Icons/UI-Zustände, Settings-Tests und Custom-Provider-Fixes abgenommen: `cargo test` (392 bestanden, 4 ignoriert), `cargo fmt --check`, `npm run build`, `npm run test:ui` seriell 151/152 (U14 Start-Timeout, einzeln grün), `npm run tauri -- build` grün. Reviews: Chat Sol + Astra (Kreuzreview), UI Sol. Installation per `sudo dpkg -i youtube-summarizer.deb` steht aus. Kein Dev-Server aktiv.
+- 2026-10-09: Chat-Kürzung + Tool-Calling-Regel, SVG-Icons/UI-Zustände, Settings-Tests und Custom-Provider-Fixes abgenommen: `cargo test` (392 bestanden, 4 ignoriert), `cargo fmt --check`, `npm run build`, `npm run test:ui` seriell 151/152 (U14 Start-Timeout, einzeln grün), `npm run tauri -- build` grün. Reviews: Chat Sol + Astra (Kreuzreview), UI Sol. Am 2026-10-09 per `sudo dpkg -i youtube-summarizer.deb` installiert. Kein Dev-Server aktiv.
