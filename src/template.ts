@@ -1,3 +1,5 @@
+import { icon } from "./icons";
+
 export const appTemplate = `
   <header>
     <div class="app-brand">
@@ -8,8 +10,8 @@ export const appTemplate = `
       <button id="addBtn">Hinzufügen</button>
     </div>
     <div class="toolbar-actions">
-      <button id="syncBtn" class="icon-btn sync-btn" title="Synchronisation aus" aria-label="Synchronisation aus">⇅</button>
-      <button id="settingsBtn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">⚙</button>
+      <button id="syncBtn" class="icon-btn sync-btn" title="Synchronisation aus" aria-label="Synchronisation aus">${icon("sync")}</button>
+      <button id="settingsBtn" class="icon-btn" title="Einstellungen" aria-label="Einstellungen">${icon("settings")}</button>
     </div>
   </header>
 
@@ -18,7 +20,7 @@ export const appTemplate = `
       <div class="collection-tools">
         <div class="library-section-title">
           <span>Sammlungen</span>
-          <button id="addCollectionBtn" class="mini-icon-btn" title="Sammlung erstellen" aria-label="Sammlung erstellen">+</button>
+          <button id="addCollectionBtn" class="mini-icon-btn" title="Sammlung erstellen" aria-label="Sammlung erstellen">${icon("plus")}</button>
         </div>
         <div id="collectionList"></div>
       </div>
@@ -38,7 +40,12 @@ export const appTemplate = `
       <div id="videoList"></div>
     </aside>
     <section id="detail">
-      <div id="detailPlaceholder">Wähle ein Video aus der Liste</div>
+      <div id="detailPlaceholder">
+        <div class="empty-state">
+          <p class="empty-state-title">Kein Video ausgewählt</p>
+          <p class="empty-state-hint">Wähle links ein Video aus der Liste.</p>
+        </div>
+      </div>
       <div id="detailContent" hidden>
         <div id="detailHeader">
           <img id="detailThumb" alt="" />
@@ -52,7 +59,7 @@ export const appTemplate = `
               <div id="detailDescriptionText"></div>
             </details>
           </div>
-          <button id="deleteBtn" class="delete-icon-btn" title="Video entfernen" aria-label="Video entfernen">🗑</button>
+          <button id="deleteBtn" class="delete-icon-btn" title="Video entfernen" aria-label="Video entfernen">${icon("trash")}</button>
         </div>
 
         <div id="collectionAssignment" class="collection-assignment"></div>
@@ -72,7 +79,7 @@ export const appTemplate = `
           <div id="tabSummary" class="tabPanel">
             <div id="summaryHistoryBar" class="summary-history-bar" hidden>
               <select id="summaryHistorySelect" aria-label="Zusammenfassungs-Verlauf"></select>
-              <button id="summaryHistoryDelete" class="delete-icon-btn" title="Diese Version löschen" aria-label="Diese Version löschen">🗑</button>
+              <button id="summaryHistoryDelete" class="delete-icon-btn" title="Diese Version löschen" aria-label="Diese Version löschen">${icon("trash")}</button>
             </div>
             <div id="summaryBody"></div>
           </div>
@@ -98,7 +105,7 @@ export const appTemplate = `
                 Websuche
               </label>
               <button id="chatNew" class="inline-action">Neuer Chat</button>
-              <button id="chatDelete" class="delete-icon-btn" title="Chat löschen" aria-label="Chat löschen">🗑</button>
+              <button id="chatDelete" class="delete-icon-btn" title="Chat löschen" aria-label="Chat löschen">${icon("trash")}</button>
               <select id="chatModel" aria-label="Chat-Modell"></select>
             </div>
             <div id="chatMessages" class="chat-messages"></div>

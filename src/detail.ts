@@ -128,7 +128,7 @@ export function renderTranscript(
     <p class="transcript-error-retry">Erneut versuchen über „Transkript laden“.</p>
   </div>`;
     }
-    return '<p class="empty">Kein Transkript verfügbar</p>';
+    return '<div class="empty-state"><p class="empty-state-title">Kein Transkript vorhanden</p><p class="empty-state-hint">Über „Transkript laden“ von YouTube abrufen.</p></div>';
   }
   let snippets: TranscriptSnippet[];
   try {
@@ -147,7 +147,10 @@ export function renderTranscript(
     }
     html += `<div class="ts-line"><span class="ts-time">${escapeHtml(snippet.time)}</span>${escapeHtml(snippet.text)}</div>`;
   }
-  return html || '<p class="empty">Transkript ist leer</p>';
+  return (
+    html ||
+    '<div class="empty-state"><p class="empty-state-title">Transkript ist leer</p><p class="empty-state-hint">Über „Neu laden“ erneut von YouTube abrufen.</p></div>'
+  );
 }
 
 export function renderChapters(chapters?: Chapter[] | null) {

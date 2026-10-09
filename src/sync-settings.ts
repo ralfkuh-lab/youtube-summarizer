@@ -9,6 +9,7 @@ import { activateSettingsTab } from "./ai-config";
 import { forgetChatState } from "./chat";
 import { clearDetail } from "./detail";
 import { $, confirmDialog, errorMessage, escapeHtml, showModal } from "./dom-utils";
+import { icon, type IconName } from "./icons";
 import { loadCollections, loadVideos, renderVideoList, selectVideo } from "./library";
 import { getActiveVideo, setStatus, state } from "./state";
 import type { SyncApplied, SyncConfigView, SyncStatus, SyncTestResult } from "./types";
@@ -158,30 +159,34 @@ function renderStatus() {
 
 function renderSyncButton() {
   const button = $<HTMLButtonElement>("#syncBtn");
-  let symbol = "⇅";
+  // Immer das Sync-Symbol; den Zustand zeigen Farbe und ein kleines Badge.
+  let badge: IconName | null = null;
   let className = "sync-btn--off";
   let title = "Synchronisation aus – klicken zum Einrichten";
   if (config.enabled && status?.stopped) {
-    symbol = "⏸";
+    badge = "pause";
     className = "sync-btn--stopped";
     title = STOP_TITLES[status.stopped] ?? "Synchronisation angehalten";
   } else if (config.enabled && status?.running) {
-    symbol = "⟳";
     className = "sync-btn--running";
     title = "Synchronisation läuft";
   } else if (config.enabled && status?.lastError) {
-    symbol = "⚠";
+    badge = "warning";
     className = "sync-btn--error";
     title = `Synchronisation: Fehler – ${status.lastError}`;
   } else if (config.enabled) {
-    symbol = "✓";
+    badge = "check";
     className = "sync-btn--ok";
     title = status?.lastSuccessAt
       ? `Synchronisation aktiv – letzter Erfolg: ${formatShortDateTime(status.lastSuccessAt)}`
       : "Synchronisation aktiv – noch kein erfolgreicher Lauf";
   }
-  button.textContent = symbol;
-  button.className = `icon-btn sync-btn ${className}`;
+  const nextClass = `icon-btn sync-btn ${className}`;
+  // Nur bei Zustandswechsel neu aufbauen, sonst startet die Drehung neu.
+  if (button.className !== nextClass) {
+    button.innerHTML = icon("sync") + (badge ? `<span class="sync-badge">${icon(badge)}</span>` : "");
+    button.className = nextClass;
+  }
   button.title = title;
   button.setAttribute("aria-label", title);
 }

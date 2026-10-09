@@ -246,23 +246,24 @@ test("U-SY6: Kopfleistenknopf zeigt ok, laeuft, Fehler und angehalten", async ()
     async (page) => {
       await waitForListener(page, "sync://status");
       const button = page.locator("#syncBtn");
-      assert.equal(await button.textContent(), "✓");
       assert.match(await button.getAttribute("class"), /sync-btn--ok/);
+      assert.equal(await button.locator("svg.icon-sync").count(), 1);
+      assert.equal(await button.locator(".sync-badge svg.icon-check").count(), 1);
       assert.match(await button.getAttribute("aria-label"), /Synchronisation aktiv/);
 
       await emit(page, "sync://status", syncStatus({ running: true }));
-      await page.waitForFunction(() => document.querySelector("#syncBtn").textContent === "⟳");
-      assert.match(await button.getAttribute("class"), /sync-btn--running/);
+      await page.waitForFunction(() => document.querySelector("#syncBtn").classList.contains("sync-btn--running"));
+      assert.equal(await button.locator(".sync-badge").count(), 0);
       assert.match(await button.getAttribute("aria-label"), /läuft/);
 
       await emit(page, "sync://status", syncStatus({ lastError: "401 Unauthorized" }));
-      await page.waitForFunction(() => document.querySelector("#syncBtn").textContent === "⚠");
-      assert.match(await button.getAttribute("class"), /sync-btn--error/);
+      await page.waitForFunction(() => document.querySelector("#syncBtn").classList.contains("sync-btn--error"));
+      assert.equal(await button.locator(".sync-badge svg.icon-warning").count(), 1);
       assert.match(await button.getAttribute("title"), /401 Unauthorized/);
 
       await emit(page, "sync://status", syncStatus({ stopped: "auth" }));
-      await page.waitForFunction(() => document.querySelector("#syncBtn").textContent === "⏸");
-      assert.match(await button.getAttribute("class"), /sync-btn--stopped/);
+      await page.waitForFunction(() => document.querySelector("#syncBtn").classList.contains("sync-btn--stopped"));
+      assert.equal(await button.locator(".sync-badge svg.icon-pause").count(), 1);
       assert.match(await button.getAttribute("aria-label"), /Anmeldung/);
 
       await button.click();
@@ -277,8 +278,9 @@ test("U-SY6: Kopfleistenknopf zeigt ok, laeuft, Fehler und angehalten", async ()
 test("U-SY7: Kopfleistenknopf bei aus oeffnet den Sync-Tab", async () => {
   await withApp(async (page) => {
     const button = page.locator("#syncBtn");
-    assert.equal(await button.textContent(), "⇅");
     assert.match(await button.getAttribute("class"), /sync-btn--off/);
+    assert.equal(await button.locator("svg.icon-sync").count(), 1);
+    assert.equal(await button.locator(".sync-badge").count(), 0);
     assert.match(await button.getAttribute("aria-label"), /Synchronisation aus/);
 
     await button.click();

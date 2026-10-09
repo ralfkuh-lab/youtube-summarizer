@@ -4,6 +4,7 @@
 
 import { $ } from "./dom-utils";
 import { liveBlocks } from "./chat-live";
+import { icon, type IconName } from "./icons";
 import { state, type ChatRun, type ChatToolStep } from "./state";
 import { renderMarkdownInto } from "./summary-view";
 import type { ChatMessageRecord } from "./types";
@@ -224,11 +225,25 @@ function liveStepHeadline(step: ChatToolStep): string {
   return prefix ? `${prefix}: ${step.label}` : step.label;
 }
 
+const LIVE_STEP_ICONS: Record<ChatToolStep["status"], { icon: IconName; label: string }> = {
+  start: { icon: "dots", label: "Läuft" },
+  ok: { icon: "check", label: "Erledigt" },
+  error: { icon: "warning", label: "Fehler" },
+};
+
 /// Ein Live-Schritt: gleiche Bausteine und Optik wie ein gespeicherter Schritt,
-/// aber nicht aufklappbar (nur Kopfzeile mit Statuszeichen).
+/// aber nicht aufklappbar (nur Kopfzeile mit Statussymbol).
 export function buildLiveToolStep(step: ChatToolStep): HTMLDivElement {
   const row = document.createElement("div");
   row.className = "chat-tool chat-tool-step chat-tool-step--live";
+  const status = LIVE_STEP_ICONS[step.status];
+  const marker = document.createElement("span");
+  marker.className = `chat-tool-live-icon chat-tool-live-icon--${step.status}`;
+  marker.setAttribute("role", "img");
+  marker.setAttribute("aria-label", status.label);
+  // Fester SVG-String aus icons.ts, kein Modelltext.
+  marker.innerHTML = icon(status.icon);
+  row.append(marker);
   const headline = document.createElement("span");
   headline.className = `chat-tool-live-step chat-tool-live-step--${step.status}`;
   // Labels kommen vom Modell: ausschliesslich als Text.
@@ -291,9 +306,15 @@ export async function renderChatMessages(messages: ChatMessageRecord[], gen: num
   const wasAtBottom = isChatAtBottom(root);
   root.textContent = "";
   if (!messages.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty chat-empty";
-    empty.textContent = "Noch keine Nachrichten";
+    const empty = document.createElement("div");
+    empty.className = "empty-state chat-empty";
+    const title = document.createElement("p");
+    title.className = "empty-state-title";
+    title.textContent = "Noch keine Nachrichten";
+    const hint = document.createElement("p");
+    hint.className = "empty-state-hint";
+    hint.textContent = "Stelle unten eine Frage zum Video.";
+    empty.append(title, hint);
     root.append(empty);
     return;
   }
