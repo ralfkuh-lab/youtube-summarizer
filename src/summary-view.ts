@@ -15,7 +15,7 @@ let mermaidLoader: Promise<typeof import("mermaid").default> | null = null;
 let mermaidIdSeq = 0;
 
 const EMPTY_SUMMARY_HTML =
-  '<p class="empty">Noch keine Zusammenfassung - klicke auf "Zusammenfassen lassen"</p>';
+  '<div class="empty-state"><p class="empty-state-title">Noch keine Zusammenfassung</p><p class="empty-state-hint">Über „Zusammenfassen lassen“ erstellen.</p></div>';
 
 const TIMESTAMP_RE = /\[(?:(\d+):)?(\d{1,2}):(\d{2})\]/g;
 

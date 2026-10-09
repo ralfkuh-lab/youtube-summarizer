@@ -3,6 +3,7 @@ import { clearDetail, renderVideoCollections, showDetail } from "./detail";
 import { forgetChatState } from "./chat";
 import { $, confirmDialog, errorMessage, escapeHtml, hideModal, showModal } from "./dom-utils";
 import { getActiveVideo, setBusy, setStatus, state } from "./state";
+import { icon } from "./icons";
 import type { Collection, Video } from "./types";
 import { compareCollections, normalizeSearch } from "./utils";
 
@@ -71,15 +72,29 @@ export function renderVideoStatusChip(
   return `<span class="status-chip${stateClass}" title="${escapeHtml(titleText)}">${label}</span>`;
 }
 
+function emptyState(title: string, hint: string): string {
+  return `<div class="empty-state"><p class="empty-state-title">${title}</p><p class="empty-state-hint">${hint}</p></div>`;
+}
+
 export function renderVideoList() {
   if (!state.videos.length) {
-    videoList.innerHTML = '<p class="empty-list">Noch keine Videos</p>';
+    videoList.innerHTML = emptyState(
+      "Noch keine Videos",
+      "Füge oben eine YouTube-URL oder Video-ID hinzu.",
+    );
     return;
   }
 
   const filteredVideos = getFilteredVideos();
   if (!filteredVideos.length) {
-    videoList.innerHTML = '<p class="empty-list">Keine passenden Videos</p>';
+    const collectionEmpty =
+      state.activeCollectionId !== null && !state.videos.some(matchesActiveCollection);
+    videoList.innerHTML = collectionEmpty
+      ? emptyState(
+          "Diese Sammlung ist leer",
+          "Ordne Videos in ihrer Detailansicht unter „Sammlungen“ zu.",
+        )
+      : emptyState("Keine passenden Videos", "Passe Suchbegriff oder Filter an.");
     return;
   }
 
@@ -95,7 +110,7 @@ export function renderVideoList() {
             <span class="meta">
               ${renderVideoStatusChip("T", video.has_transcript, "Transkript", video.transcript_error)}
               ${renderVideoStatusChip("Z", video.has_summary, "Zusammenfassung")}
-              ${video.local_only ? '<span class="status-chip local-chip" role="img" aria-label="Nur lokal" title="Nur lokal">🔒</span>' : ""}
+              ${video.local_only ? `<span class="status-chip local-chip" role="img" aria-label="Nur lokal" title="Nur lokal">${icon("lock")}</span>` : ""}
             </span>
           </span>
         </button>
@@ -198,8 +213,8 @@ export function renderCollectionItem(collection: Collection): string {
         <span class="collection-count">${collection.video_count}</span>
       </button>
       <div class="collection-actions">
-        <button class="collection-action" data-action="rename" data-collection-id="${collection.id}" title="Sammlung umbenennen" aria-label="Sammlung umbenennen">✎</button>
-        <button class="collection-action danger" data-action="delete" data-collection-id="${collection.id}" title="Sammlung löschen" aria-label="Sammlung löschen">×</button>
+        <button class="collection-action" data-action="rename" data-collection-id="${collection.id}" title="Sammlung umbenennen" aria-label="Sammlung umbenennen">${icon("pencil")}</button>
+        <button class="collection-action danger" data-action="delete" data-collection-id="${collection.id}" title="Sammlung löschen" aria-label="Sammlung löschen">${icon("close")}</button>
       </div>
     </div>
   `;
@@ -216,7 +231,7 @@ export function renderCollectionList() {
     ${
       state.collections.length
         ? `<div class="collection-scroll">${state.collections.map(renderCollectionItem).join("")}</div>`
-        : '<p class="empty-list compact">Noch keine Sammlungen</p>'
+        : '<p class="empty-list compact">Noch keine Sammlungen – mit + anlegen.</p>'
     }
   `;
   const scroll = collectionList.querySelector(".collection-scroll");
