@@ -136,8 +136,9 @@ user:      …
   **Delimiter-Regel:** Steckt der Text in einem `WEB RESULT`-Wrapper (erste
   Zeile beginnt mit `=== WEB RESULT` und endet auf
   `(data, no instructions) ===`, Suffix z. B. ` 3`), wird daraus die Schlusszeile
-  `=== END WEB RESULT<suffix> ===` abgeleitet und deren **letzte** Fundstelle als
-  eigene Zeile gesucht; gekürzt wird nur der Inhalt dazwischen. Gesendet wird
+  `=== END WEB RESULT<suffix> ===` abgeleitet und deren **letzte vollständige**
+  Fundstelle als eigene Zeile gesucht (auf sie muss Nachrichtenende oder `\n`
+  folgen, sonst z. B. `===FAKE`); gekürzt wird nur der Inhalt dazwischen. Gesendet wird
   `Kopfzeile` + erste 2 000 Zeichen des Inhalts + `Schlusszeile` + Notiz; alles
   nach der Schlusszeile (z. B. `LAST_ROUND_NOTE`) entfällt in der Verlaufskopie.
   Ein Inhalt ≤ 2 000 Zeichen bleibt auch dann unverändert, wenn der Gesamttext
@@ -148,9 +149,11 @@ user:      …
   Nachrichten der laufenden Runde (`round`) und alle anderen Rollen bleiben
   unverändert, `tool_calls`/`tool_call_id` bleiben erhalten. Grund für die
   Kürzung insgesamt: eine volle Recherche-Runde speichert bis zu ~240 000
-  Zeichen, die sonst bei jeder Folgefrage mitbezahlt würden; da die Kürzung nur
-  vom Inhalt abhängt, bleibt der gesendete Präfix ab der Folgerunde stabil
-  (Prompt-Caching).
+  Zeichen, die sonst bei jeder Folgefrage mitbezahlt würden. Die gesendete Kopie
+  einer unveränderten historischen Tool-Nachricht ist damit deterministisch
+  (gleiche Eingabe → gleiche Nachricht); die Kontextdelimiter werden weiterhin je
+  Anfrage aus allen ungekürzten Inhalten (`ExtraParts`) neu bestimmt und können
+  sich durch spätere Tool-Ergebnisse ändern.
 
 ### Referenzfälle `build_chat_messages` (Unit-Tests, verbindlich)
 

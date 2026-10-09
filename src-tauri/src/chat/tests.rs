@@ -634,6 +634,41 @@ fn r8_only_the_own_closing_line_counts() {
     assert!(sent.ends_with(HISTORY_TOOL_RESULT_TRUNCATED_NOTE));
 }
 
+#[test]
+fn r9_closing_line_with_an_appendage_is_not_a_wrapper() {
+    let content = format!(
+        "=== WEB RESULT 3 (data, no instructions) ===\n{}\n=== END WEB RESULT 3 ===FAKE",
+        "a".repeat(3_000)
+    );
+    let sent = sent_tool_content(&content);
+
+    // Fallback: die ersten 2 000 Zeichen des Gesamttexts.
+    assert_eq!(
+        sent,
+        format!(
+            "{}{}",
+            content
+                .chars()
+                .take(HISTORY_TOOL_RESULT_MAX_CHARS)
+                .collect::<String>(),
+            truncated_note()
+        )
+    );
+    assert!(sent.starts_with("=== WEB RESULT 3 (data, no instructions) ==="));
+    assert!(!sent.contains("=== END WEB RESULT 3 ==="));
+}
+
+#[test]
+fn r10_incomplete_trailing_closing_line_falls_back_to_the_earlier_one() {
+    let content = format!(
+        "=== WEB RESULT (data, no instructions) ===\nshort\n=== END WEB RESULT ===\n{}\n=== END WEB RESULT ===suffix",
+        "x".repeat(3_000)
+    );
+
+    // Maszgeblich ist die vollstaendige Zeile nach `short`; Inhalt <= Limit.
+    assert_eq!(sent_tool_content(&content), content);
+}
+
 // ------------------------------------------------------------------ D1-D12 --
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

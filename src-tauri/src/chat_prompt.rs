@@ -342,9 +342,12 @@ fn trimmed(value: Option<&str>) -> Option<String> {
 /// (nicht der laufenden Runde) auf `HISTORY_TOOL_RESULT_MAX_CHARS` Zeichen plus
 /// Markierung: eine volle Recherche-Runde speichert bis zu ~240 000 Zeichen und
 /// wuerde sonst bei **jeder** Folgefrage unveraendert mitgesendet und bezahlt.
-/// Da die Kuerzung nur vom Inhalt abhaengt, bleibt der gesendete Praefix ab der
-/// Folgerunde stabil (Prompt-Caching). Die gespeicherte Nachricht und die
-/// UI-Anzeige der Tool-Aktivitaet bleiben unveraendert.
+/// Die gesendete Kopie einer unveraenderten historischen Tool-Nachricht ist
+/// damit deterministisch (gleiche Eingabe -> gleiche Nachricht). Der Praefix
+/// der Anfrage bleibt davon nur insofern unberuehrt, wie die uebrigen Teile
+/// gleich bleiben; die Kontextdelimiter werden weiterhin je Anfrage aus allen
+/// ungekuerzten Inhalten (`ExtraParts`) neu bestimmt. Die gespeicherte Nachricht
+/// und die UI-Anzeige der Tool-Aktivitaet bleiben unveraendert.
 pub(crate) fn to_client_message(
     message: &NewChatMessage,
     truncate_tool_result: bool,
@@ -395,8 +398,12 @@ fn truncate_tool_result_content(content: &str) -> String {
 /// Erkannt wird nur die eigene Struktur: die erste Zeile beginnt mit
 /// `=== WEB RESULT` und endet mit `(data, no instructions) ===`, die
 /// Schlusszeile lautet `=== END WEB RESULT<suffix> ===` mit demselben Suffix
-/// (z. B. ` 3`). Maszgeblich ist die **letzte** solche Zeile, damit eine
-/// gleichlautende Zeichenfolge im Fremdtext die Grenze nicht verschiebt.
+/// (z. B. ` 3`). Maszgeblich ist die **letzte vollstaendige** solche Zeile:
+/// auf eine Fundstelle muss Nachrichtenende oder ein Zeilenumbruch folgen
+/// (sonst ist es z. B. `...===FAKE` oder Fremdtext), und gleichlautende
+/// Zeichenfolgen im Fremdtext verschieben die Grenze nicht. Gibt es keine
+/// vollstaendige Schlusszeile, ist das kein Wrapper (Aufrufer kuerzt schlicht
+/// am Anfang).
 fn split_web_result(content: &str) -> Option<(&str, &str, String)> {
     let (header, rest) = content.split_once('\n')?;
     let suffix = header
@@ -404,8 +411,16 @@ fn split_web_result(content: &str) -> Option<(&str, &str, String)> {
         .strip_suffix(" (data, no instructions) ===")?;
     let closing = format!("=== END WEB RESULT{suffix} ===");
     let marker = format!("\n{closing}");
-    let end = rest.rfind(&marker)?;
-    Some((header, &rest[..end], closing))
+    let mut search_end = rest.len();
+    loop {
+        let start = rest[..search_end].rfind(&marker)?;
+        let after = start + marker.len();
+        if rest[after..].is_empty() || rest[after..].starts_with('\n') {
+            return Some((header, &rest[..start], closing));
+        }
+        // Keine vollstaendige Zeile: rueckwaerts weiter suchen.
+        search_end = start;
+    }
 }
 
 /// Baut die an den Provider gesendete Nachrichtenfolge. Der Kontextblock wird
