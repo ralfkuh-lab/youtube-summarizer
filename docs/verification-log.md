@@ -3,6 +3,20 @@
 Ausgelagert aus `TODO.md` (2026-09-20), damit der Startkontext der Agenten klein bleibt.
 Neue Einträge oben anfügen; `TODO.md` führt nur den jeweils letzten Stand.
 
+- 2026-10-09: Chat: Tool-Ergebnisse früherer Runden werden beim Senden auf 2 000 Zeichen gekürzt
+  (WEB-RESULT-Delimiter bleiben geschlossen, nur vollständige Schlusszeilen zählen); Tool-Calling gilt als
+  vorhanden außer bei `tool_call: false`. Implementierung DeepSeek V4.1 Flash; Referenzfälle R1–R10, L8,
+  U25/U66/U67 mit Mutationsnachweisen. Erstreview GPT-6.1 Sol, Kreuzreview GPT-6 Astra (eigene Fälle:
+  gefälschte/halbe Delimiter, CRLF, gemischte Runden), Nachprüfung Sol – keine offenen Befunde.
+  Oberfläche (Opus 5.5): Inline-SVG-Icons (`src/icons.ts`), Leerzustände, Fokus-/Hover-/Disabled-/Busy-Stile,
+  Live-Werkzeugschritte als SVG; Tests U-ST1–U-ST7; Review Sol ohne blockierende/wichtige Befunde.
+  Settings-UI (DeepSeek): 25 Playwright-Tests U-AI1–U-AI20, U-WS1–U-WS5 statt vitest/jsdom; dabei gefundene
+  Fehler behoben (doppelter Submit-Listener im Custom-Provider-Dialog, Pflichtfelder ohne Frontend-Prüfung,
+  Präfix „Error: “). Gates auf dem zusammengeführten Stand: `cargo test` 392 bestanden/4 ignoriert,
+  `cargo fmt --check`, `npm run build`, `node --test --test-concurrency=1 tests/ui/*.test.mjs` 151/152
+  (U14 Start-Timeout in `harness.mjs`, einzeln grün; unter Parallel-Last wechselnde Start-Timeouts),
+  `npm run tauri -- build` (deb, rpm, AppImage).
+
 - 2026-09-24: Sync zwischen mehreren Rechnern (`docs/spec-sync.md`). Plan in vier Runden von GPT-6
   Astra geprüft (Revisionen 1–4.1; Kernänderungen: uid je Existenz, endgültige Grabsteine, Privatisieren
   als Grabstein plus neu identifizierte private Kopie, Zwei-Phasen-Push, Zurückstellen). Implementierung:

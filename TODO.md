@@ -61,4 +61,4 @@ multi-device sync (`docs/spec-sync.md`, server
 
 Nur der letzte Stand; ältere Einträge stehen in [docs/verification-log.md](docs/verification-log.md).
 
-- 2026-09-24: Sync (Spec Revision 4.1) abgenommen: `src-tauri` `cargo test` (381 bestanden, 4 ignoriert), `sync-server` `cargo test` (35 + 4), `sync-proto` (9), `npm run test:ui` (115), `npm run tauri -- build` grün. Live-Test mit zwei Datenverzeichnissen gegen den VPS (Kopie der echten DB: 147 Videos identisch übertragen); danach Server-Daten zurückgesetzt. Installation per `sudo dpkg -i youtube-summarizer.deb` steht aus. Kein Dev-Server aktiv.
+- 2026-10-09: Chat-Kürzung + Tool-Calling-Regel, SVG-Icons/UI-Zustände, Settings-Tests und Custom-Provider-Fixes abgenommen: `cargo test` (392 bestanden, 4 ignoriert), `cargo fmt --check`, `npm run build`, `npm run test:ui` seriell 151/152 (U14 Start-Timeout, einzeln grün), `npm run tauri -- build` grün. Reviews: Chat Sol + Astra (Kreuzreview), UI Sol. Installation per `sudo dpkg -i youtube-summarizer.deb` steht aus. Kein Dev-Server aktiv.
