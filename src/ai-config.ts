@@ -92,21 +92,6 @@ export function bindAiConfigEvents() {
     });
   });
 
-  // Custom dialog static listeners (markup now provides the elements)
-  const customCancel = document.getElementById('ai-custom-cancel');
-  if (customCancel) customCancel.addEventListener('click', closeCustomDialog);
-  const customForm = document.getElementById('ai-custom-form') as HTMLFormElement | null;
-  if (customForm) customForm.addEventListener('submit', (ev) => { ev.preventDefault(); void saveCustomProvider(ev as Event); });
-  const customDialogEl = document.getElementById('ai-custom-dialog');
-  if (customDialogEl) {
-    customDialogEl.addEventListener('keydown', (ev: KeyboardEvent) => {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      closeCustomDialog();
-    });
-  }
-
   initSettingsAi();
 }
 
@@ -128,7 +113,7 @@ async function invokeUi<T>(cmd: string, args: any, operation: string): Promise<I
         return { value };
     } catch (error) {
         console.warn('settings-ai', operation, { cmd, error: String(error) });
-        return { error: String(error) };
+        return { error: errorMessage(error) };
     }
 }
 
@@ -467,6 +452,12 @@ async function saveCustomProvider(event?: Event): Promise<void> {
         name: nameInput.value.trim(),
         baseURL: baseUrlInput.value.trim(),
     };
+    if (!definition.name || !definition.baseURL) {
+        setError('ai-custom-error', !definition.name
+            ? 'Anzeigename des Custom-Providers darf nicht leer sein'
+            : 'Basis-URL des Custom-Providers darf nicht leer sein');
+        return;
+    }
     const result = await invokeUi<AiConfig>(
         'ai_custom_upsert',
         { definition },

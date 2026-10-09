@@ -373,8 +373,7 @@ test("U-AI9: Custom-Provider-Dialog meldet fehlende Pflichtfelder und laesst sic
       await page.locator("#ai-custom-id").fill("local-llm");
       await page.locator("#ai-custom-base-url").fill("http://127.0.0.1:11434/v1");
       await page.locator("#ai-custom-save").click();
-      await waitForCall(page, "ai_custom_upsert");
-      await mock.waitForPending();
+      // Pflichtfelder prueft das Frontend selbst (kein Backend-Aufruf, siehe U-AI18).
       await page.locator("#ai-custom-error").waitFor({ state: "visible" });
 
       assert.match(await page.locator("#ai-custom-error").textContent(), /darf nicht leer sein/);
@@ -650,7 +649,7 @@ test("U-AI17: Tastatur wechselt die Settings-Tabs", async () => {
 // Befund 1: Custom-Provider werden erst im Backend validiert. Der Dialog ruft
 // ai_custom_upsert also auch mit leerem Namen/leerer URL auf und zeigt erst
 // danach die Fehlermeldung. Erwartet waere eine Pruefung vor dem Aufruf.
-test("U-AI18: Pflichtfelder werden ohne Backend-Aufruf geprueft", { todo: true }, async () => {
+test("U-AI18: Pflichtfelder werden ohne Backend-Aufruf geprueft", async () => {
   await withApp(
     async (page, mock) => {
       await openSettings(page, mock);
@@ -670,7 +669,7 @@ test("U-AI18: Pflichtfelder werden ohne Backend-Aufruf geprueft", { todo: true }
 // Befund 2: #ai-custom-form haengt in bindAiConfigEvents UND in initSettingsAi
 // je einen submit-Listener ein. Jedes Speichern ruft die Backend-Commands
 // deshalb doppelt auf.
-test("U-AI19: Ein Speichern ruft ai_custom_upsert genau einmal", { todo: true }, async () => {
+test("U-AI19: Ein Speichern ruft ai_custom_upsert genau einmal", async () => {
   await withApp(
     async (page, mock) => {
       await openSettings(page, mock);
@@ -692,7 +691,7 @@ test("U-AI19: Ein Speichern ruft ai_custom_upsert genau einmal", { todo: true },
 
 // Befund 3: invokeUi loggt und zeigt String(error) statt errorMessage(error);
 // die Fehlerfelder der KI-Tabs bekommen dadurch das Praefix "Error: ".
-test("U-AI20: Fehlerfelder zeigen genau die Backend-Meldung", { todo: true }, async () => {
+test("U-AI20: Fehlerfelder zeigen genau die Backend-Meldung", async () => {
   await withApp(
     async (page, mock) => {
       await openSettings(page, mock);

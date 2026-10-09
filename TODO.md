@@ -37,25 +37,18 @@ multi-device sync (`docs/spec-sync.md`, server
 
 ## Next TODOs
 
-- Video-Chat ([Spec](docs/spec-video-chat.md)) — umgesetzt und reviewt. Offen:
+- Video-Chat ([Spec](docs/spec-video-chat.md)) — umgesetzt und reviewt; seit 2026-10-09 werden Tool-Ergebnisse früherer Runden beim Senden auf 2 000 Zeichen gekürzt (Delimiter bleiben geschlossen), und Modelle gelten als tool-fähig, außer der Katalog sagt `tool_call: false`. Offen:
   - [ ] Manuell in der installierten App prüfen: Live-Streaming, Tool-Aktivität während der Anfrage, „Stopp“, Video-/Chatwechsel während einer Anfrage (bisher nur per UI-Tests mit Mock und per Automation-API belegt).
-  - [ ] Später erwägen: Obergrenze für gespeicherte Tool-Ergebnisse (eine voll ausgereizte Recherche-Runde speichert ~240 000 Zeichen, die jede Folgefrage mitsendet); Checkbox „unterstützt Tool-Calling“ für Custom-Modelle (ohne Katalog-Flag bleibt die Websuche ausgegraut).
+- [ ] Oberfläche (2026-10-09: SVG-Icons statt Emoji, einheitliche Leerzustände, Fokus-/Hover-/Busy-Stile) in der installierten App unter WebKitGTK ansehen.
 - Agent-Übergabe unter Windows: PowerShell-Vorlage tatsächlich ausführen (bisher nur als Zeichenkette getestet, siehe `AGENTS.md`).
-- Collections/playlists roadmap:
-  - Add playlist URL import next, without user login, for public/unlisted YouTube playlists.
-  - Consider optional YouTube account OAuth later for importing the user's own playlists once the local collection model and import UX are stable.
-- Next app features: import/export, batch summarization, batch refresh of
-  metadata/transcripts (per video there is already "Neu laden").
-- Improve frontend polish, interaction states and empty/error states.
-- Transcript fetch ideas: translation fallback via `tlang` for
-  `isTranslatable` tracks; fallback chain over additional Innertube clients
-  (WEB, TV_EMBEDDED) or yt-dlp when the ANDROID player response yields no
-  usable captions.
-- Replace emoji trash buttons with a consistent icon approach when the
-  frontend icon strategy is decided.
-- vitest/jsdom setup for the settings UI like folio.
-- Add macOS packaging notes once tested there (Windows: siehe Abschnitt „Windows“ in `AGENTS.md`).
-- Add release checklist once app behavior stabilizes.
+- macOS: erster Build und Start nach [docs/release.md](docs/release.md) (dort die ungeprüften Punkte bestätigen).
+- UI-Tests: vereinzelt 30-s-Start-Timeouts in `tests/ui/harness.mjs` (Seite lädt, App bootet nicht; Ursache vermutlich Vites Dependency-Optimizer, „504 Outdated Optimize Dep“, verstärkt durch parallele Läufe mit geteiltem `node_modules/.vite`). Betroffene Tests sind einzeln grün. Abhilfe prüfen: ein Vite-Server pro Testdatei statt pro Test oder `optimizeDeps.include`.
+- Ideen:
+  - Import/Export, mehrere Videos auf einmal zusammenfassen, Metadaten/Transkripte gesammelt neu laden (pro Video gibt es „Neu laden“).
+  - Transkript-Ausweichwege: Übersetzung via `tlang` für `isTranslatable`-Spuren; weitere Innertube-Clients (WEB, TV_EMBEDDED) oder yt-dlp, wenn der ANDROID-Client keine Untertitel liefert.
+  - Fehlerkarte im Zusammenfassungs-/Chat-Tab (Fehler stehen bisher nur in der Statuszeile).
+  - Abhaken des Standardmodells lässt `defaultModel` stehen (Statuszeile zeigt es weiter) – entscheiden, ob es zurückgesetzt werden soll.
+  - Niedrige Priorität: Playlist-URL-Import (öffentlich/nicht gelistet), später ggf. YouTube-OAuth.
 
 ## Known Notes
 

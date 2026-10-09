@@ -16,6 +16,7 @@ This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri a
 - `src/ai-config.ts`: settings UI for the "KI-Anbieter" / "KI-Modelle" tabs.
 - `src/agent-handoff.ts`: "An Agent übergeben" button, handoff dialog, clipboard copy (with textarea/`execCommand` fallback), and "Ordner öffnen".
 - `src/agent-settings.ts`: settings UI for the "Agent" tab (workdir, shell, active template, custom templates, prompt, live preview); shares its cached config view with the handoff dialog.
+- `src/icons.ts`: inline SVG line icons (`icon(name)`, `currentColor`); use these instead of emoji or symbol characters.
 - `src/styles.css`: frontend styling.
 - `src-tauri/src/commands.rs`: Tauri command layer delegating to domain modules.
 - `src-tauri/src/summarize.rs`: AI summary target resolution, prompt building, untrusted content delimiters, and streaming summary orchestration.
@@ -28,6 +29,7 @@ This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri a
 - `src-tauri/src/youtube.rs`: YouTube metadata, transcript and chapter fetching.
 - `src-tauri/src/storage.rs`: config and SQLite persistence.
 - `src-tauri/src/automation.rs`: debug-only local automation API for functional tests.
+- `docs/release.md`: release checklist and per-platform packaging notes (macOS untested).
 - `TODO.md`: current collaboration state, open tasks and session handoff notes (kept lean).
 - `docs/verification-log.md`: history of verified states and test results; not needed for normal work.
 
