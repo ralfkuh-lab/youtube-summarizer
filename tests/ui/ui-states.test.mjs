@@ -90,12 +90,12 @@ test("U-ST4: Tastaturfokus ist an jedem Element sichtbar", async () => {
         const style = getComputedStyle(el);
         return {
           name: `${el.tagName.toLowerCase()}#${el.id}.${el.className}`,
-          outline: style.outlineStyle === "none" ? "none" : style.outlineWidth,
+          outline: style.outlineStyle === "none" ? 0 : parseFloat(style.outlineWidth),
           shadow: style.boxShadow,
         };
       });
       seen.push(info.name);
-      assert.ok(info.outline !== "none" || info.shadow !== "none", `kein Fokusring: ${info.name}`);
+      assert.ok(info.outline > 0 || info.shadow !== "none", `kein Fokusring: ${info.name}`);
       await page.keyboard.press("Tab");
     }
     assert.ok(seen.some((name) => name.startsWith("button#settingsBtn")), seen.join(", "));
