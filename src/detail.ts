@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, confirmDialog, errorMessage, escapeHtml } from "./dom-utils";
+import { onFindTabChanged } from "./find";
 import { renderChatTab, resetChat } from "./chat";
 import { resetAgentHandoff, syncAgentHandoffVideo } from "./agent-handoff";
 import { loadCollections, openCollectionDialog, renderVideoList } from "./library";
@@ -145,7 +146,8 @@ export function renderTranscript(
       html += `<button class="ts-chapter" data-start="${chapter.start}">${escapeHtml(chapter.title)}</button>`;
       chapterIndex += 1;
     }
-    html += `<div class="ts-line"><span class="ts-time">${escapeHtml(snippet.time)}</span>${escapeHtml(snippet.text)}</div>`;
+    // Text im eigenen span: WebKitGTK malt ::highlight() (Suche) nicht in nackten Textknoten eines Flex-Containers
+    html += `<div class="ts-line"><span class="ts-time">${escapeHtml(snippet.time)}</span><span>${escapeHtml(snippet.text)}</span></div>`;
   }
   return (
     html ||
@@ -218,6 +220,7 @@ export function switchTab(tab: TabName) {
   document.querySelectorAll<HTMLDivElement>(".tabPanel").forEach((panel) => {
     panel.classList.toggle("active", panel.id === `tab${capitalize(tab)}`);
   });
+  onFindTabChanged();
 }
 
 export function seekVideo(seconds: number) {

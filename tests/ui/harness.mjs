@@ -53,6 +53,9 @@ export async function withApp(fn, options = {}) {
       server: {
         port: fixedPort || 5199,
         strictPort: fixedPort > 0,
+        // Kein File-Watching: Tests brauchen kein HMR, und parallele Server
+        // erschoepfen sonst das Inotify-Limit (src-tauri/target ist gross)
+        watch: null,
       },
       logLevel: "error",
     });

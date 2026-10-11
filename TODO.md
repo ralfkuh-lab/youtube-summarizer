@@ -42,7 +42,7 @@ multi-device sync (`docs/spec-sync.md`, server
 - [ ] Oberfläche (2026-10-09: SVG-Icons statt Emoji, einheitliche Leerzustände, Fokus-/Hover-/Busy-Stile) in der installierten App unter WebKitGTK ansehen.
 - Agent-Übergabe unter Windows: PowerShell-Vorlage tatsächlich ausführen (bisher nur als Zeichenkette getestet, siehe `AGENTS.md`).
 - macOS: erster Build und Start nach [docs/release.md](docs/release.md) (dort die ungeprüften Punkte bestätigen).
-- UI-Tests: vereinzelt 30-s-Start-Timeouts in `tests/ui/harness.mjs` (Seite lädt, App bootet nicht; Ursache vermutlich Vites Dependency-Optimizer, „504 Outdated Optimize Dep“, verstärkt durch parallele Läufe mit geteiltem `node_modules/.vite`). Betroffene Tests sind einzeln grün. Abhilfe prüfen: ein Vite-Server pro Testdatei statt pro Test oder `optimizeDeps.include`.
+- UI-Tests: Seit 2026-10-11 läuft der Vite-Server im Harness ohne File-Watching (`watch: null`). Vorher hat der parallele Lauf das Inotify-Limit erschöpft (ENOSPC durch `src-tauri/target`); seitdem ist der Parallel-Lauf 156/156 grün. Treten die früheren 30-s-Start-Timeouts („504 Outdated Optimize Dep“) wieder auf, `optimizeDeps.include` prüfen.
 - Ideen:
   - Import/Export, mehrere Videos auf einmal zusammenfassen, Metadaten/Transkripte gesammelt neu laden (pro Video gibt es „Neu laden“).
   - Transkript-Ausweichwege: Übersetzung via `tlang` für `isTranslatable`-Spuren; weitere Innertube-Clients (WEB, TV_EMBEDDED) oder yt-dlp, wenn der ANDROID-Client keine Untertitel liefert.
@@ -61,4 +61,4 @@ multi-device sync (`docs/spec-sync.md`, server
 
 Nur der letzte Stand; ältere Einträge stehen in [docs/verification-log.md](docs/verification-log.md).
 
-- 2026-10-09: Chat-Kürzung + Tool-Calling-Regel, SVG-Icons/UI-Zustände, Settings-Tests und Custom-Provider-Fixes abgenommen: `cargo test` (392 bestanden, 4 ignoriert), `cargo fmt --check`, `npm run build`, `npm run test:ui` seriell 151/152 (U14 Start-Timeout, einzeln grün), `npm run tauri -- build` grün. Reviews: Chat Sol + Astra (Kreuzreview), UI Sol. Am 2026-10-09 per `sudo dpkg -i youtube-summarizer.deb` installiert. Kein Dev-Server aktiv.
+- 2026-10-11: Suche im Tab (Strg+F/F3/Lupe) für Transkript, Zusammenfassung und Chat, Transkript-Hervorhebung unter WebKitGTK korrigiert; in der installierten App vom Maintainer abgenommen. `npm run build`, `npm run test:ui` parallel 157/157 (F1–F5 in `tests/ui/find.test.mjs`), `npm run tauri -- build` grün. Am 2026-10-11 per `sudo dpkg -i youtube-summarizer.deb` installiert. Kein Dev-Server aktiv.

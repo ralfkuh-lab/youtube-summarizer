@@ -69,9 +69,18 @@ export const appTemplate = `
           <button class="tab" data-tab="summary">Zusammenfassung</button>
           <button class="tab" data-tab="chat">Chat</button>
           <button class="tab" data-tab="video">Video</button>
+          <button id="findToggle" class="icon-btn find-toggle" title="Suchen (Strg+F)" aria-label="Suchen">${icon("search")}</button>
           <button id="reloadTranscriptBtn">Transkript laden</button>
           <button id="summarizeBtn">Zusammenfassen lassen</button>
           <button id="agentHandoffBtn">An Agent übergeben</button>
+        </div>
+
+        <div id="findBar" class="find-bar" role="search" hidden>
+          <input id="findInput" type="search" placeholder="Im Tab suchen…" aria-label="Im Tab suchen" />
+          <span id="findCount" class="find-count" aria-live="polite"></span>
+          <button id="findPrev" class="icon-btn" title="Vorheriger Treffer (Umschalt+F3)" aria-label="Vorheriger Treffer">${icon("chevronUp")}</button>
+          <button id="findNext" class="icon-btn" title="Nächster Treffer (F3)" aria-label="Nächster Treffer">${icon("chevronDown")}</button>
+          <button id="findClose" class="icon-btn" title="Suche schließen (Esc)" aria-label="Suche schließen">${icon("close")}</button>
         </div>
 
         <div id="tabContent">

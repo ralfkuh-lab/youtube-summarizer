@@ -8,6 +8,7 @@ import { bindAgentSettingsEvents } from "./agent-settings";
 import { bindChatEvents } from "./chat";
 import { bindDetailEvents, initDetail } from "./detail";
 import { $, errorMessage } from "./dom-utils";
+import { bindFindEvents } from "./find";
 import {
   addVideo,
   bindLibraryEvents,
@@ -73,6 +74,7 @@ function bindEvents() {
   bindSummaryDialogEvents();
   bindSummaryViewEvents();
   bindChatEvents();
+  bindFindEvents();
   bindWebSearchSettingsEvents();
   bindAgentHandoffEvents();
   bindAgentSettingsEvents();

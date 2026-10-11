@@ -809,6 +809,56 @@ main {
   font-size: 12px;
 }
 
+.find-toggle {
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+}
+
+.find-toggle.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.find-bar {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.find-bar[hidden] {
+  display: none;
+}
+
+.find-bar input {
+  width: 260px;
+  height: 30px;
+}
+
+.find-bar .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.find-count {
+  min-width: 90px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+::highlight(find-match) {
+  background: rgba(255, 200, 60, 0.35);
+}
+
+::highlight(find-current) {
+  background: #ffb020;
+  color: #101319;
+}
+
 .agent-modal-content {
   display: flex;
   flex-direction: column;

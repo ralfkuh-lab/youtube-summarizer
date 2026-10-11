@@ -3,6 +3,17 @@
 Ausgelagert aus `TODO.md` (2026-09-20), damit der Startkontext der Agenten klein bleibt.
 Neue Einträge oben anfügen; `TODO.md` führt nur den jeweils letzten Stand.
 
+- 2026-10-11: Suche im Tab (`src/find.ts`, Opus 5.5): Strg+F, F3/Umschalt+F3, Enter/Umschalt+Enter, Esc, Lupen-Button
+  in der Tab-Leiste; Hervorhebung über die CSS Custom Highlight API (DOM unverändert), erneute Suche bei
+  Inhaltsänderung per MutationObserver (auch neue Chat-Nachrichten). Tests F1–F4. Im UI-Test-Harness ist
+  das Vite-File-Watching abgeschaltet (`watch: null`), weil parallele Läufe das Inotify-Limit erschöpft hatten
+  (ENOSPC). Gates: `npm run build`, `npm run test:ui` parallel 156/156, `npm run tauri -- build` (deb, rpm, AppImage).
+  Kein Rust-Code geändert, `cargo test` daher nicht gelaufen.
+  Maintainer-Test in der installierten App: Suche funktioniert, nur im Transkript fehlte die Hervorhebung.
+  Ursache (per WebKit2GTK-4.1-Offscreen-Render nachgestellt): WebKitGTK malt `::highlight()` nicht in nackten
+  Textknoten eines Flex-Containers (`.ts-line`). Fix: Snippet-Text in eigenem `<span>`; Test F5. Danach
+  `npm run test:ui` 157/157 und `npm run tauri -- build` grün.
+
 - 2026-10-09: Chat: Tool-Ergebnisse früherer Runden werden beim Senden auf 2 000 Zeichen gekürzt
   (WEB-RESULT-Delimiter bleiben geschlossen, nur vollständige Schlusszeilen zählen); Tool-Calling gilt als
   vorhanden außer bei `tool_call: false`. Implementierung DeepSeek V4.1 Flash; Referenzfälle R1–R10, L8,
