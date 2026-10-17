@@ -31,7 +31,7 @@ async function installClipboard(page, { fail = false, execCommand = true } = {})
       });
       const originalSelect = HTMLTextAreaElement.prototype.select;
       HTMLTextAreaElement.prototype.select = function select() {
-        if (this.id !== "agentCommand") {
+        if (this.id !== "agentOutput") {
           window.__fallbackText = this.value;
         }
         return originalSelect.call(this);
@@ -58,11 +58,21 @@ async function openAgentSettings(page, mock) {
   await mock.waitForPending();
 }
 
+/// Auf den Tab „Kommando“ umschalten (das kopiert bereits) und die Zwischenablage
+/// danach leeren, damit die Faelle nur ihre eigenen Kopien zaehlen.
+async function useCommandMode(page, mock) {
+  await page.locator("#agentTabCommand").click();
+  await mock.waitForPending();
+  await page.evaluate(() => {
+    window.__copied = [];
+  });
+}
+
 function callsOf(calls, cmd) {
   return calls.filter((call) => call.cmd === cmd);
 }
 
-test("G1: Klick ruft agent_prepare, kopiert und zeigt Dialog samt Erfolgsstatus", async () => {
+test("G1: Klick ruft agent_prepare, kopiert den Prompt und zeigt Dialog samt Erfolgsstatus", async () => {
   await withApp(async (page, mock) => {
     await installClipboard(page);
     await openAgentDialog(page, mock);
@@ -75,27 +85,31 @@ test("G1: Klick ruft agent_prepare, kopiert und zeigt Dialog samt Erfolgsstatus"
 
     assert.deepEqual(
       await page.evaluate(() => window.__copied),
-      [AGENT.prepare.command],
-      "das Kommando muss kopiert werden",
+      [AGENT.prepare.prompt],
+      "standardmaessig wird der Prompt kopiert",
     );
 
     assert.strictEqual(await page.locator("#agentModal").isVisible(), true);
+    assert.strictEqual(await page.locator("#agentTabPrompt").getAttribute("aria-selected"), "true");
     assert.strictEqual(
-      await page.locator("#agentCommand").inputValue(),
-      AGENT.prepare.command,
-      "das Kommandofeld zeigt das Kommando",
+      await page.locator("#agentOutput").inputValue(),
+      AGENT.prepare.prompt,
+      "das Ausgabefeld zeigt den Prompt mit Zeilenumbruch",
     );
-    assert.strictEqual(await page.locator("#agentCommand").getAttribute("readonly"), "");
+    assert.strictEqual(await page.locator("#agentOutput").isEditable(), true, "Text ist bearbeitbar");
+    assert.strictEqual(await page.locator("#agentOutput").getAttribute("aria-label"), "Prompt");
+    assert.strictEqual(await page.locator("#agentTemplate").isVisible(), false, "keine Vorlage");
+    assert.strictEqual(await page.locator("#agentShellHint").isVisible(), false);
     assert.strictEqual(
       await page.locator("#agentCopyHint").textContent(),
-      "Das Kommando wurde in die Zwischenablage kopiert; die App startet nichts selbst.",
+      "Der Prompt wurde in die Zwischenablage kopiert; die App startet nichts selbst.",
       "Erfolgshinweis im Dialog",
     );
 
     const status = await page.locator("#statusText").textContent();
     assert.strictEqual(
       status,
-      `Kommando kopiert – Kontext liegt in ${AGENT.prepare.workdir}`,
+      `Prompt kopiert – Kontext liegt in ${AGENT.prepare.workdir}`,
       `Status war: "${status}"`,
     );
   });
@@ -110,13 +124,13 @@ test("G2: abgelehntes writeText faellt auf das Textfeld zurueck", async () => {
     assert.strictEqual(await page.evaluate(() => window.__execCommandCalls), 1);
     assert.strictEqual(
       await page.evaluate(() => window.__fallbackText),
-      AGENT.prepare.command,
-      "der Rueckfall kopiert dasselbe Kommando",
+      AGENT.prepare.prompt,
+      "der Rueckfall kopiert denselben Prompt",
     );
 
     assert.strictEqual(
       await page.locator("#statusText").textContent(),
-      `Kommando kopiert – Kontext liegt in ${AGENT.prepare.workdir}`,
+      `Prompt kopiert – Kontext liegt in ${AGENT.prepare.workdir}`,
     );
     assert.strictEqual(await page.locator("#agentModal").isVisible(), true);
   });
@@ -129,19 +143,19 @@ test("G2b: beide Kopierwege scheitern – Dialog bleibt, Status ohne „kopiert�
 
     assert.strictEqual(await page.locator("#agentModal").isVisible(), true);
     assert.strictEqual(
-      await page.locator("#agentCommand").inputValue(),
-      AGENT.prepare.command,
-      "das Kommando ist im Dialog markierbar",
+      await page.locator("#agentOutput").inputValue(),
+      AGENT.prepare.prompt,
+      "der Prompt ist im Dialog markierbar",
     );
     const status = await page.locator("#statusText").textContent();
     assert.ok(!status.includes("kopiert"), `Status darf kein Erfolg sein: "${status}"`);
     assert.strictEqual(
       status,
-      `Kontext liegt in ${AGENT.prepare.workdir} – Kommando im Dialog markieren und kopieren`,
+      `Kontext liegt in ${AGENT.prepare.workdir} – Prompt im Dialog markieren und kopieren`,
     );
     assert.strictEqual(
       await page.locator("#agentCopyHint").textContent(),
-      "Kommando bitte markieren und kopieren; die App startet nichts selbst.",
+      "Prompt bitte markieren und kopieren; die App startet nichts selbst.",
       "Hinweiszeile darf keinen Kopiererfolg behaupten (H3)",
     );
 
@@ -151,7 +165,7 @@ test("G2b: beide Kopierwege scheitern – Dialog bleibt, Status ohne „kopiert�
     await mock.waitForPending();
     assert.strictEqual(
       await page.locator("#agentCopyHint").textContent(),
-      "Kommando bitte markieren und kopieren; die App startet nichts selbst.",
+      "Prompt bitte markieren und kopieren; die App startet nichts selbst.",
     );
   });
 });
@@ -160,6 +174,7 @@ test("G3: Vorlagenwechsel im Dialog loest neu auf und kopiert erneut", async () 
   await withApp(async (page, mock) => {
     await installClipboard(page);
     await openAgentDialog(page, mock);
+    await useCommandMode(page, mock);
 
     await page.locator("#agentTemplate").selectOption("codex");
     await mock.waitForPending();
@@ -169,13 +184,118 @@ test("G3: Vorlagenwechsel im Dialog loest neu auf und kopiert erneut", async () 
     assert.strictEqual(prepare[1].args.templateId, "codex");
 
     assert.strictEqual(
-      await page.locator("#agentCommand").inputValue(),
+      await page.locator("#agentOutput").inputValue(),
       AGENT.prepareByTemplate.codex.command,
     );
     assert.deepEqual(await page.evaluate(() => window.__copied), [
-      AGENT.prepare.command,
       AGENT.prepareByTemplate.codex.command,
     ]);
+  });
+});
+
+test("G3b: Tabwechsel zwischen Prompt und Kommando kopiert ohne neue Aufloesung", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentTabCommand").click();
+    await mock.waitForPending();
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), AGENT.prepare.command);
+    assert.strictEqual(await page.locator("#agentTabCommand").getAttribute("aria-selected"), "true");
+    assert.strictEqual(await page.locator("#agentOutput").getAttribute("aria-label"), "Kommando");
+    assert.strictEqual(await page.locator("#agentTemplate").isVisible(), true);
+    assert.strictEqual(await page.locator("#agentShellHint").textContent(), "(für bash/zsh)");
+    assert.strictEqual(
+      await page.locator("#statusText").textContent(),
+      `Kommando kopiert – Kontext liegt in ${AGENT.prepare.workdir}`,
+    );
+
+    await page.locator("#agentTabPrompt").click();
+    await mock.waitForPending();
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), AGENT.prepare.prompt);
+    assert.strictEqual(await page.locator("#agentTemplate").isVisible(), false);
+
+    assert.deepEqual(await page.evaluate(() => window.__copied), [
+      AGENT.prepare.prompt,
+      AGENT.prepare.command,
+      AGENT.prepare.prompt,
+    ]);
+    assert.strictEqual(callsOf(await mock.getCalls(), "agent_prepare").length, 1);
+
+    // Die Wahl gilt beim naechsten Oeffnen weiter.
+    await page.locator("#agentTabCommand").click();
+    await mock.waitForPending();
+    await page.locator("#agentModalClose").click();
+    await page.locator("#agentHandoffBtn").click();
+    await mock.waitForPending();
+    const copied = await page.evaluate(() => window.__copied);
+    assert.strictEqual(copied[copied.length - 1], AGENT.prepare.command);
+  });
+});
+
+test("G3c: Bearbeiteter Text wird kopiert und bleibt je Tab erhalten", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+
+    await page.locator("#agentOutput").fill("Eigener Prompt");
+    await page.locator("#agentCopy").click();
+    await mock.waitForPending();
+
+    // Eine Auswahlaenderung laesst die Bearbeitung stehen.
+    await page.locator("#agentCtxTranscript").uncheck();
+    await mock.waitForPending();
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), "Eigener Prompt");
+
+    await page.locator("#agentTabCommand").click();
+    await mock.waitForPending();
+    await page.locator("#agentOutput").fill("Eigenes Kommando");
+    await page.locator("#agentTabPrompt").click();
+    await mock.waitForPending();
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), "Eigener Prompt");
+
+    // Ein Vorlagenwechsel ersetzt nur das Kommando.
+    await page.locator("#agentTabCommand").click();
+    await mock.waitForPending();
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), "Eigenes Kommando");
+    await page.locator("#agentTemplate").selectOption("codex");
+    await mock.waitForPending();
+    assert.strictEqual(
+      await page.locator("#agentOutput").inputValue(),
+      AGENT.prepareByTemplate.codex.command,
+    );
+
+    assert.deepEqual(await page.evaluate(() => window.__copied), [
+      AGENT.prepare.prompt,
+      "Eigener Prompt",
+      AGENT.prepare.command,
+      "Eigener Prompt",
+      "Eigenes Kommando",
+      AGENT.prepareByTemplate.codex.command,
+    ]);
+
+    // Erneutes Oeffnen verwirft die Bearbeitungen.
+    await page.locator("#agentTabPrompt").click();
+    await mock.waitForPending();
+    await page.locator("#agentModalClose").click();
+    await page.locator("#agentHandoffBtn").click();
+    await mock.waitForPending();
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), AGENT.prepare.prompt);
+  });
+});
+
+test("G3d: Pfeiltasten wechseln den Tab", async () => {
+  await withApp(async (page, mock) => {
+    await installClipboard(page);
+    await openAgentDialog(page, mock);
+    await page.locator("#agentTabPrompt").focus();
+    await page.keyboard.press("ArrowRight");
+    await mock.waitForPending();
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), AGENT.prepare.command);
+    assert.strictEqual(
+      await page.evaluate(() => document.activeElement.id),
+      "agentTabCommand",
+    );
   });
 });
 
@@ -228,11 +348,11 @@ test("G5: Vorschau aktualisiert sich beim Tippen", async () => {
   });
 });
 
-test("G6: HTML-Zeichen im Kommando erscheinen als Text", async () => {
-  const command = "<b>fett</b> & \"quote\"";
+test("G6: HTML-Zeichen im Prompt erscheinen als Text", async () => {
+  const prompt = "<b>fett</b> & \"quote\"";
   const agent = {
     ...AGENT,
-    prepare: { ...AGENT.prepare, command },
+    prepare: { ...AGENT.prepare, prompt },
   };
   await withApp(
     async (page, mock) => {
@@ -240,7 +360,7 @@ test("G6: HTML-Zeichen im Kommando erscheinen als Text", async () => {
       await mock.setFixtures({ agent });
       await openAgentDialog(page, mock);
 
-      assert.strictEqual(await page.locator("#agentCommand").inputValue(), command);
+      assert.strictEqual(await page.locator("#agentOutput").inputValue(), prompt);
       assert.strictEqual(await page.locator("#agentModal b").count(), 0, "kein HTML-Element");
       assert.strictEqual(
         await page.locator("#agentContextPath").textContent(),
@@ -319,7 +439,8 @@ test("G11: nur die juengste Vorlagen-Antwort aktualisiert Feld und Zwischenablag
   await withApp(async (page, mock) => {
     await installClipboard(page);
     await openAgentDialog(page, mock);
-    assert.strictEqual(await page.locator("#agentCommand").inputValue(), AGENT.prepare.command);
+    await useCommandMode(page, mock);
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), AGENT.prepare.command);
 
     // Vorlage A (codex) ist langsam, Vorlage B (claude) schnell.
     await mock.setFixtures({ agent: { ...AGENT, prepareDelays: { codex: 300 } } });
@@ -330,7 +451,7 @@ test("G11: nur die juengste Vorlagen-Antwort aktualisiert Feld und Zwischenablag
     const claude = AGENT.prepareByTemplate.claude.command;
     const codex = AGENT.prepareByTemplate.codex.command;
     assert.strictEqual(
-      await page.locator("#agentCommand").inputValue(),
+      await page.locator("#agentOutput").inputValue(),
       claude,
       "das Feld zeigt die juengste Antwort",
     );
@@ -454,6 +575,7 @@ test("G16: Auswahl ändern, dann Vorlage wechseln kopiert mit der neuen Auswahl"
   await withApp(async (page, mock) => {
     await installClipboard(page);
     await openAgentDialog(page, mock);
+    await useCommandMode(page, mock);
 
     await page.locator("#agentCtxTranscript").uncheck();
     await mock.waitForPending();
@@ -466,7 +588,7 @@ test("G16: Auswahl ändern, dann Vorlage wechseln kopiert mit der neuen Auswahl"
     assert.strictEqual(last.args.templateId, "codex");
     assert.strictEqual(last.args.selection.transcript, false, "die geänderte Auswahl geht mit");
     assert.strictEqual(
-      await page.locator("#agentCommand").inputValue(),
+      await page.locator("#agentOutput").inputValue(),
       AGENT.prepareByTemplate.codex.command,
     );
     const copied = await page.evaluate(() => window.__copied);
@@ -884,9 +1006,9 @@ test("G25: Ein Videowechsel schließt den offenen Übergabe-Dialog und verwirft 
       "der Dialog des alten Videos muss geschlossen sein",
     );
     assert.strictEqual(
-      await page.locator("#agentCommand").inputValue(),
+      await page.locator("#agentOutput").inputValue(),
       "",
-      "das Kommando des alten Videos darf nicht stehen bleiben",
+      "der Prompt des alten Videos darf nicht stehen bleiben",
     );
   });
 });
@@ -898,6 +1020,6 @@ test("G26: Erneutes Anzeigen desselben Videos lässt den Dialog offen", async ()
     await page.evaluate(() => document.querySelector('.video-item[data-id="2"]').click());
     await mock.waitForPending();
     assert.strictEqual(await page.locator("#agentModal").isVisible(), true);
-    assert.strictEqual(await page.locator("#agentCommand").inputValue(), AGENT.prepare.command);
+    assert.strictEqual(await page.locator("#agentOutput").inputValue(), AGENT.prepare.prompt);
   });
 });

@@ -3,6 +3,16 @@
 Ausgelagert aus `TODO.md` (2026-09-20), damit der Startkontext der Agenten klein bleibt.
 Neue Einträge oben anfügen; `TODO.md` führt nur den jeweils letzten Stand.
 
+- 2026-10-17: Agent-Übergabe kopiert standardmäßig den Prompt (Opus 5.5, ohne Delegation; niedriges Risiko, kein
+  externes Review). `agent_prepare` liefert zusätzlich `prompt` (Kontextdatei eingesetzt, Zeilenumbrüche erhalten);
+  Dialog zuerst mit Radio-Umschalter (vom Maintainer installiert und funktional abgenommen), dann auf Wunsch
+  klassische Reiter „Prompt | Kommando“ über einem bearbeitbaren Ausgabefeld mit fester Höhe, Vorlage im
+  Kommando-Tab (kompakt). Tableiste der Detailansicht ebenfalls auf klassische Reiter umgestellt, Suchleiste mit
+  Inhaltshintergrund. Rust-Test
+  `prompt_keeps_line_breaks_and_names_the_context_file`, UI-Tests G3b–G3d, G1/G2/G2b/G6/G26 auf den Prompt umgestellt.
+  Gates: `cargo fmt --check`, `cargo test` 393 bestanden/4 ignoriert, `npm run build`, `npm run test:ui` 160/160,
+  `npm run tauri -- build` (deb, rpm, AppImage). Dialog per Chromium-Screenshot geprüft, nicht unter WebKitGTK.
+
 - 2026-10-11: Suche im Tab (`src/find.ts`, Opus 5.5): Strg+F, F3/Umschalt+F3, Enter/Umschalt+Enter, Esc, Lupen-Button
   in der Tab-Leiste; Hervorhebung über die CSS Custom Highlight API (DOM unverändert), erneute Suche bei
   Inhaltsänderung per MutationObserver (auch neue Chat-Nachrichten). Tests F1–F4. Im UI-Test-Harness ist

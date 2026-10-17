@@ -1,6 +1,6 @@
 # Spec: Video an einen lokalen Agenten übergeben
 
-Stand: 2026-09-20, Revision 3 (Kontextauswahl pro Übergabe, siehe Ende der Datei); Revision 2 vom 2026-09-19 (Spec-Review durch Grok eingearbeitet).
+Stand: 2026-10-17, Revision 4 (Prompt statt Kommando kopieren, siehe Ende der Datei); Revision 3 vom 2026-09-20 (Kontextauswahl pro Übergabe); Revision 2 vom 2026-09-19 (Spec-Review durch Grok eingearbeitet).
 
 ## Ziel
 
@@ -530,3 +530,31 @@ wenn die Reihenfolge der Eingabe übernommen wird; H4 rot ohne Filter auf das
 Video; H8 rot, wenn PROPER_NAMES_HINT am Transkript des Videos statt an den
 Blöcken hängt; G13 rot, wenn bei Auswahländerung kopiert wird; G19 rot ohne
 Generationsprüfung.
+
+# Revision 4: Prompt oder Kommando kopieren (2026-10-17)
+
+Der Benutzer startet den Agenten meist selbst — häufig in einem Repository,
+das thematisch zum Video passt, nicht im Kontextordner. Deshalb kopiert der
+Dialog standardmäßig **nur den Prompt**.
+
+- `agent_prepare` liefert zusätzlich `prompt`: den wirksamen Prompt mit
+  eingesetztem `{context_file}` (absoluter Pfad), **unmaskiert und mit
+  erhaltenen Zeilenumbrüchen** — er wird in die Eingabe eines laufenden Agenten
+  eingefügt, nicht in eine Shell. Das Kommando bleibt unverändert einzeilig
+  maskiert.
+- Dialog: klassische Reiter „Prompt“ und „Kommando“ (`#agentTabPrompt`, `#agentTabCommand`,
+  WAI-ARIA-Tabs, Pfeiltasten wechseln; der aktive Reiter geht in den Rahmen über) direkt über dem Ausgabefeld
+  `#agentOutput`. Vorlagenauswahl und Shell-Hinweis stehen im Tab „Kommando“.
+  Der Tabwechsel zeigt und kopiert den Text des Tabs ohne neuen
+  `agent_prepare`-Aufruf. Die Wahl gilt für die laufende Sitzung; nach einem
+  Neustart wieder „Prompt“. Der Bereich hat eine feste Höhe, damit der Dialog
+  beim Tabwechsel nicht springt (Standardtexte passen ohne Scrollen).
+- Das Ausgabefeld ist bearbeitbar; „Kopieren“ kopiert den bearbeiteten Text des
+  aktiven Tabs. Bearbeitungen bleiben je Tab erhalten, solange der Dialog offen
+  ist: eine Auswahländerung lässt sie stehen, ein Vorlagenwechsel ersetzt nur
+  das Kommando, erneutes Öffnen setzt beide zurück.
+- Status und Hinweiszeile nennen das Kopierte („Prompt kopiert – …“ bzw.
+  „Kommando kopiert – …“).
+- Tests: Rust `prompt_keeps_line_breaks_and_names_the_context_file`; UI G1/G2/G2b
+  prüfen jetzt den Prompt, G3b den Tabwechsel, G3c Bearbeitungen, G3d Pfeiltasten; die Vorlagenfälle (G3, G11, G16)
+  schalten vorher auf „Kommando“.

@@ -1,6 +1,6 @@
 // Button „An Agent übergeben“ und der zugehörige Dialog. Stufe 1: Kontextdatei
-// schreiben, Kommando in die Zwischenablage kopieren — die App startet keinen
-// Prozess. Revision 3: Was in die Kontextdatei kommt (Transkript,
+// schreiben, Prompt oder Kommando in die Zwischenablage kopieren — die App
+// startet keinen Prozess. Revision 3: Was in die Kontextdatei kommt (Transkript,
 // Zusammenfassungs-Versionen, Chats), wählt der Benutzer pro Übergabe im Dialog.
 
 import { invoke } from "@tauri-apps/api/core";
@@ -23,6 +23,10 @@ import type {
 /// nur die Kontextdatei neu (Auswahländerung).
 type HandoffMode = "copy" | "update";
 
+/// Was der Dialog anzeigt und kopiert. Standard ist der Prompt: der Benutzer
+/// startet den Agenten meist selbst, in einem passenden Repository.
+type OutputMode = "prompt" | "command";
+
 type PrepareOptions = {
   mode: HandoffMode;
   /// `null` = die aktive Vorlage aus den Einstellungen.
@@ -44,6 +48,20 @@ const rememberedSelections = new Map<number, AgentHandoffSelection>();
 /// vollstaendig; erst eine gueltige, aktuelle Antwort uebernimmt die wirksame
 /// Auswahl.
 let pendingSelection: AgentHandoffSelection | null = null;
+/// Gilt fuer die laufende Sitzung; nach einem Neustart wieder der Prompt.
+let outputMode: OutputMode = "prompt";
+/// Angezeigter Text je Tab, samt Bearbeitungen im Dialog. Eine Auswahlaenderung
+/// laesst ihn stehen (Prompt und Kommando haengen nicht von ihr ab), ein
+/// Vorlagenwechsel ersetzt nur das Kommando, erneutes Oeffnen beides.
+const drafts: Record<OutputMode, string> = { prompt: "", command: "" };
+
+function outputText(): string {
+  return drafts[outputMode];
+}
+
+function outputName(): string {
+  return outputMode === "prompt" ? "Prompt" : "Kommando";
+}
 
 function currentSelection(): AgentHandoffSelection {
   return pendingSelection ?? { transcript: true, summaryIds: null, chatIds: [] };
@@ -95,8 +113,11 @@ async function prepare(options: PrepareOptions) {
   if (!isCurrent(generation, videoId)) return;
 
   if (options.mode === "copy") {
-    const copied = await copyText(prepared.command);
+    const fresh = { ...drafts, command: prepared.command };
+    if (options.openDialog) fresh.prompt = prepared.prompt;
+    const copied = await copyText(fresh[outputMode]);
     if (!isCurrent(generation, videoId)) return;
+    Object.assign(drafts, fresh);
     applyHandoff(prepared, videoId, options.templateId, true);
     if (options.openDialog) showModal("#agentModal");
     updateCopyHint(copied);
@@ -112,7 +133,7 @@ function isCurrent(generation: number, videoId: number): boolean {
 }
 
 /// Übernimmt eine gültige Antwort in Anzeige und gemerkte Auswahl. Beim reinen
-/// Aktualisieren der Auswahl darf das Markieren des Kommandofelds den Fokus
+/// Aktualisieren der Auswahl darf das Markieren des Ausgabefelds den Fokus
 /// nicht vom Kontextwähler nehmen.
 function applyHandoff(
   prepared: AgentHandoff,
@@ -126,6 +147,18 @@ function applyHandoff(
   rememberedSelections.set(videoId, prepared.selection);
   renderTemplateOptions(templateId ?? getAgentView()?.config.activeTemplate ?? null);
   renderDialog(prepared, selectCommand);
+}
+
+/// Tabwechsel zwischen Prompt und Kommando: beides liegt schon vor, also nur
+/// anzeigen und den Text des Tabs kopieren.
+async function chooseOutputMode(mode: OutputMode) {
+  if (mode === outputMode) return;
+  outputMode = mode;
+  renderOutputMode();
+  if (!handoff) return;
+  // Nicht markieren: `select()` nähme dem Tab den Tastaturfokus.
+  renderOutput(false);
+  await copyFromDialog();
 }
 
 /// Vorlagenwechsel im Dialog: neu auflösen und erneut kopieren, mit der aktuell
@@ -144,8 +177,8 @@ function currentTemplateId(): string {
 }
 
 /// Ein Klick auf den Kontextwaehler: Wunsch und Anzeige sofort nachziehen und
-/// den vollstaendigen Stand senden. Nicht kopieren — das Kommando aendert sich
-/// durch die Auswahl nicht.
+/// den vollstaendigen Stand senden. Nicht kopieren — Prompt und Kommando
+/// aendern sich durch die Auswahl nicht.
 function chooseSelection(next: AgentHandoffSelection) {
   pendingSelection = next;
   if (handoff) renderContext(handoff.available, next);
@@ -166,22 +199,24 @@ function toggleId(ids: number[], id: number, checked: boolean): number[] {
 
 async function copyFromDialog() {
   if (!handoff) return;
-  const copied = await copyText(handoff.command);
+  const copied = await copyText(outputText());
   updateCopyHint(copied);
   setStatus(copyStatus(copied, handoff.workdir));
 }
 
 function copyStatus(copied: boolean, workdir: string): string {
   return copied
-    ? `Kommando kopiert – Kontext liegt in ${workdir}`
-    : `Kontext liegt in ${workdir} – Kommando im Dialog markieren und kopieren`;
+    ? `${outputName()} kopiert – Kontext liegt in ${workdir}`
+    : `Kontext liegt in ${workdir} – ${outputName()} im Dialog markieren und kopieren`;
 }
 
 /// Die Hinweiszeile im Dialog haengt am Kopiererfolg (H3).
 function updateCopyHint(copied: boolean) {
+  const name = outputName();
+  const article = outputMode === "prompt" ? "Der" : "Das";
   $("#agentCopyHint").textContent = copied
-    ? "Das Kommando wurde in die Zwischenablage kopiert; die App startet nichts selbst."
-    : "Kommando bitte markieren und kopieren; die App startet nichts selbst.";
+    ? `${article} ${name} wurde in die Zwischenablage kopiert; die App startet nichts selbst.`
+    : `${name} bitte markieren und kopieren; die App startet nichts selbst.`;
 }
 
 async function revealContext() {
@@ -249,13 +284,31 @@ function renderTemplateOptions(selected: string | null) {
   renderShellHint();
 }
 
-function renderDialog(prepared: AgentHandoff, selectCommand: boolean) {
-  const field = $<HTMLTextAreaElement>("#agentCommand");
-  field.value = prepared.command;
-  if (selectCommand) field.select();
+function renderDialog(prepared: AgentHandoff, selectOutput: boolean) {
+  renderOutputMode();
+  renderOutput(selectOutput);
   $("#agentContextPath").textContent = prepared.contextFile;
   $("#agentContextChars").textContent = ` · ≈ ${prepared.contextChars.toLocaleString("de-DE")} Zeichen`;
   renderContext(prepared.available, currentSelection());
+}
+
+function renderOutput(select: boolean) {
+  const field = $<HTMLTextAreaElement>("#agentOutput");
+  field.value = outputText();
+  if (select) field.select();
+}
+
+/// Tabs nachziehen; Vorlage und Shell-Hinweis gehören nur zum Kommando.
+function renderOutputMode() {
+  for (const tab of document.querySelectorAll<HTMLButtonElement>(".agent-tab")) {
+    const active = tab.dataset.mode === outputMode;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    if (active) $("#agentOutputPanel").setAttribute("aria-labelledby", tab.id);
+  }
+  $("#agentTemplateRow").hidden = outputMode !== "command";
+  $("#agentOutput").setAttribute("aria-label", outputName());
 }
 
 function renderShellHint() {
@@ -434,14 +487,16 @@ function hintText(text: string): HTMLParagraphElement {
 
 // ---------------------------------------------------------------- Zustand --
 
-/// Beim Verlassen der Detailansicht darf kein Kommando eines anderen Videos
-/// stehen bleiben.
+/// Beim Verlassen der Detailansicht darf kein Prompt oder Kommando eines
+/// anderen Videos stehen bleiben.
 export function resetAgentHandoff() {
   handoff = null;
   handoffVideoId = null;
   pendingSelection = null;
+  drafts.prompt = "";
+  drafts.command = "";
   prepareGeneration += 1;
-  const field = document.querySelector<HTMLTextAreaElement>("#agentCommand");
+  const field = document.querySelector<HTMLTextAreaElement>("#agentOutput");
   if (field) field.value = "";
   const path = document.querySelector<HTMLElement>("#agentContextPath");
   if (path) path.textContent = "";
@@ -476,6 +531,20 @@ export function bindAgentHandoffEvents() {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
     chooseSelection({ ...currentSelection(), transcript: target.checked });
+  });
+  for (const tab of document.querySelectorAll<HTMLButtonElement>(".agent-tab")) {
+    tab.addEventListener("click", () => void chooseOutputMode(tab.dataset.mode as OutputMode));
+    // Pfeiltasten wechseln den Tab (WAI-ARIA-Tabs mit automatischer Aktivierung).
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const next = outputMode === "prompt" ? "command" : "prompt";
+      document.querySelector<HTMLButtonElement>(`.agent-tab[data-mode="${next}"]`)?.focus();
+      void chooseOutputMode(next);
+    });
+  }
+  $<HTMLTextAreaElement>("#agentOutput").addEventListener("input", (event) => {
+    drafts[outputMode] = (event.target as HTMLTextAreaElement).value;
   });
   $("#agentCopy").addEventListener("click", () => void copyFromDialog());
   $("#agentReveal").addEventListener("click", () => void revealContext());

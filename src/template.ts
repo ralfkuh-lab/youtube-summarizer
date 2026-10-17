@@ -310,7 +310,7 @@ export const appTemplate = `
               </div>
             </div>
             <p id="agentSettingsError" class="settings-ai-error" hidden></p>
-            <p class="settings-hint">Platzhalter: <code>{workdir}</code>, <code>{context_file}</code>, <code>{prompt}</code>, <code>{video_id}</code>, <code>{video_url}</code>, <code>{db_path}</code>. Eigene Vorlagen sind wie ein eigener Shell-Alias zu behandeln: sie laufen mit deinen Rechten. Die App startet den Agenten nicht selbst — sie legt den Kontext ab und liefert das Kommando.</p>
+            <p class="settings-hint">Platzhalter: <code>{workdir}</code>, <code>{context_file}</code>, <code>{prompt}</code>, <code>{video_id}</code>, <code>{video_url}</code>, <code>{db_path}</code>. Eigene Vorlagen sind wie ein eigener Shell-Alias zu behandeln: sie laufen mit deinen Rechten. Die App startet den Agenten nicht selbst — sie legt den Kontext ab und liefert den Prompt oder das Kommando.</p>
           </section>
         </div>
         <div class="settings-dialog__tabpanel settings-ai-panel" id="settings-panel-sync" role="tabpanel" aria-labelledby="settings-tab-sync" data-settings-tab="sync" hidden>
@@ -436,8 +436,6 @@ export const appTemplate = `
   <div id="agentModal" class="modal" hidden>
     <div class="modal-content modal-wide agent-modal-content">
       <h2>An Agent übergeben</h2>
-      <label for="agentTemplate">Vorlage</label>
-      <select id="agentTemplate"></select>
       <p class="agent-field-label">Kontext</p>
       <div id="agentContext" class="agent-context">
         <label class="agent-context-row">
@@ -447,8 +445,20 @@ export const appTemplate = `
         <div id="agentCtxSummaries" class="agent-context-section"></div>
         <div id="agentCtxChats" class="agent-context-section"></div>
       </div>
-      <label for="agentCommand">Kommando <span id="agentShellHint" class="agent-shell-hint"></span></label>
-      <textarea id="agentCommand" class="agent-command" rows="4" readonly></textarea>
+      <div class="agent-output">
+        <div class="agent-output-tabs" role="tablist" aria-label="Ausgabe">
+          <button type="button" id="agentTabPrompt" class="agent-tab active" role="tab" aria-selected="true" aria-controls="agentOutputPanel" data-mode="prompt">Prompt</button>
+          <button type="button" id="agentTabCommand" class="agent-tab" role="tab" aria-selected="false" aria-controls="agentOutputPanel" tabindex="-1" data-mode="command">Kommando</button>
+        </div>
+        <div id="agentOutputPanel" class="agent-output-panel" role="tabpanel" aria-labelledby="agentTabPrompt">
+          <div id="agentTemplateRow" class="agent-template-row-select" hidden>
+            <label for="agentTemplate">Vorlage</label>
+            <select id="agentTemplate"></select>
+            <span id="agentShellHint" class="agent-shell-hint"></span>
+          </div>
+          <textarea id="agentOutput" class="agent-command" rows="5" aria-label="Prompt" spellcheck="false"></textarea>
+        </div>
+      </div>
       <p class="settings-hint">Kontextdatei: <code id="agentContextPath"></code><span id="agentContextChars"></span></p>
       <p id="agentCopyHint" class="settings-hint"></p>
       <div class="modal-actions">

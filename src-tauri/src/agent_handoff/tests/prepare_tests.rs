@@ -110,6 +110,27 @@ fn a9a_workdir_base_with_spaces_and_apostrophe_string_oracle() {
     assert_eq!(handoff.context_file, context_file);
 }
 
+#[test]
+fn prompt_keeps_line_breaks_and_names_the_context_file() {
+    let (temp, paths) = temp_paths();
+    let video =
+        crate::storage::insert_video(&paths, integration_video("vid00000003", "Titel"), false)
+            .unwrap();
+    let base = temp.path().join("agent it's");
+    store_config(&paths, &base, "cd {workdir} && claude {prompt}");
+    let mut config = config::load(&paths);
+    config.prompt = "Lies {context_file}.\nDanach:\twarte.".to_string();
+    config::save(&paths, &config).unwrap();
+
+    let handoff = super::super::prepare(&paths, video.id, None, None).unwrap();
+    // Unmaskiert und mehrzeilig; nur das Kommando wird einzeilig maskiert.
+    assert_eq!(
+        handoff.prompt,
+        format!("Lies {}.\nDanach:\twarte.", handoff.context_file)
+    );
+    assert!(!handoff.command.contains('\n'), "{}", handoff.command);
+}
+
 #[cfg(unix)]
 #[test]
 fn a9b_quoted_workdir_works_in_a_shell() {

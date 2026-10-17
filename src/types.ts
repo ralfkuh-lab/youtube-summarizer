@@ -143,6 +143,8 @@ export type AgentConfigView = {
 
 export type AgentHandoff = {
   command: string;
+  /// Der Prompt allein (mehrzeilig, Kontextdatei eingesetzt).
+  prompt: string;
   workdir: string;
   contextFile: string;
   /// Unicode-Skalare der geschriebenen Kontextdatei.

@@ -164,6 +164,7 @@ export const defaultFixtures = {
     },
     prepare: {
       command: "cd '/home/user/yt-agent/video-zwei-vid2' && claude 'Hallo'",
+      prompt: "Hallo\nKontext: /home/user/yt-agent/video-zwei-vid2/context.md",
       workdir: "/home/user/yt-agent/video-zwei-vid2",
       contextFile: "/home/user/yt-agent/video-zwei-vid2/context.md",
     },
@@ -214,11 +215,13 @@ export const defaultFixtures = {
     prepareByTemplate: {
       claude: {
         command: "cd '/home/user/yt-agent/video-zwei-vid2' && claude 'Hallo explizit'",
+        prompt: "Hallo\nKontext: /home/user/yt-agent/video-zwei-vid2/context.md",
         workdir: "/home/user/yt-agent/video-zwei-vid2",
         contextFile: "/home/user/yt-agent/video-zwei-vid2/context.md",
       },
       codex: {
         command: "cd '/home/user/yt-agent/video-zwei-vid2' && codex 'Hallo'",
+        prompt: "Hallo\nKontext: /home/user/yt-agent/video-zwei-vid2/context.md",
         workdir: "/home/user/yt-agent/video-zwei-vid2",
         contextFile: "/home/user/yt-agent/video-zwei-vid2/context.md",
       },

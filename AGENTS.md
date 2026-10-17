@@ -14,7 +14,7 @@ This repository is a Tauri 2 YouTube summarizer desktop app. Work in the Tauri a
 - `src/types.ts`: shared TypeScript type and interface definitions.
 - `src/utils.ts`: pure utility helpers (formatting, search normalization, collection comparison).
 - `src/ai-config.ts`: settings UI for the "KI-Anbieter" / "KI-Modelle" tabs.
-- `src/agent-handoff.ts`: "An Agent übergeben" button, handoff dialog, clipboard copy (with textarea/`execCommand` fallback), and "Ordner öffnen".
+- `src/agent-handoff.ts`: "An Agent übergeben" button, handoff dialog (tabs "Prompt"/"Kommando" over an editable output field; copies the prompt by default), clipboard copy (with textarea/`execCommand` fallback), and "Ordner öffnen".
 - `src/agent-settings.ts`: settings UI for the "Agent" tab (workdir, shell, active template, custom templates, prompt, live preview); shares its cached config view with the handoff dialog.
 - `src/find.ts`: in-tab search (Ctrl+F, F3/Shift+F3, magnifier button in the tab bar) for transcript, summary and chat; highlights via the CSS Custom Highlight API without touching the DOM, re-runs on content changes via `MutationObserver`.
 - `src/icons.ts`: inline SVG line icons (`icon(name)`, `currentColor`); use these instead of emoji or symbol characters.

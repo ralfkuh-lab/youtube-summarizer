@@ -1,9 +1,9 @@
 //! Video an einen lokalen Agenten uebergeben.
 //!
 //! Stufe 1: Die App schreibt eine Kontextdatei mit den Daten genau eines
-//! Videos und liefert ein fertiges, shell-sicher maskiertes Kommando, das der
-//! Benutzer selbst in die Zwischenablage kopiert. Die App startet **keinen**
-//! Prozess.
+//! Videos und liefert den Prompt sowie ein fertiges, shell-sicher maskiertes
+//! Kommando; der Dialog kopiert eins von beiden in die Zwischenablage. Die App
+//! startet **keinen** Prozess.
 
 mod config;
 mod context;
@@ -51,6 +51,9 @@ pub struct AgentConfigView {
 #[serde(rename_all = "camelCase")]
 pub struct AgentHandoff {
     pub command: String,
+    /// Der Prompt allein, mit eingesetzter Kontextdatei und erhaltenen
+    /// Zeilenumbruechen: fuer einen Agenten, den der Benutzer selbst startet.
+    pub prompt: String,
     pub workdir: String,
     pub context_file: String,
     /// Unicode-Skalare der geschriebenen Kontextdatei.
@@ -149,10 +152,11 @@ pub(crate) fn prepare_with_home(
     let context_path = workdir.join("context.md");
     let context_file = to_string(&context_path);
 
+    let prompt = config.effective_prompt();
     let values = Values {
         workdir: to_string(&workdir),
         context_file: context_file.clone(),
-        prompt: resolve::normalize_prompt(&config.effective_prompt(), &context_file),
+        prompt: resolve::normalize_prompt(&prompt, &context_file),
         video_id: video.video_id.clone(),
         video_url: crate::youtube::video_url(&video.video_id),
         db_path: to_string(&paths.db_path),
@@ -183,6 +187,7 @@ pub(crate) fn prepare_with_home(
 
     let command = resolve::substitute(&template.command, &values, shell)?;
     Ok(AgentHandoff {
+        prompt: prompt.replace("{context_file}", &values.context_file),
         workdir: values.workdir,
         context_file: values.context_file,
         context_chars: contents.chars().count(),

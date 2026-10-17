@@ -61,4 +61,4 @@ multi-device sync (`docs/spec-sync.md`, server
 
 Nur der letzte Stand; ältere Einträge stehen in [docs/verification-log.md](docs/verification-log.md).
 
-- 2026-10-11: Suche im Tab (Strg+F/F3/Lupe) für Transkript, Zusammenfassung und Chat, Transkript-Hervorhebung unter WebKitGTK korrigiert; in der installierten App vom Maintainer abgenommen. `npm run build`, `npm run test:ui` parallel 157/157 (F1–F5 in `tests/ui/find.test.mjs`), `npm run tauri -- build` grün. Am 2026-10-11 per `sudo dpkg -i youtube-summarizer.deb` installiert. Kein Dev-Server aktiv.
+- 2026-10-17: „An Agent übergeben“ kopiert standardmäßig nur den Prompt; klassische Reiter „Prompt | Kommando“ über einem bearbeitbaren Ausgabefeld mit fester Höhe (Spec Revision 4). Die Tableiste der Detailansicht nutzt jetzt ebenfalls klassische Reiter. `cargo test` 393 bestanden/4 ignoriert, `cargo fmt --check`, `npm run build`, `npm run test:ui` 160/160, `npm run tauri -- build` grün. Am 2026-10-17 per `sudo dpkg -i youtube-summarizer.deb` installiert. Kein Dev-Server aktiv.

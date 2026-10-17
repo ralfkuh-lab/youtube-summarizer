@@ -73,7 +73,8 @@ summary:focus-visible,
 .collection-item:focus-visible,
 .chapter-item:focus-visible,
 .ts-chapter:focus-visible,
-.tab:focus-visible {
+.tab:focus-visible,
+.agent-tab:focus-visible {
   outline-offset: -2px;
 }
 
@@ -767,31 +768,47 @@ main {
   display: flex;
   gap: 6px;
   align-items: center;
-  padding: 8px 12px;
+  padding: 8px 12px 0;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 
+/* Aktionen rechts in der Leiste: mit Abstand nach unten, damit sie nicht auf
+   der Reiterlinie stehen. */
+#tabBar > :not(.tab) {
+  margin-bottom: 6px;
+}
+
+/* Klassische Reiter wie im Dialog „An Agent übergeben“: der aktive Reiter
+   geht nahtlos in den Inhaltsbereich (Hintergrund --bg) über. */
 .tab {
+  position: relative;
+  align-self: flex-end;
   min-height: 32px;
-  padding: 0 14px;
+  margin-bottom: -1px;
+  padding: 0 16px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: transparent;
+  border-radius: 6px 6px 0 0;
+  background: var(--panel);
   color: var(--muted);
   font-size: 12px;
 }
 
+#tabBar .tab + .tab {
+  margin-left: -4px;
+}
+
 .tab:hover:not(.active) {
-  border-color: var(--panel-3);
   background: var(--panel-3);
   color: var(--text);
 }
 
 .tab.active {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: white;
+  z-index: 1;
+  border-bottom-color: var(--bg);
+  background: var(--bg);
+  color: var(--text);
+  font-weight: 600;
 }
 
 #reloadTranscriptBtn,
@@ -826,7 +843,8 @@ main {
   gap: 6px;
   align-items: center;
   padding: 6px 12px;
-  background: var(--panel);
+  /* Gehoert zum Inhalt des aktiven Reiters, daher dessen Hintergrund. */
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
 
@@ -943,14 +961,90 @@ main {
   color: var(--muted);
 }
 
-.modal-content label[for="agentCommand"] {
-  flex-direction: row;
-  align-items: baseline;
-  gap: 6px;
-}
-
 .agent-shell-hint {
   font-size: 11px;
+}
+
+.agent-output-tabs {
+  display: flex;
+  gap: 2px;
+  /* 1px Ueberlappung: der aktive Reiter verdeckt die obere Rahmenlinie. */
+  margin-bottom: -1px;
+  padding-left: 8px;
+}
+
+/* Reiter und Inhalt ohne den Spaltenabstand des Dialogs. */
+.agent-output {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Klassische Reiter: der aktive Reiter geht nahtlos in den Rahmen des
+   Inhalts ueber (gleicher Hintergrund, untere Kante verdeckt die Rahmenlinie). */
+.agent-tab {
+  position: relative;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px 6px 0 0;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-tab:hover:not(.active) {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.agent-tab.active {
+  z-index: 1;
+  border-bottom-color: var(--panel-2);
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.agent-output-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  /* Feste Hoehe: der Tabwechsel darf den Dialog nicht springen lassen. Im
+     Prompt-Tab fuellt das Textfeld den Platz der Vorlagenzeile. */
+  height: 224px;
+}
+
+.agent-output-panel .agent-command {
+  flex: 1;
+  background: var(--panel);
+  min-height: 0;
+  resize: none;
+}
+
+.agent-template-row-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-template-row-select[hidden] {
+  display: none;
+}
+
+.agent-template-row-select label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Kompakt wie die Tabs darueber: gleiche Hoehe und Schrift, keine volle Breite. */
+.agent-template-row-select select {
+  flex: 0 1 240px;
+  min-width: 0;
+  height: 32px;
+  font-size: 12px;
 }
 
 .agent-command {
